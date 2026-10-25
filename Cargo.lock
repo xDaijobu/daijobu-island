@@ -94,6 +94,7 @@ version = "0.1.0"
 dependencies = [
  "dj-core",
  "dj-render",
+ "dj-vitals",
  "dj-win",
 ]
 
@@ -111,6 +112,14 @@ version = "0.1.0"
 dependencies = [
  "dj-core",
  "skia-safe",
+ "windows",
+]
+
+[[package]]
+name = "dj-vitals"
+version = "0.1.0"
+dependencies = [
+ "dj-core",
  "windows",
 ]
 
