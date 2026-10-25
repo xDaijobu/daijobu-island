@@ -174,11 +174,45 @@ impl SweepCache {
     }
 }
 
+/// What the Vitals panel's Sweep button knows about reclaimable space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Estimate {
+    /// No scan yet, and none running.
+    Unknown,
+    /// The background estimate is running.
+    Scanning,
+    /// Bytes that "Clean" could free, from the cache or the last preview.
+    Ready(u64),
+}
+
+impl Estimate {
+    /// From the cache plus whether a scan is running. A running scan wins only when
+    /// there is no figure yet, so a refresh never blanks the button.
+    pub fn from_cache(cache: &SweepCache, scanning: bool) -> Self {
+        match (cache.reclaimable(), scanning) {
+            (Some(b), _) => Estimate::Ready(b),
+            (None, true) => Estimate::Scanning,
+            (None, false) => Estimate::Unknown,
+        }
+    }
+
+    /// Button text, without the broom icon: "6.8 GB reclaimable", "scanning…" or "sweep".
+    pub fn label(self) -> String {
+        match self {
+            Estimate::Unknown => "sweep".to_string(),
+            Estimate::Scanning => "scanning…".to_string(),
+            Estimate::Ready(b) => format!("{} reclaimable", format_bytes(b)),
+        }
+    }
+}
+
 /// One previewed entry: what would be removed and how big it is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemView {
     pub path: PathBuf,
     pub bytes: u64,
+    /// Short display text, e.g. "Chrome · Default · Cache" or a project-relative path.
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -511,6 +545,7 @@ mod tests {
         ItemView {
             path: PathBuf::from(p),
             bytes,
+            label: p.to_string(),
         }
     }
 
@@ -541,6 +576,17 @@ mod tests {
         assert_eq!(format_bytes(412 * 1024 * 1024), "412 MB");
         assert_eq!(format_bytes((6.8 * 1024.0 * 1024.0 * 1024.0) as u64), "6.8 GB");
         assert_eq!(format_bytes(u64::MAX), "16777216 TB");
+    }
+
+    #[test]
+    fn estimate_label_and_source() {
+        let none = SweepCache::default();
+        assert_eq!(Estimate::from_cache(&none, false), Estimate::Unknown);
+        assert_eq!(Estimate::from_cache(&none, true), Estimate::Scanning);
+        let c = SweepCache::from_totals(5, &[(Category::Temp, 3 * 1024 * 1024)]);
+        assert_eq!(Estimate::from_cache(&c, true), Estimate::Ready(3 * 1024 * 1024));
+        assert_eq!(Estimate::Ready(3 * 1024 * 1024).label(), "3.0 MB reclaimable");
+        assert_eq!(Estimate::Unknown.label(), "sweep");
     }
 
     #[test]
