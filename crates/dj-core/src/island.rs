@@ -1,5 +1,7 @@
-//! The island state machine: Idle pill <-> Home grid, driven by springs.
-//! Time only enters through `step(dt)`, so everything here is deterministic.
+//! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel and
+//! the OSD overlay,
+//! driven by springs. Time only enters through `step(dt)`, so everything here is
+//! deterministic.
 
 use crate::features::{Availability, FEATURES};
 use crate::layout::{self, Rect};
@@ -17,8 +19,47 @@ const HINT_FADE_SECS: f32 = 0.3;
 pub enum IslandState {
     Idle,
     Home,
-    /// The Vitals panel, opened from the Home tile. Any click returns to Home.
+    MusicCompact,
+    MusicExpanded,
+    /// The Vitals panel, opened from the Home tile. An empty click collapses it.
     Vitals,
+}
+
+impl IslandState {
+    /// Index into the per-content opacity springs.
+    fn layer(self) -> usize {
+        match self {
+            IslandState::Idle => 0,
+            IslandState::Home => 1,
+            IslandState::MusicCompact => 2,
+            IslandState::MusicExpanded => 3,
+            IslandState::Vitals => 4,
+        }
+    }
+}
+
+/// What the app knows about Music, pushed into the island on every change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MusicUi {
+    pub signed_in: bool,
+    pub has_track: bool,
+    /// Google refused the embedded sign-in; "Open in browser" is offered.
+    pub blocked: bool,
+}
+
+/// A button or control inside the expanded Music view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MusicAction {
+    PlayPause,
+    Prev,
+    Next,
+    /// Fraction of the track, 0..1, from a click on the scrubber.
+    Seek(f32),
+    /// Show the engine window (browse and search).
+    OpenWindow,
+    /// Open music.youtube.com in the default browser.
+    OpenBrowser,
+    SignIn,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,6 +68,8 @@ pub enum ClickOutcome {
     Ignored,
     Expanded,
     Collapsed,
+    /// Back to the Home grid from a Music view.
+    Home,
     /// A locked tile was clicked (index into `FEATURES`): shake + "coming soon".
     Locked(usize),
     /// An available tile was clicked (index into `FEATURES`). The app opens its view;
@@ -34,6 +77,17 @@ pub enum ClickOutcome {
     Open(usize),
     /// The OSD level bar was clicked: set the master volume to this level (0..=1).
     SetVolume(f32),
+    Music(MusicAction),
+}
+
+/// Opacity of each content layer, 0..1. At most one is 1 once settled.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Layers {
+    pub idle: f32,
+    pub home: f32,
+    pub compact: f32,
+    pub expanded: f32,
+    pub vitals: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -41,17 +95,14 @@ pub enum ClickOutcome {
 pub struct IslandView {
     pub rect: Rect,
     pub radius: f32,
-    /// 0 = idle content, 1 = home content.
-    pub fade: f32,
+    pub layers: Layers,
     pub hover: Option<usize>,
     /// Tile index and horizontal offset.
     pub shake: Option<(usize, f32)>,
     /// Tile index and opacity of the "coming soon" hint.
     pub hint: Option<(usize, f32)>,
-    /// The volume pill. Its `alpha` also hides the idle/home content while > 0.
+    /// The volume pill. Its `alpha` also hides the content layers while > 0.
     pub osd: OsdView,
-    /// Opacity of the Vitals panel, 0..=1. Hides the idle/home content while > 0.
-    pub vitals: f32,
 }
 
 pub struct Island {
@@ -59,13 +110,13 @@ pub struct Island {
     w: Spring,
     h: Spring,
     r: Spring,
-    fade: Spring,
-    /// Vitals panel opacity: 1 while the state is Vitals.
-    vfade: Spring,
+    /// One opacity spring per content layer, indexed by `IslandState::layer`.
+    layers: [Spring; 5],
     tiles: Vec<Rect>,
     hover: Option<usize>,
     shake: Option<(usize, f32)>,
     hint: Option<(usize, f32)>,
+    music: MusicUi,
     osd: Osd,
     /// True while the user drags the OSD bar.
     dragging: bool,
@@ -76,17 +127,24 @@ pub struct Island {
 impl Island {
     pub fn new(tokens: &ResolvedTokens) -> Self {
         let spec = tokens.expand;
+        let fade = |on: bool| Spring::new(if on { 1.0 } else { 0.0 }, FADE_SPEC, 0.002);
         Self {
             state: IslandState::Idle,
             w: Spring::new(layout::IDLE_W, spec, 0.02),
             h: Spring::new(layout::IDLE_H, spec, 0.02),
             r: Spring::new(layout::IDLE_R * tokens.radius_scale, spec, 0.02),
-            fade: Spring::new(0.0, FADE_SPEC, 0.002),
-            vfade: Spring::new(0.0, FADE_SPEC, 0.002),
+            layers: [
+                fade(true),
+                fade(false),
+                fade(false),
+                fade(false),
+                fade(false),
+            ],
             tiles: layout::home_tiles(),
             hover: None,
             shake: None,
             hint: None,
+            music: MusicUi::default(),
             osd: Osd::new(),
             dragging: false,
             expanding: true,
@@ -97,15 +155,39 @@ impl Island {
         self.state
     }
 
+    pub fn music_ui(&self) -> MusicUi {
+        self.music
+    }
+
     fn base_size(state: IslandState) -> (f32, f32, f32) {
         match state {
             IslandState::Idle => (layout::IDLE_W, layout::IDLE_H, layout::IDLE_R),
             IslandState::Home => (layout::HOME_W, layout::HOME_H, layout::HOME_R),
+            IslandState::MusicCompact => (
+                layout::MUSIC_COMPACT_W,
+                layout::MUSIC_COMPACT_H,
+                layout::MUSIC_COMPACT_R,
+            ),
+            IslandState::MusicExpanded => (
+                layout::MUSIC_EXP_W,
+                layout::MUSIC_EXP_H,
+                layout::MUSIC_EXP_R,
+            ),
             IslandState::Vitals => (layout::VITALS_W, layout::VITALS_H, layout::VITALS_R),
         }
     }
 
+    /// The state the island rests in when nothing is being opened.
+    fn rest_state(&self) -> IslandState {
+        if self.music.has_track {
+            IslandState::MusicCompact
+        } else {
+            IslandState::Idle
+        }
+    }
+
     /// The pill's resting size: the OSD size while it is up, else the state's size.
+    /// The OSD only covers the state; it never changes it, so the state returns after.
     fn target_size(&self) -> (f32, f32, f32) {
         if self.osd.is_visible() {
             (layout::OSD_W, layout::OSD_H, layout::OSD_R)
@@ -131,27 +213,11 @@ impl Island {
 
     fn set_state(&mut self, state: IslandState, tokens: &ResolvedTokens) {
         self.state = state;
-        self.sync_pill(tokens);
-        self.fade.retarget(
-            if state == IslandState::Home { 1.0 } else { 0.0 },
-            FADE_SPEC,
-        );
-        self.vfade.retarget(
-            if state == IslandState::Vitals {
-                1.0
-            } else {
-                0.0
-            },
-            FADE_SPEC,
-        );
-        self.hover = None;
-    }
-
-    /// Opens the Vitals panel. The app samples only while `state()` is Vitals.
-    pub fn open_vitals(&mut self, tokens: &ResolvedTokens) {
-        if self.state != IslandState::Vitals {
-            self.set_state(IslandState::Vitals, tokens);
+        for (i, layer) in self.layers.iter_mut().enumerate() {
+            layer.retarget(if i == state.layer() { 1.0 } else { 0.0 }, FADE_SPEC);
         }
+        self.sync_pill(tokens);
+        self.hover = None;
     }
 
     /// Shows the volume pill (or refreshes its value and hold timer).
@@ -193,8 +259,46 @@ impl Island {
         }
     }
 
+    /// Opens the expanded Music view (from Home or the compact view).
+    pub fn open_music(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::MusicExpanded {
+            self.set_state(IslandState::MusicExpanded, tokens);
+        }
+    }
+
+    /// Opens the Vitals panel (from the Home tile). The app samples at 1 Hz while
+    /// `state()` is Vitals.
+    pub fn open_vitals(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::Vitals {
+            self.set_state(IslandState::Vitals, tokens);
+        }
+    }
+
+    /// Collapses to the rest state: compact when a track is loaded, otherwise Idle.
     pub fn collapse(&mut self, tokens: &ResolvedTokens) {
-        if self.state != IslandState::Idle {
+        let rest = self.rest_state();
+        if self.state != rest {
+            self.set_state(rest, tokens);
+        }
+    }
+
+    /// Pushes new Music facts. Only presence changes move the island: a track
+    /// appearing from Idle shows the compact view, and a track disappearing from a
+    /// Music view returns to Idle. Other state changes leave the view alone.
+    pub fn set_music(&mut self, ui: MusicUi, tokens: &ResolvedTokens) {
+        let had_track = self.music.has_track;
+        self.music = ui;
+        if ui.has_track == had_track {
+            return;
+        }
+        if ui.has_track {
+            if self.state == IslandState::Idle {
+                self.set_state(IslandState::MusicCompact, tokens);
+            }
+        } else if matches!(
+            self.state,
+            IslandState::MusicCompact | IslandState::MusicExpanded
+        ) {
             self.set_state(IslandState::Idle, tokens);
         }
     }
@@ -208,7 +312,10 @@ impl Island {
 
     fn tile_at(&self, x: f32, y: f32) -> Option<usize> {
         let p = self.pill_rect();
-        if self.state != IslandState::Home || self.fade.value < 0.5 || self.osd.is_visible() {
+        if self.state != IslandState::Home
+            || self.layers[IslandState::Home.layer()].value < 0.5
+            || self.osd.is_visible()
+        {
             return None;
         }
         layout::hit_tile(&self.tiles, x - p.x, y - p.y)
@@ -231,21 +338,75 @@ impl Island {
         if !self.pill_rect().contains(x, y) {
             return ClickOutcome::Ignored;
         }
-        if self.state == IslandState::Idle {
-            self.expand(tokens);
-            return ClickOutcome::Expanded;
-        }
-        match self.tile_at(x, y) {
-            Some(i) if FEATURES[i].availability == Availability::Locked => {
-                self.shake = Some((i, 0.0));
-                self.hint = Some((i, HINT_SECS));
-                ClickOutcome::Locked(i)
+        match self.state {
+            IslandState::Idle => {
+                self.expand(tokens);
+                ClickOutcome::Expanded
             }
-            Some(i) => ClickOutcome::Open(i),
-            None if self.state == IslandState::Vitals => {
-                self.set_state(IslandState::Home, tokens);
+            IslandState::MusicCompact => {
+                self.open_music(tokens);
+                ClickOutcome::Expanded
+            }
+            IslandState::MusicExpanded => self.music_click(x, y, tokens),
+            // The panel has no controls: like an empty click in the other views, it collapses.
+            IslandState::Vitals => {
+                self.collapse(tokens);
                 ClickOutcome::Collapsed
             }
+            IslandState::Home => match self.tile_at(x, y) {
+                Some(i) if FEATURES[i].availability == Availability::Locked => {
+                    self.shake = Some((i, 0.0));
+                    self.hint = Some((i, HINT_SECS));
+                    ClickOutcome::Locked(i)
+                }
+                Some(i) => ClickOutcome::Open(i),
+                None => {
+                    self.collapse(tokens);
+                    ClickOutcome::Collapsed
+                }
+            },
+        }
+    }
+
+    fn music_click(&mut self, x: f32, y: f32, tokens: &ResolvedTokens) -> ClickOutcome {
+        let p = self.pill_rect();
+        let (lx, ly) = (x - p.x, y - p.y);
+        let hit = |r: Rect| r.contains(lx, ly);
+        let ui = self.music;
+        if hit(layout::ME_BTN_HOME) {
+            self.set_state(IslandState::Home, tokens);
+            return ClickOutcome::Home;
+        }
+        let action = if !ui.signed_in {
+            if hit(layout::ME_SIGN_IN) {
+                Some(MusicAction::SignIn)
+            } else if ui.blocked && hit(layout::ME_BTN_OPEN) {
+                Some(MusicAction::OpenBrowser)
+            } else {
+                None
+            }
+        } else if ui.has_track {
+            if hit(layout::ME_PREV) {
+                Some(MusicAction::Prev)
+            } else if hit(layout::ME_PLAY) {
+                Some(MusicAction::PlayPause)
+            } else if hit(layout::ME_NEXT) {
+                Some(MusicAction::Next)
+            } else if hit(layout::ME_SCRUB) {
+                let s = &layout::ME_SCRUB;
+                Some(MusicAction::Seek(((lx - s.x) / s.w).clamp(0.0, 1.0)))
+            } else if hit(layout::ME_BTN_OPEN) {
+                Some(MusicAction::OpenWindow)
+            } else {
+                None
+            }
+        } else if hit(layout::ME_BTN_OPEN) {
+            Some(MusicAction::OpenWindow)
+        } else {
+            None
+        };
+        match action {
+            Some(a) => ClickOutcome::Music(a),
             None => {
                 self.collapse(tokens);
                 ClickOutcome::Collapsed
@@ -281,8 +442,9 @@ impl Island {
             s.spec = spec;
             s.step(dt);
         }
-        self.fade.step(dt);
-        self.vfade.step(dt);
+        for layer in &mut self.layers {
+            layer.step(dt);
+        }
         if let Some((i, t)) = self.shake {
             self.shake = (t + dt < SHAKE_SECS).then_some((i, t + dt));
         }
@@ -292,11 +454,8 @@ impl Island {
     }
 
     pub fn is_animating(&self) -> bool {
-        !(self.w.settled()
-            && self.h.settled()
-            && self.r.settled()
-            && self.fade.settled()
-            && self.vfade.settled())
+        !(self.w.settled() && self.h.settled() && self.r.settled())
+            || self.layers.iter().any(|l| !l.settled())
             || self.shake.is_some()
             || self.hint.is_some()
             || self.osd.is_animating()
@@ -304,11 +463,17 @@ impl Island {
 
     pub fn view(&self) -> IslandView {
         let rect = self.pill_rect();
+        let v = |i: usize| self.layers[i].value;
         IslandView {
             rect,
             radius: self.r.value.min(rect.h / 2.0).max(0.0),
-            fade: self.fade.value,
-            vitals: self.vfade.value.clamp(0.0, 1.0),
+            layers: Layers {
+                idle: v(0),
+                home: v(1),
+                compact: v(2),
+                expanded: v(3),
+                vitals: v(4),
+            },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
                 let decay = 1.0 - t / SHAKE_SECS;
@@ -341,30 +506,38 @@ mod tests {
         assert!(!i.is_animating());
     }
 
+    /// Pins the OSD so it stays up, then steps until the springs rest at the OSD size.
+    fn settle_pinned(i: &mut Island, t: &ResolvedTokens) {
+        i.osd.pin(true);
+        for _ in 0..1000 {
+            i.step(1.0 / 144.0, t);
+        }
+        assert!(i.osd.is_visible());
+    }
+
     fn center(i: &Island) -> (f32, f32) {
         let p = i.pill_rect();
         (p.x + p.w / 2.0, p.y + p.h / 2.0)
     }
 
-    #[test]
-    fn vitals_opens_from_home_and_any_click_returns_to_home() {
-        let t = tokens();
-        let mut i = Island::new(&t);
-        i.expand(&t);
-        settle(&mut i, &t);
-        i.open_vitals(&t);
-        settle(&mut i, &t);
-        assert_eq!(i.state(), IslandState::Vitals);
-        let v = i.view();
-        assert!((v.vitals - 1.0).abs() < 0.01);
-        assert!(v.fade < 0.01);
-        assert!((v.rect.w - layout::VITALS_W).abs() < 0.5);
-        assert!((v.rect.h - layout::VITALS_H).abs() < 0.5);
-        let (x, y) = center(&i);
-        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
-        assert_eq!(i.state(), IslandState::Home);
-        settle(&mut i, &t);
-        assert!(i.view().vitals < 0.01);
+    fn at(i: &Island, r: Rect) -> (f32, f32) {
+        let p = i.pill_rect();
+        (p.x + r.x + r.w / 2.0, p.y + r.y + r.h / 2.0)
+    }
+
+    fn with_track() -> MusicUi {
+        MusicUi {
+            signed_in: true,
+            has_track: true,
+            blocked: false,
+        }
+    }
+
+    fn vol(level: f32) -> Volume {
+        Volume {
+            level,
+            muted: false,
+        }
     }
 
     #[test]
@@ -387,7 +560,7 @@ mod tests {
         settle(&mut i, &t);
         let r = i.pill_rect();
         assert_eq!((r.w, r.h), (layout::HOME_W, layout::HOME_H));
-        assert_eq!(i.view().fade, 1.0);
+        assert_eq!(i.view().layers.home, 1.0);
         // Header area is not a tile: collapses.
         assert_eq!(i.click(r.x + 40.0, r.y + 28.0, &t), ClickOutcome::Collapsed);
         settle(&mut i, &t);
@@ -414,6 +587,21 @@ mod tests {
         assert_eq!(v.hint.map(|h| h.0), Some(3));
         settle(&mut i, &t);
         assert!(i.view().shake.is_none() && i.view().hint.is_none());
+    }
+
+    #[test]
+    fn music_tile_is_available_and_reports_open() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        let (cx, cy) = center(&i);
+        i.click(cx, cy, &t);
+        settle(&mut i, &t);
+        let p = i.pill_rect();
+        let tile = layout::home_tiles()[0];
+        let out = i.click(p.x + tile.x + 5.0, p.y + tile.y + 5.0, &t);
+        assert_eq!(out, ClickOutcome::Open(0));
+        // The app decides what opening means; the island only reports the click.
+        assert_eq!(i.state(), IslandState::Home);
     }
 
     #[test]
@@ -460,19 +648,234 @@ mod tests {
     }
 
     #[test]
+    fn track_appearing_from_idle_shows_compact_and_disappearing_returns_idle() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+        settle(&mut i, &t);
+        let p = i.pill_rect();
+        assert_eq!(
+            (p.w, p.h),
+            (layout::MUSIC_COMPACT_W, layout::MUSIC_COMPACT_H)
+        );
+        i.set_music(
+            MusicUi {
+                has_track: false,
+                ..with_track()
+            },
+            &t,
+        );
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn compact_click_opens_expanded_and_empty_click_returns_to_compact() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        settle(&mut i, &t);
+        let (cx, cy) = center(&i);
+        assert_eq!(i.click(cx, cy, &t), ClickOutcome::Expanded);
+        assert_eq!(i.state(), IslandState::MusicExpanded);
+        settle(&mut i, &t);
+        let p = i.pill_rect();
+        assert_eq!((p.w, p.h), (layout::MUSIC_EXP_W, layout::MUSIC_EXP_H));
+        // A point in the title area is empty space: back to compact.
+        let (ex, ey) = at(&i, layout::ME_TITLE);
+        assert_eq!(i.click(ex, ey, &t), ClickOutcome::Collapsed);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+    }
+
+    #[test]
+    fn expanded_controls_report_their_actions() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        let cases = [
+            (layout::ME_PREV, MusicAction::Prev),
+            (layout::ME_PLAY, MusicAction::PlayPause),
+            (layout::ME_NEXT, MusicAction::Next),
+            (layout::ME_BTN_OPEN, MusicAction::OpenWindow),
+        ];
+        for (r, want) in cases {
+            let (x, y) = at(&i, r);
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Music(want));
+        }
+        assert_eq!(i.state(), IslandState::MusicExpanded);
+    }
+
+    #[test]
+    fn scrubber_click_seeks_by_fraction() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        let s = layout::ME_SCRUB;
+        let p = i.pill_rect();
+        let out = i.click(p.x + s.x + s.w * 0.25, p.y + s.y + 2.0, &t);
+        let ClickOutcome::Music(MusicAction::Seek(f)) = out else {
+            panic!("seek expected, got {out:?}");
+        };
+        assert!((f - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn signed_out_sign_in_button_and_browser_fallback() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(MusicUi::default(), &t);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        let (x, y) = at(&i, layout::ME_SIGN_IN);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Music(MusicAction::SignIn));
+
+        i.set_music(
+            MusicUi {
+                blocked: true,
+                ..MusicUi::default()
+            },
+            &t,
+        );
+        let (x, y) = at(&i, layout::ME_BTN_OPEN);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Music(MusicAction::OpenBrowser)
+        );
+    }
+
+    #[test]
+    fn home_button_leaves_music_for_the_grid() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        let (x, y) = at(&i, layout::ME_BTN_HOME);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Home);
+        assert_eq!(i.state(), IslandState::Home);
+        settle(&mut i, &t);
+        assert_eq!(i.view().layers.expanded, 0.0);
+    }
+
+    #[test]
+    fn expanded_empty_click_without_track_returns_to_idle() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(
+            MusicUi {
+                signed_in: true,
+                ..MusicUi::default()
+            },
+            &t,
+        );
+        i.open_music(&t);
+        settle(&mut i, &t);
+        let (x, y) = at(&i, layout::ME_TITLE);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn layers_are_exclusive_once_settled() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        let l = i.view().layers;
+        assert_eq!(
+            (l.idle, l.home, l.compact, l.expanded, l.vitals),
+            (0.0, 0.0, 0.0, 1.0, 0.0)
+        );
+    }
+
+    fn vitals_index() -> usize {
+        FEATURES.iter().position(|f| f.id == "vitals").unwrap()
+    }
+
+    #[test]
+    fn vitals_tile_opens_the_panel_and_an_empty_click_collapses() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        settle(&mut i, &t);
+        let tile = layout::home_tiles()[vitals_index()];
+        let out = i.click(
+            i.pill_rect().x + tile.x + 5.0,
+            i.pill_rect().y + tile.y + 5.0,
+            &t,
+        );
+        assert_eq!(out, ClickOutcome::Open(vitals_index()));
+        i.open_vitals(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::VITALS_W, layout::VITALS_H));
+        let l = i.view().layers;
+        assert_eq!((l.idle, l.home, l.vitals), (0.0, 0.0, 1.0));
+        // No tiles or hover in the panel.
+        let (x, y) = center(&i);
+        assert!(!i.hover(x, y));
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Idle);
+        assert_eq!(i.view().layers.vitals, 0.0);
+    }
+
+    #[test]
+    fn vitals_empty_click_with_a_track_returns_to_compact() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.expand(&t);
+        i.open_vitals(&t);
+        settle(&mut i, &t);
+        // A track change does not pull the island out of the panel.
+        i.set_music(MusicUi::default(), &t);
+        i.set_music(with_track(), &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let (x, y) = center(&i);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+    }
+
+    #[test]
+    fn osd_over_vitals_returns_to_vitals() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        i.open_vitals(&t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.3), &t);
+        settle_pinned(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::OSD_W, layout::OSD_H));
+        // While the OSD is up, a click off its bar does not close the panel.
+        let (x, _) = center(&i);
+        let r = layout::osd_rect();
+        assert_eq!(i.click(x, r.y + r.h + 20.0, &t), ClickOutcome::Ignored);
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::VITALS_W, layout::VITALS_H));
+        assert_eq!(i.view().layers.vitals, 1.0);
+        assert_eq!(i.view().osd.alpha, 0.0);
+    }
+
+    #[test]
     fn radius_follows_scale_and_never_exceeds_half_height() {
         let mut t = tokens();
         t.radius_scale = 2.0;
         let i = Island::new(&t);
         let v = i.view();
         assert!(v.radius <= v.rect.h / 2.0);
-    }
-
-    fn vol(level: f32) -> Volume {
-        Volume {
-            level,
-            muted: false,
-        }
     }
 
     #[test]
@@ -504,7 +907,36 @@ mod tests {
         assert_eq!(i.state(), IslandState::Home);
         let r = i.pill_rect();
         assert_eq!((r.w, r.h), (layout::HOME_W, layout::HOME_H));
-        assert_eq!(i.view().fade, 1.0);
+        assert_eq!(i.view().layers.home, 1.0);
+    }
+
+    #[test]
+    fn osd_over_music_returns_to_music() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.4), &t);
+        settle_pinned(&mut i, &t);
+        // The OSD takes the pill and hides the Music content, but the state stays put.
+        assert_eq!(i.state(), IslandState::MusicExpanded);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::OSD_W, layout::OSD_H));
+        assert_eq!(i.view().osd.alpha, 1.0);
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        // Once the OSD hides, the expanded Music view is back, and it still answers.
+        assert_eq!(i.state(), IslandState::MusicExpanded);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::MUSIC_EXP_W, layout::MUSIC_EXP_H));
+        assert_eq!(i.view().layers.expanded, 1.0);
+        assert_eq!(i.view().osd.alpha, 0.0);
+        let (x, y) = at(&i, layout::ME_PLAY);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Music(MusicAction::PlayPause)
+        );
     }
 
     #[test]
@@ -563,14 +995,5 @@ mod tests {
         i.release();
         settle(&mut i, &t);
         assert_eq!(i.view().osd.alpha, 0.0);
-    }
-
-    /// Pins the OSD so it stays up, then steps until the springs rest at the OSD size.
-    fn settle_pinned(i: &mut Island, t: &ResolvedTokens) {
-        i.osd.pin(true);
-        for _ in 0..1000 {
-            i.step(1.0 / 144.0, t);
-        }
-        assert!(i.osd.is_visible());
     }
 }

@@ -14,3 +14,4 @@ dj-core = { path = "../crates/dj-core" }
 dj-render = { path = "../crates/dj-render" }
 dj-vitals = { path = "../crates/dj-vitals" }
 dj-win = { path = "../crates/dj-win" }
+dj-music = { path = "../crates/dj-music" }

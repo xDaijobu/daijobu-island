@@ -5,8 +5,9 @@ mod fonts;
 mod fx;
 mod gpu;
 mod icons;
+mod music;
 mod paint;
 mod vitals;
 
 pub use gpu::{RenderError, Renderer};
-pub use paint::Frame;
+pub use paint::{Frame, MusicFrame};

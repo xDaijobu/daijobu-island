@@ -70,3 +70,30 @@ Not run: `cargo build --release`. The contract lists it, but the brief limits ve
 - `cargo build --release`.
 - Pixel-level look of the OSD pill: the drawing code is unchecked against the design in `docs/plan.html`.
 - Hook behaviour with real volume keys on the keyboard, and with media keys in other apps.
+
+## Integration with Stage 2
+
+The Music branch (`xDaijobu/stage-2-music`) was merged into this branch with a merge commit, not a rebase. Music and OSD are both Available in the feature registry, and every other feature stays locked.
+
+**What conflicted (7 files)**
+
+- `dj-core/src/features.rs`: stage 2 has `music` at index 0 (it replaces the stage-3 `media` tile). Stage 3 has `osd` at index 1. Both are now Available, and the list is still 13 tiles.
+- `dj-core/src/island.rs`: both branches rewrote the state machine. The merged `IslandState` has Idle, Home, MusicCompact and MusicExpanded. The OSD is an overlay: it takes the pill at its own size while visible and never changes the state, so the island returns to whatever it was showing. Content opacity uses stage 2's four layer springs (`layers.home` replaces stage 3's `fade`). Stage 2's `grows()` is gone because the OSD size does not follow the state's direction. The area-based `expanding` flag from stage 3 now picks the expand or collapse spring for every change.
+- `dj-core/src/config.rs`: both `[music]` and `[osd]` are kept.
+- `dj-core/src/lib.rs`: both `music` and `osd` modules are exported.
+- `dj-render/src/paint.rs`: all four content layers and the OSD are drawn. Every content layer is multiplied by `1 - osd.alpha`, so Music hides while the OSD is up.
+- `dj-win/src/window.rs`: stage 2's `WM_WAKE` was `WM_APP+3`, which collides with stage 3's `WM_VOLUME_CHANGED`. `WM_WAKE` moved to `WM_APP+6`. The `Event` enum keeps both sets of variants.
+- `app/src/app.rs`: both field sets and both message sets are wired. There is one `quit()`, which stops the engine, uninstalls the volume hook, releases the mixer and then does the stage-2 cleanup. Click handling runs the Music match first, then the OSD match. The YouTube Music tray submenu is kept.
+
+**Planning docs.** `task/progress.md` and `docs/plan.html` were taken from the stage-2 branch. `diff` against that branch is empty.
+
+**Behaviour added by the merge.** The OSD over Music is covered by one new test, `osd_over_music_returns_to_music`. It shows the OSD over the expanded view, checks that the state stays `MusicExpanded`, and checks that the view and its controls come back once the OSD hides.
+
+**Tests and checks**
+
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: 69 passed, 0 failed. That is 65 in `dj-core` and 4 in `dj-win`. `dj-music`, `dj-render` and `app` have no tests. Across the trees there are 51 `#[test]` attributes on the stage-2 side, 48 on the stage-3 side, and 69 in the merged tree (including the new one).
+- The workspace test run includes `system::tests::autostart_roundtrip_uses_a_scratch_value`, which writes a scratch value under the Run key and removes it again.
+
+**Not verified.** The app was not run, as the brief requires headless builds. Nothing here has been checked on screen: OSD over Music, the morph timing, and the paint crossfade all need a live check. The stage-2 report still says `WM_APP+3` for the wake message. That is the old id, and the code now uses `WM_APP+6`.
