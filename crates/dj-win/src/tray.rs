@@ -13,6 +13,9 @@ const TRAY_ID: u32 = 1;
 const CMD_TOGGLE: usize = 1;
 const CMD_AUTOSTART: usize = 2;
 const CMD_QUIT: usize = 3;
+const CMD_MUSIC_SHOW: usize = 4;
+const CMD_MUSIC_SIGNOUT: usize = 5;
+const CMD_MUSIC_STOP: usize = 6;
 const CMD_THEME_BASE: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +23,9 @@ pub enum MenuCommand {
     ToggleVisible,
     Theme(usize),
     ToggleAutostart,
+    MusicShow,
+    MusicSignOut,
+    MusicStop,
     Quit,
 }
 
@@ -27,6 +33,15 @@ pub struct MenuSpec<'a> {
     /// `(display name, checked)` per theme.
     pub themes: &'a [(String, bool)],
     pub autostart: bool,
+    pub music: MusicMenu,
+}
+
+/// Which YouTube Music items can be used right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MusicMenu {
+    /// The hidden engine is running.
+    pub running: bool,
+    pub signed_in: bool,
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -116,8 +131,19 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
             };
             append(themes, flags, CMD_THEME_BASE + i, name);
         }
+        let music = CreatePopupMenu().ok()?;
+        let grey = |on: bool| if on { MF_STRING } else { MF_STRING | MF_GRAYED };
+        append(music, MF_STRING, CMD_MUSIC_SHOW, "Show window");
+        append(
+            music,
+            grey(spec.music.signed_in || spec.music.running),
+            CMD_MUSIC_SIGNOUT,
+            "Sign out",
+        );
+        append(music, grey(spec.music.running), CMD_MUSIC_STOP, "Stop engine");
         append(menu, MF_STRING, CMD_TOGGLE, "Show / Hide");
         let _ = AppendMenuW(menu, MF_POPUP, themes.0 as usize, w!("Theme"));
+        let _ = AppendMenuW(menu, MF_POPUP, music.0 as usize, w!("YouTube Music"));
         let flags = if spec.autostart {
             MF_STRING | MF_CHECKED
         } else {
@@ -146,6 +172,9 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
             0 => None,
             CMD_TOGGLE => Some(MenuCommand::ToggleVisible),
             CMD_AUTOSTART => Some(MenuCommand::ToggleAutostart),
+            CMD_MUSIC_SHOW => Some(MenuCommand::MusicShow),
+            CMD_MUSIC_SIGNOUT => Some(MenuCommand::MusicSignOut),
+            CMD_MUSIC_STOP => Some(MenuCommand::MusicStop),
             CMD_QUIT => Some(MenuCommand::Quit),
             n if n >= CMD_THEME_BASE => Some(MenuCommand::Theme(n - CMD_THEME_BASE)),
             _ => None,

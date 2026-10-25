@@ -20,9 +20,10 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     IsWindowVisible, PostMessageW, SetWindowPos, EVENT_SYSTEM_FOREGROUND, HWND_TOPMOST,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WINEVENT_OUTOFCONTEXT,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNORMAL, WINEVENT_OUTOFCONTEXT,
 };
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -94,6 +95,44 @@ fn set_autostart_for(name: PCWSTR, enabled: bool, exe: &Path) -> bool {
 }
 
 /// Local wall-clock `(hour, minute, second)`.
+/// `~/.daijobu/`, the app's data folder.
+pub fn data_dir() -> std::path::PathBuf {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    home.join(".daijobu")
+}
+
+/// Appends one line to `~/.daijobu/daijobu.log`. Failures are ignored.
+pub fn log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data_dir().join("daijobu.log"))
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+/// Opens a web address in the default browser. Returns false if the shell refused.
+pub fn open_url(url: &str) -> bool {
+    let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: `wide` is NUL-terminated and outlives the call; "open" is a static string.
+    let r = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    r.0 as isize > 32
+}
+
 pub fn local_time() -> (u32, u32, u32) {
     // SAFETY: no pointers involved.
     let t = unsafe { GetLocalTime() };

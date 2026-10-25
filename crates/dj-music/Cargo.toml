@@ -1,0 +1,20 @@
+[package]
+name = "dj-music"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dj-core = { path = "../dj-core" }
+dj-win = { path = "../dj-win" }
+# MIT. The WebView2 engine is the only web surface in the app (see AGENTS.md).
+webview2-com = "=0.39.1"
+# Shares the workspace `windows` version, so only one copy is built.
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_WindowsAndMessaging",
+] }
+# Artwork download only. native-tls uses schannel on Windows, so no C toolchain is needed.
+ureq = { version = "=3.5.0", default-features = false, features = ["native-tls", "gzip"] }
