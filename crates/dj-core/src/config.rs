@@ -65,8 +65,9 @@ impl Default for SweepConfig {
 }
 
 impl SweepConfig {
-    /// The roots as paths: `~` and a leading `~/` or `~\` become `profile`. Blank entries
-    /// are dropped. Pure; nothing is checked on disk.
+    /// The roots as paths: `~` and a leading `~/` or `~\` become `profile`. Blank and
+    /// relative entries are dropped (a relative root would depend on the working
+    /// directory). Pure; nothing is checked on disk.
     pub fn roots(&self, profile: &Path) -> Vec<PathBuf> {
         self.project_roots
             .iter()
@@ -81,6 +82,7 @@ impl SweepConfig {
                     PathBuf::from(r)
                 }
             })
+            .filter(|p| p.is_absolute())
             .collect()
     }
 }
@@ -176,6 +178,10 @@ mod tests {
                 "~".into(),
                 "  ".into(),
                 "D:/work".into(),
+                "src".into(),
+                r"..\up".into(),
+                "C:no-slash".into(),
+                r"\no-drive".into(),
             ],
         };
         let p = Path::new("C:/Users/me");
@@ -188,6 +194,8 @@ mod tests {
                 PathBuf::from("D:/work")
             ]
         );
+        // Without a profile, `~` roots would be relative, so they are dropped too.
+        assert_eq!(c.roots(Path::new("")), vec![PathBuf::from("D:/work")]);
     }
 
     #[test]

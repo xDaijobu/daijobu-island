@@ -441,7 +441,7 @@ impl Painter {
             qa,
             s,
         );
-        let armed = v.confirm == Some(Confirm::EmptyBin);
+        let armed = matches!(v.confirm, Some(Confirm::EmptyBin(_)));
         let (bl, bink, bbody, bedge) = if armed {
             ("sure? empty", t.pill, t.warn, t.warn)
         } else {
@@ -496,7 +496,7 @@ impl Painter {
             );
         }
 
-        for (slot, (index, it)) in items.iter().enumerate() {
+        for (slot, (_, it)) in items.iter().enumerate() {
             let r = at(layout::sw_line(slot));
             let cy = r.center_y();
             if slot % 2 == 1 {
@@ -543,7 +543,7 @@ impl Painter {
                     a,
                     s,
                 );
-                let armed = v.confirm == Some(Confirm::Recycle(*index));
+                let armed = matches!(&v.confirm, Some(Confirm::Recycle(p)) if *p == it.path);
                 let (l, ink, body) = if armed {
                     ("sure?", t.pill, t.warn)
                 } else {
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(status_text(&v).0, "→ recycle bin · logged");
         v.preview = None;
         v.status = Some("click again to empty the bin".into());
-        v.confirm = Some(Confirm::EmptyBin);
+        v.confirm = Some(Confirm::EmptyBin(std::time::Instant::now()));
         assert_eq!(status_text(&v).1, Tone::Warn);
         v.status = None;
         v.confirm = None;
