@@ -140,7 +140,12 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
             CMD_MUSIC_SIGNOUT,
             "Sign out",
         );
-        append(music, grey(spec.music.running), CMD_MUSIC_STOP, "Stop engine");
+        append(
+            music,
+            grey(spec.music.running),
+            CMD_MUSIC_STOP,
+            "Stop engine",
+        );
         append(menu, MF_STRING, CMD_TOGGLE, "Show / Hide");
         let _ = AppendMenuW(menu, MF_POPUP, themes.0 as usize, w!("Theme"));
         let _ = AppendMenuW(menu, MF_POPUP, music.0 as usize, w!("YouTube Music"));

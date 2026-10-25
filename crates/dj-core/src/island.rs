@@ -533,8 +533,17 @@ mod tests {
         assert_eq!(i.state(), IslandState::MusicCompact);
         settle(&mut i, &t);
         let p = i.pill_rect();
-        assert_eq!((p.w, p.h), (layout::MUSIC_COMPACT_W, layout::MUSIC_COMPACT_H));
-        i.set_music(MusicUi { has_track: false, ..with_track() }, &t);
+        assert_eq!(
+            (p.w, p.h),
+            (layout::MUSIC_COMPACT_W, layout::MUSIC_COMPACT_H)
+        );
+        i.set_music(
+            MusicUi {
+                has_track: false,
+                ..with_track()
+            },
+            &t,
+        );
         assert_eq!(i.state(), IslandState::Idle);
     }
 
@@ -634,7 +643,13 @@ mod tests {
     fn expanded_empty_click_without_track_returns_to_idle() {
         let t = tokens();
         let mut i = Island::new(&t);
-        i.set_music(MusicUi { signed_in: true, ..MusicUi::default() }, &t);
+        i.set_music(
+            MusicUi {
+                signed_in: true,
+                ..MusicUi::default()
+            },
+            &t,
+        );
         i.open_music(&t);
         settle(&mut i, &t);
         let (x, y) = at(&i, layout::ME_TITLE);
@@ -650,7 +665,10 @@ mod tests {
         i.open_music(&t);
         settle(&mut i, &t);
         let l = i.view().layers;
-        assert_eq!((l.idle, l.home, l.compact, l.expanded), (0.0, 0.0, 0.0, 1.0));
+        assert_eq!(
+            (l.idle, l.home, l.compact, l.expanded),
+            (0.0, 0.0, 0.0, 1.0)
+        );
     }
 
     #[test]

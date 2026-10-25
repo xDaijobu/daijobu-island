@@ -18,9 +18,9 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR,
-    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    CoreWebView2EnvironmentOptions, ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
-    WebMessageReceivedEventHandler,
+    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
+    NavigationCompletedEventHandler, WebMessageReceivedEventHandler,
 };
 use windows::core::{w, Result as WinResult, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -215,7 +215,9 @@ fn setup_controller(
         web.add_NavigationCompleted(
             &NavigationCompletedEventHandler::create(Box::new(move |sender, _| {
                 if let Some(web) = sender {
-                    let blocked = is_google_block_page(&web);
+                    let (url, title) = page_info(&web);
+                    dj_win::system::log(&format!("music: page {url} | {title}"));
+                    let blocked = is_google_block_page(&url, &title);
                     let mut st = s.borrow_mut();
                     if st.blocked != blocked {
                         st.blocked = blocked;
@@ -235,22 +237,29 @@ fn setup_controller(
     }
 }
 
-/// Google's "this browser may not be secure" page. The URL is the reliable signal;
-/// the title is checked too because Google keeps the host the same across variants.
-/// The exact title text is not verified here, so this may miss a variant.
-fn is_google_block_page(web: &ICoreWebView2) -> bool {
-    // SAFETY: plain getters on a live WebView2; the returned strings are freed by
-    // `CoTaskMemPWSTR`.
+/// The page's URL and title, for the log. Empty strings if WebView2 refuses.
+fn page_info(web: &ICoreWebView2) -> (String, String) {
+    // SAFETY: plain getters on a live WebView2; the strings are freed by `CoTaskMemPWSTR`.
     unsafe {
         let mut src = PWSTR::null();
         let mut title = PWSTR::null();
-        if web.Source(&mut src).is_err() || web.DocumentTitle(&mut title).is_err() {
-            return false;
-        }
-        let url = CoTaskMemPWSTR::from(src).to_string();
-        let title = CoTaskMemPWSTR::from(title).to_string().to_lowercase();
-        url.starts_with("https://accounts.google.com/") && title.contains("couldn")
+        let url = match web.Source(&mut src) {
+            Ok(()) => CoTaskMemPWSTR::from(src).to_string(),
+            Err(_) => String::new(),
+        };
+        let title = match web.DocumentTitle(&mut title) {
+            Ok(()) => CoTaskMemPWSTR::from(title).to_string(),
+            Err(_) => String::new(),
+        };
+        (url, title)
     }
+}
+
+/// Google's "this browser may not be secure" page. The host is the reliable signal;
+/// the title is checked too. The exact title text is not verified against a live
+/// block page, so a variant with another title would be missed.
+fn is_google_block_page(url: &str, title: &str) -> bool {
+    url.starts_with("https://accounts.google.com/") && title.to_lowercase().contains("couldn")
 }
 
 fn create_window(show: bool) -> WinResult<HWND> {

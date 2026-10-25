@@ -79,7 +79,13 @@ impl MusicMsg {
             Wire::Auth { signed_in } => MusicMsg::Auth { signed_in },
             Wire::Bands { v } => MusicMsg::Bands(v.map(|v| {
                 v.into_iter()
-                    .map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 })
+                    .map(|x| {
+                        if x.is_finite() {
+                            x.clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        }
+                    })
                     .collect()
             })),
         };
@@ -362,7 +368,10 @@ mod tests {
         let bands: Vec<f32> = (0..22).map(|i| i as f32 / 21.0).collect();
         let g = vu_groups(&bands, 5);
         assert_eq!(g.len(), 5);
-        assert!(g.windows(2).all(|w| w[0] < w[1]), "rising input stays rising");
+        assert!(
+            g.windows(2).all(|w| w[0] < w[1]),
+            "rising input stays rising"
+        );
         assert_eq!(vu_groups(&[], 5), vec![0.0; 5]);
         assert_eq!(vu_groups(&[0.5; 3], 5).len(), 5, "fewer bands than groups");
     }
