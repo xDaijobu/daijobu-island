@@ -8,9 +8,18 @@ pub struct Config {
     /// Theme id (file stem for user themes).
     pub theme: String,
     pub start_with_windows: bool,
+    pub music: MusicConfig,
     pub osd: OsdConfig,
 }
 
+/// `[music]` section. The YouTube Music profile itself lives in `~/.daijobu/ytmusic/`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MusicConfig {
+    pub signed_in: bool,
+}
+
+/// `[osd]` section.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OsdConfig {
@@ -23,6 +32,7 @@ impl Default for Config {
         Self {
             theme: crate::theme::DEFAULT_THEME.to_string(),
             start_with_windows: false,
+            music: MusicConfig::default(),
             osd: OsdConfig::default(),
         }
     }
@@ -56,6 +66,7 @@ mod tests {
         let c = Config {
             theme: "paper-zine".into(),
             start_with_windows: true,
+            music: MusicConfig { signed_in: true },
             osd: OsdConfig {
                 replace_volume_flyout: false,
             },
@@ -63,6 +74,10 @@ mod tests {
         assert_eq!(Config::parse(&c.to_toml()), c);
         assert_eq!(Config::parse("not [ toml"), Config::default());
         assert!(!Config::parse("theme = \"x\"").start_with_windows);
+        assert!(!Config::parse("theme = \"x\"").music.signed_in);
+        let c = Config::parse("[music]\nsigned_in = true\n");
+        assert!(c.music.signed_in);
+        assert_eq!(Config::parse(&c.to_toml()), c);
     }
 
     #[test]

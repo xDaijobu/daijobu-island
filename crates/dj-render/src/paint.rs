@@ -7,12 +7,13 @@ use crate::fx::Effects;
 use crate::icons::{draw_icon, draw_lock, draw_volume_icon};
 use dj_core::color::Rgb;
 use dj_core::features::FEATURES;
-use dj_core::island::IslandView;
+use dj_core::island::{IslandView, MusicUi};
 use dj_core::layout::{self, Rect as LRect};
+use dj_core::music::NowPlaying;
 use dj_core::theme::ResolvedTokens;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::paint::{Cap, Join, Style};
-use skia_safe::{image_filters, Canvas, ClipOp, Color, Font, Paint, RRect, Rect, TileMode};
+use skia_safe::{image_filters, Canvas, ClipOp, Color, Font, Image, Paint, RRect, Rect, TileMode};
 
 pub struct Frame<'a> {
     pub tokens: &'a ResolvedTokens,
@@ -24,26 +25,41 @@ pub struct Frame<'a> {
     pub time: f32,
     /// Shown in the home footer when no hint is active (e.g. a rejected theme).
     pub notice: Option<&'a str>,
+    pub music: MusicFrame<'a>,
+}
+
+/// What the Music views draw. Built by the app from the Music session.
+pub struct MusicFrame<'a> {
+    pub ui: MusicUi,
+    pub now: Option<&'a NowPlaying>,
+    /// VU levels 0..1, or `None` to hide the VU.
+    pub bands: Option<&'a [f32]>,
+    /// Accent for the Music views: the theme accent, mixed with the cover colour.
+    pub accent: Rgb,
+    /// Playback position in seconds, interpolated between state messages.
+    pub pos: f32,
 }
 
 pub struct Painter {
-    fonts: Fonts,
-    fx: Effects,
+    pub(crate) fonts: Fonts,
+    pub(crate) fx: Effects,
+    /// Cover art, decoded and downscaled by `set_art`.
+    pub(crate) art: Option<Image>,
 }
 
-fn col(c: Rgb, alpha: f32) -> Color {
+pub(crate) fn col(c: Rgb, alpha: f32) -> Color {
     let [r, g, b] = c.to_u8();
     Color::from_argb((alpha.clamp(0.0, 1.0) * 255.0 + 0.5) as u8, r, g, b)
 }
 
-fn fill_paint(c: Color) -> Paint {
+pub(crate) fn fill_paint(c: Color) -> Paint {
     let mut p = Paint::default();
     p.set_anti_alias(true);
     p.set_color(c);
     p
 }
 
-fn stroke_paint(c: Color, width: f32) -> Paint {
+pub(crate) fn stroke_paint(c: Color, width: f32) -> Paint {
     let mut p = fill_paint(c);
     p.set_style(Style::Stroke);
     p.set_stroke_width(width);
@@ -52,17 +68,25 @@ fn stroke_paint(c: Color, width: f32) -> Paint {
     p
 }
 
-fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+pub(crate) fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-fn text_width(font: &Font, s: &str, tracking: f32) -> f32 {
+pub(crate) fn text_width(font: &Font, s: &str, tracking: f32) -> f32 {
     let n = s.chars().count() as f32;
     font.measure_str(s, None).0 + tracking * (n - 1.0).max(0.0)
 }
 
-fn draw_text(canvas: &Canvas, font: &Font, s: &str, x: f32, y: f32, tracking: f32, paint: &Paint) {
+pub(crate) fn draw_text(
+    canvas: &Canvas,
+    font: &Font,
+    s: &str,
+    x: f32,
+    y: f32,
+    tracking: f32,
+    paint: &Paint,
+) {
     if tracking == 0.0 {
         canvas.draw_str(s, (x, y), font, paint);
         return;
@@ -76,7 +100,7 @@ fn draw_text(canvas: &Canvas, font: &Font, s: &str, x: f32, y: f32, tracking: f3
 }
 
 /// Shortens `s` with ".." until it fits `max_w`.
-fn fit(font: &Font, s: &str, tracking: f32, max_w: f32) -> String {
+pub(crate) fn fit(font: &Font, s: &str, tracking: f32, max_w: f32) -> String {
     if text_width(font, s, tracking) <= max_w {
         return s.to_string();
     }
@@ -96,6 +120,7 @@ impl Painter {
         Ok(Self {
             fonts: Fonts::new()?,
             fx: Effects::new()?,
+            art: None,
         })
     }
 
@@ -133,10 +158,16 @@ impl Painter {
             }
         }
 
-        // The OSD takes over the pill, so idle and home fade out while it is up.
+        // The outgoing content (idle) fades early and the incoming one late, so two
+        // layers are rarely half-visible at once. The OSD takes over the pill, so every
+        // content layer fades out while it is up.
         let osd_a = v.osd.alpha;
-        let idle_op = (1.0 - smoothstep(0.0, 0.45, v.fade)) * (1.0 - osd_a);
-        let home_op = smoothstep(0.35, 1.0, v.fade) * (1.0 - osd_a);
+        let lay = v.layers;
+        let not_osd = 1.0 - osd_a;
+        let idle_op = (1.0 - smoothstep(0.0, 0.45, 1.0 - lay.idle)) * not_osd;
+        let home_op = smoothstep(0.35, 1.0, lay.home) * not_osd;
+        let compact_op = smoothstep(0.35, 1.0, lay.compact) * not_osd;
+        let expanded_op = smoothstep(0.35, 1.0, lay.expanded) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -146,6 +177,16 @@ impl Painter {
         if home_op > 0.01 {
             begin_layer(canvas, &rect, home_op, center, s);
             self.home(canvas, f, &rect);
+            canvas.restore();
+        }
+        if compact_op > 0.01 {
+            begin_layer(canvas, &rect, compact_op, center, s);
+            self.music_compact(canvas, f, &rect);
+            canvas.restore();
+        }
+        if expanded_op > 0.01 {
+            begin_layer(canvas, &rect, expanded_op, center, s);
+            self.music_expanded(canvas, f, &rect);
             canvas.restore();
         }
         if osd_a > 0.01 {
@@ -383,7 +424,13 @@ impl Painter {
 
 /// Starts a cross-fade layer: opacity, blur and a 0.94 -> 1 scale about `pivot`.
 /// The caller draws, then calls `canvas.restore()`.
-fn begin_layer(canvas: &Canvas, bounds: &Rect, opacity: f32, pivot: (f32, f32), scale: f32) {
+pub(crate) fn begin_layer(
+    canvas: &Canvas,
+    bounds: &Rect,
+    opacity: f32,
+    pivot: (f32, f32),
+    scale: f32,
+) {
     let mut p = Paint::default();
     p.set_alpha_f(opacity);
     let sigma = (1.0 - opacity) * 7.0 * scale;

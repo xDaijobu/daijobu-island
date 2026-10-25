@@ -28,6 +28,9 @@ pub const WM_VOLUME_CHANGED: u32 = WM_APP + 3;
 pub const WM_DEFAULT_DEVICE_CHANGED: u32 = WM_APP + 4;
 /// Posted by the low-level keyboard hook (any thread). `wparam` is the virtual-key code.
 pub const WM_VOLUME_KEY: u32 = WM_APP + 5;
+/// Posted from another thread to wake the loop (see [`wake`]). Ids 3..=5 belong to the
+/// volume work above, so this one takes the next free slot.
+pub const WM_WAKE: u32 = WM_APP + 6;
 /// Not exported by the windows crate.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const TIMER_THEMES_DEBOUNCE: usize = 0xD001;
@@ -69,6 +72,10 @@ pub enum Event {
     DefaultDeviceChanged,
     /// A volume key was pressed (virtual-key code). Its default action is swallowed.
     VolumeKey(u32),
+    /// The Music engine has queued messages (drain them with its `poll`).
+    Music,
+    /// Another thread has results ready (see [`wake`]).
+    Wake,
 }
 
 pub trait Handler {
@@ -91,6 +98,26 @@ fn push(ev: Event) {
 
 fn pop() -> Option<Event> {
     QUEUE.with(|q| q.borrow_mut().pop_front())
+}
+
+/// Queues an event from a callback on the UI thread. It is handled after the
+/// current message is dispatched.
+pub fn push_event(ev: Event) {
+    push(ev);
+}
+
+/// Wakes the UI loop from any thread so a `Wake` event is delivered.
+pub fn wake(hwnd: isize) {
+    // SAFETY: PostMessageW is the thread-safe way to reach the window's thread; a
+    // stale handle just makes it fail.
+    unsafe {
+        let _ = PostMessageW(
+            Some(HWND(hwnd as *mut core::ffi::c_void)),
+            WM_WAKE,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    }
 }
 
 /// Geometry of the primary monitor in device pixels.
@@ -349,6 +376,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         WM_DISPLAYCHANGE => {
             push(Event::DisplayChange);
+            return LRESULT(0);
+        }
+        WM_WAKE => {
+            push(Event::Wake);
             return LRESULT(0);
         }
         WM_THEMES_CHANGED => {
