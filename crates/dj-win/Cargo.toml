@@ -1,0 +1,8 @@
+[package]
+name = "dj-win"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dj-core = { path = "../dj-core" }
+windows = { workspace = true }

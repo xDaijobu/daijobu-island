@@ -1,0 +1,13 @@
+[package]
+name = "daijobu"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "daijobu"
+path = "src/main.rs"
+
+[dependencies]
+dj-core = { path = "../crates/dj-core" }
+dj-render = { path = "../crates/dj-render" }
+dj-win = { path = "../crates/dj-win" }
