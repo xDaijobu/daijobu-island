@@ -28,6 +28,8 @@ pub const WM_VOLUME_CHANGED: u32 = WM_APP + 3;
 pub const WM_DEFAULT_DEVICE_CHANGED: u32 = WM_APP + 4;
 /// Posted by the low-level keyboard hook (any thread). `wparam` is the virtual-key code.
 pub const WM_VOLUME_KEY: u32 = WM_APP + 5;
+/// Posted by the vitals worker thread: a new reading is queued.
+pub const WM_VITALS: u32 = WM_APP + 6;
 /// Not exported by the windows crate.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const TIMER_THEMES_DEBOUNCE: usize = 0xD001;
@@ -69,6 +71,8 @@ pub enum Event {
     DefaultDeviceChanged,
     /// A volume key was pressed (virtual-key code). Its default action is swallowed.
     VolumeKey(u32),
+    /// The vitals worker queued a new reading.
+    VitalsReady,
 }
 
 pub trait Handler {
@@ -201,6 +205,14 @@ pub fn set_visible(hwnd: HWND, visible: bool) {
 pub fn dpi_for_window(hwnd: HWND) -> u32 {
     // SAFETY: valid window handle.
     unsafe { GetDpiForWindow(hwnd).max(96) }
+}
+
+/// Posts `msg` to the overlay window from any thread. `hwnd` is the handle's raw value.
+pub fn post_to(hwnd: isize, msg: u32) {
+    // SAFETY: PostMessageW is thread-safe; a stale handle just makes the post fail.
+    unsafe {
+        let _ = PostMessageW(Some(HWND(hwnd as *mut _)), msg, WPARAM(0), LPARAM(0));
+    }
 }
 
 pub fn set_timer(hwnd: HWND, id: usize, ms: u32) {
@@ -366,6 +378,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         WM_VOLUME_KEY => {
             push(Event::VolumeKey(wp.0 as u32));
+            return LRESULT(0);
+        }
+        WM_VITALS => {
+            push(Event::VitalsReady);
             return LRESULT(0);
         }
         WM_TIMER => {
