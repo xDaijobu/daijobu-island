@@ -7,7 +7,7 @@ use crate::fx::Effects;
 use crate::icons::{draw_icon, draw_lock, draw_volume_icon};
 use crate::vitals::{format_rate, ring_sweep, spark_points};
 use dj_core::color::Rgb;
-use dj_core::features::FEATURES;
+use dj_core::features::{Availability, FEATURES};
 use dj_core::island::{IslandView, MusicUi};
 use dj_core::layout::{self, Rect as LRect};
 use dj_core::music::NowPlaying;
@@ -314,7 +314,12 @@ impl Painter {
                 ),
                 &stroke_paint(col(t.surface2, 0.9), 1.0),
             );
-            let ink = if hovered { t.text } else { t.text_dim };
+            let open = feat.availability == Availability::Available;
+            let ink = match (open, hovered) {
+                (true, _) => t.accent,
+                (false, true) => t.text,
+                (false, false) => t.text_dim,
+            };
             let (cx, top) = (tr.center_x(), tr.top);
             draw_icon(
                 canvas,
@@ -324,13 +329,15 @@ impl Painter {
                 24.0 * s,
                 &stroke_paint(col(ink, 0.95), 1.6 * s),
             );
-            draw_lock(
-                canvas,
-                tr.right - 11.0 * s,
-                top + 11.0 * s,
-                10.0 * s,
-                &fill_paint(col(t.text_dim, 0.75)),
-            );
+            if !open {
+                draw_lock(
+                    canvas,
+                    tr.right - 11.0 * s,
+                    top + 11.0 * s,
+                    10.0 * s,
+                    &fill_paint(col(t.text_dim, 0.75)),
+                );
+            }
             let name = feat.name.to_uppercase();
             let tracking = 0.7 * s;
             let nm = fit(&name_font, &name, tracking, tr.width() - 8.0 * s);
@@ -368,7 +375,18 @@ impl Painter {
         let hint_a = hint.as_ref().map_or(0.0, |h| h.1);
         let idle_line = match f.notice {
             Some(n) => (fit(&small, &n.to_uppercase(), tracking, room), t.warn),
-            None => ("13 FEATURES - ALL COMING SOON".to_string(), t.text_dim),
+            None => {
+                let ready = FEATURES
+                    .iter()
+                    .filter(|f| f.availability == Availability::Available)
+                    .count();
+                let line = if ready == 0 {
+                    format!("{} FEATURES - ALL COMING SOON", FEATURES.len())
+                } else {
+                    format!("{ready} OF {} READY - MORE COMING SOON", FEATURES.len())
+                };
+                (line, t.text_dim)
+            }
         };
         draw_text(
             canvas,
