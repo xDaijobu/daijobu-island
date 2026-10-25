@@ -11,7 +11,7 @@ use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction};
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
-use dj_core::sweep::{Estimate, Phase, SweepCache, SweepCmd, SweepView};
+use dj_core::sweep::{format_bytes, Estimate, Phase, Removal, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
@@ -369,6 +369,18 @@ impl App {
         }
     }
 
+    /// Previewed bytes of the `gone` items whose category goes to the Recycle Bin.
+    fn recycled_bytes(&self, gone: &[PathBuf]) -> u64 {
+        self.sweep
+            .cats
+            .iter()
+            .filter(|c| c.cat.removal() == Removal::Recycle)
+            .flat_map(|c| c.items.iter())
+            .filter(|i| gone.contains(&i.path))
+            .map(|i| i.bytes)
+            .fold(0, u64::saturating_add)
+    }
+
     /// Applies the sweep worker's results.
     fn drain_sweep(&mut self) {
         let msgs: Vec<Msg> = self.sweeper.drain().collect();
@@ -404,9 +416,27 @@ impl App {
                     }
                 }
                 Msg::Progress { done, total } => self.sweep.clean_progress(done, total),
-                Msg::Cleaned { freed, failed, gone } => {
+                Msg::Cleaned {
+                    freed,
+                    failed,
+                    gone,
+                } => {
                     self.cleaning = false;
-                    self.sweep.finish_clean(freed, failed, &gone);
+                    // Recycled bytes still sit on the disk (in the bin), so "Freed" only
+                    // counts permanent removals and the bin share is named separately.
+                    let recycled = self.recycled_bytes(&gone).min(freed);
+                    self.sweep.finish_clean(freed - recycled, failed, &gone);
+                    if recycled > 0 {
+                        let mut line = format!(
+                            "Freed {} · {} to bin",
+                            format_bytes(freed - recycled),
+                            format_bytes(recycled)
+                        );
+                        if failed > 0 {
+                            line.push_str(&format!(" · {failed} failed"));
+                        }
+                        self.sweep.status = Some(line);
+                    }
                     self.store_estimate();
                     // The disk ring and the score move at once.
                     self.worker.sample_now();
