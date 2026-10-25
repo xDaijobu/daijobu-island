@@ -95,7 +95,7 @@ pub fn top_procs(entries: &[ProcUsage], n: usize) -> TopProcs {
     cpu.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
     cpu.truncate(n);
     let mut ram: Vec<ProcUsage> = merged.into_iter().filter(|m| m.ram_bytes > 0).collect();
-    ram.sort_by(|a, b| b.ram_bytes.cmp(&a.ram_bytes));
+    ram.sort_by_key(|m| std::cmp::Reverse(m.ram_bytes));
     ram.truncate(n);
     TopProcs { cpu, ram }
 }

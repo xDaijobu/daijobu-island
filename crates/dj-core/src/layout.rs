@@ -267,8 +267,10 @@ mod tests {
                 assert!(apart(a, b), "{a:?} overlaps {b:?}");
             }
         }
-        assert!(VITALS_SWEEP.x + VITALS_SWEEP.w <= VITALS_W);
-        assert!(VITALS_SWEEP.y + VITALS_SWEEP.h <= VITALS_H);
+        const {
+            assert!(VITALS_SWEEP.x + VITALS_SWEEP.w <= VITALS_W);
+            assert!(VITALS_SWEEP.y + VITALS_SWEEP.h <= VITALS_H);
+        }
     }
 
     #[test]
