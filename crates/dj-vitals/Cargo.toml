@@ -1,0 +1,9 @@
+[package]
+name = "dj-vitals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dj-core = { path = "../dj-core" }
+windows = { workspace = true, features = [] }
