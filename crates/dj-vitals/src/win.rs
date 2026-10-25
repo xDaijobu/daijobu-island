@@ -17,8 +17,8 @@ use windows::Win32::System::Performance::{
     PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterValue,
     PdhOpenQueryW, PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
 };
-use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::SystemInformation::{
     GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX,
 };
@@ -174,7 +174,12 @@ fn value(counter: isize) -> Option<f64> {
     let mut v = PDH_FMT_COUNTERVALUE::default();
     // SAFETY: `counter` belongs to the open query and `v` is a live local out-value.
     let status = unsafe {
-        PdhGetFormattedCounterValue(PDH_HCOUNTER(counter as *mut _), PDH_FMT_DOUBLE, None, &mut v)
+        PdhGetFormattedCounterValue(
+            PDH_HCOUNTER(counter as *mut _),
+            PDH_FMT_DOUBLE,
+            None,
+            &mut v,
+        )
     };
     if status != 0 || !matches!(v.CStatus, PDH_CSTATUS_VALID_DATA | PDH_CSTATUS_NEW_DATA) {
         return None;

@@ -87,7 +87,10 @@ pub enum ClickOutcome {
     OpenSweep,
     /// A click inside the Sweep view, in view-local px. The app passes it to
     /// `SweepView::click`.
-    Sweep { x: f32, y: f32 },
+    Sweep {
+        x: f32,
+        y: f32,
+    },
 }
 
 /// Opacity of each content layer, 0..1. At most one is 1 once settled.

@@ -89,6 +89,8 @@ mod tests {
     #[test]
     fn sweep_is_not_a_tile() {
         // Sweep moved into the Vitals panel (Stage 5).
-        assert!(FEATURES.iter().all(|f| f.id != "sweep" && f.icon != Icon::Sweep));
+        assert!(FEATURES
+            .iter()
+            .all(|f| f.id != "sweep" && f.icon != Icon::Sweep));
     }
 }

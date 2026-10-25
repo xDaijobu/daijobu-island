@@ -243,9 +243,8 @@ mod tests {
     fn sweep_controls_fit_and_do_not_overlap() {
         let mut rects = vec![SW_BACK, SW_DNS, SW_BIN, SW_CLEAN];
         rects.extend((0..5).map(sw_row));
-        let bounds = |r: &Rect| {
-            r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= SWEEP_W && r.y + r.h <= SWEEP_H
-        };
+        let bounds =
+            |r: &Rect| r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= SWEEP_W && r.y + r.h <= SWEEP_H;
         let apart = |a: &Rect, b: &Rect| {
             a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y
         };

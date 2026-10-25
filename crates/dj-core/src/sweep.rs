@@ -234,9 +234,15 @@ pub enum Phase {
     Scanning,
     /// The preview is complete. "Clean" is enabled when something is selected.
     Ready,
-    Cleaning { done: usize, total: usize },
+    Cleaning {
+        done: usize,
+        total: usize,
+    },
     /// The result line: bytes freed and items that could not be removed.
-    Done { freed: u64, failed: usize },
+    Done {
+        freed: u64,
+        failed: usize,
+    },
 }
 
 /// A pending two-step action: the first click arms it, the second runs it.
@@ -574,7 +580,10 @@ mod tests {
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(1536), "1.5 KB");
         assert_eq!(format_bytes(412 * 1024 * 1024), "412 MB");
-        assert_eq!(format_bytes((6.8 * 1024.0 * 1024.0 * 1024.0) as u64), "6.8 GB");
+        assert_eq!(
+            format_bytes((6.8 * 1024.0 * 1024.0 * 1024.0) as u64),
+            "6.8 GB"
+        );
         assert_eq!(format_bytes(u64::MAX), "16777216 TB");
     }
 
@@ -584,8 +593,14 @@ mod tests {
         assert_eq!(Estimate::from_cache(&none, false), Estimate::Unknown);
         assert_eq!(Estimate::from_cache(&none, true), Estimate::Scanning);
         let c = SweepCache::from_totals(5, &[(Category::Temp, 3 * 1024 * 1024)]);
-        assert_eq!(Estimate::from_cache(&c, true), Estimate::Ready(3 * 1024 * 1024));
-        assert_eq!(Estimate::Ready(3 * 1024 * 1024).label(), "3.0 MB reclaimable");
+        assert_eq!(
+            Estimate::from_cache(&c, true),
+            Estimate::Ready(3 * 1024 * 1024)
+        );
+        assert_eq!(
+            Estimate::Ready(3 * 1024 * 1024).label(),
+            "3.0 MB reclaimable"
+        );
         assert_eq!(Estimate::Unknown.label(), "sweep");
     }
 
@@ -639,7 +654,10 @@ mod tests {
         let mut v = SweepView::new();
         v.set_category(Category::Temp, vec![item("t", 10)], None);
         assert!(!v.can_clean(), "still scanning");
-        assert_eq!(v.click(mid(layout::SW_CLEAN).0, mid(layout::SW_CLEAN).1), None);
+        assert_eq!(
+            v.click(mid(layout::SW_CLEAN).0, mid(layout::SW_CLEAN).1),
+            None
+        );
         v.finish_scan();
         assert!(v.can_clean());
         let (x, y) = mid(layout::SW_CLEAN);
@@ -724,7 +742,10 @@ mod tests {
             Some(SweepCmd::Recycle(PathBuf::from("big1")))
         );
         let (gx, gy) = mid(layout::sw_reveal(0));
-        assert_eq!(v.click(gx, gy), Some(SweepCmd::Reveal(PathBuf::from("big0"))));
+        assert_eq!(
+            v.click(gx, gy),
+            Some(SweepCmd::Reveal(PathBuf::from("big0")))
+        );
     }
 
     #[test]
@@ -740,13 +761,22 @@ mod tests {
         v.begin_clean(3);
         let r = layout::sw_row(0);
         v.click(r.x + 10.0, r.y + 5.0);
-        assert!(v.cat(Category::Temp).checked, "ticks are locked while cleaning");
+        assert!(
+            v.cat(Category::Temp).checked,
+            "ticks are locked while cleaning"
+        );
         let (x, y) = mid(layout::SW_DNS);
         assert_eq!(v.click(x, y), None);
         v.clean_progress(2, 3);
         assert_eq!(v.phase, Phase::Cleaning { done: 2, total: 3 });
         v.finish_clean(400, 1, &[PathBuf::from("t1"), PathBuf::from("t2")]);
-        assert_eq!(v.phase, Phase::Done { freed: 400, failed: 1 });
+        assert_eq!(
+            v.phase,
+            Phase::Done {
+                freed: 400,
+                failed: 1
+            }
+        );
         assert_eq!(v.cat(Category::Temp).bytes, 0);
         assert!(!v.can_clean());
         let (cx, cy) = mid(layout::SW_CLEAN);

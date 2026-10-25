@@ -124,10 +124,7 @@ impl Sampler {
                 }
             })
             .collect();
-        self.procs = procs
-            .iter()
-            .map(|p| (p.pid, (p.created, p.cpu)))
-            .collect();
+        self.procs = procs.iter().map(|p| (p.pid, (p.created, p.cpu))).collect();
         self.procs_at = Some(now);
         top_procs(&entries, TOP_N)
     }

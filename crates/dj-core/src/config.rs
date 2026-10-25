@@ -50,10 +50,16 @@ pub struct SweepConfig {
 impl Default for SweepConfig {
     fn default() -> Self {
         Self {
-            project_roots: ["~/Documents", "~/Projects", "~/Code", "~/source/repos", "~/dev"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            project_roots: [
+                "~/Documents",
+                "~/Projects",
+                "~/Code",
+                "~/source/repos",
+                "~/dev",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
         }
     }
 }

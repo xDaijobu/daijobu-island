@@ -87,11 +87,7 @@ pub fn top_procs(entries: &[ProcUsage], n: usize) -> TopProcs {
     for m in &mut merged {
         m.cpu_pct = m.cpu_pct.min(100.0);
     }
-    let mut cpu: Vec<ProcUsage> = merged
-        .iter()
-        .filter(|m| m.cpu_pct > 0.0)
-        .cloned()
-        .collect();
+    let mut cpu: Vec<ProcUsage> = merged.iter().filter(|m| m.cpu_pct > 0.0).cloned().collect();
     cpu.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
     cpu.truncate(n);
     let mut ram: Vec<ProcUsage> = merged.into_iter().filter(|m| m.ram_bytes > 0).collect();

@@ -145,7 +145,11 @@ const MB: f64 = 1024.0 * 1024.0;
 
 /// Disk I/O (read + write): none up to 50 MB/s, linear up to 10 at 150 MB/s and above.
 fn io_penalty(bps: f64) -> f64 {
-    let mbps = if bps.is_finite() { bps.max(0.0) / MB } else { 0.0 };
+    let mbps = if bps.is_finite() {
+        bps.max(0.0) / MB
+    } else {
+        0.0
+    };
     if mbps <= 50.0 {
         0.0
     } else if mbps < 150.0 {
