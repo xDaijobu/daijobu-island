@@ -7,12 +7,14 @@ use crate::fx::Effects;
 use crate::icons::{draw_icon, draw_lock, draw_volume_icon};
 use crate::vitals::{format_rate, ring_sweep, spark_points};
 use dj_core::color::Rgb;
-use dj_core::features::{Availability, FEATURES};
+use dj_core::features::{Availability, Icon, FEATURES};
+use dj_core::health::Reason;
 use dj_core::island::{IslandView, MusicUi};
 use dj_core::layout::{self, Rect as LRect};
 use dj_core::music::NowPlaying;
+use dj_core::sweep::{format_bytes, Estimate, SweepView};
 use dj_core::theme::ResolvedTokens;
-use dj_core::vitals::Vitals;
+use dj_core::vitals::{ProcUsage, Vitals};
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::paint::{Cap, Join, Style};
 use skia_safe::{
@@ -34,6 +36,10 @@ pub struct Frame<'a> {
     pub vitals: &'a Vitals,
     /// Config `[vitals] health_lamp`: the idle lamp follows the health band.
     pub health_lamp: bool,
+    /// The Sweep view's state, drawn while `view.layers.sweep` is up.
+    pub sweep: &'a SweepView,
+    /// What the Vitals panel's Sweep button shows.
+    pub estimate: Estimate,
 }
 
 /// What the Music views draw. Built by the app from the Music session.
@@ -47,6 +53,9 @@ pub struct MusicFrame<'a> {
     /// Playback position in seconds, interpolated between state messages.
     pub pos: f32,
 }
+
+/// Title, left and right x, rows (None before the first sample), and CPU vs RAM.
+type TopColumn<'a> = (&'static str, f32, f32, Option<&'a [ProcUsage]>, bool);
 
 pub struct Painter {
     pub(crate) fonts: Fonts,
@@ -177,6 +186,7 @@ impl Painter {
         let compact_op = smoothstep(0.35, 1.0, lay.compact) * not_osd;
         let expanded_op = smoothstep(0.35, 1.0, lay.expanded) * not_osd;
         let vitals_op = smoothstep(0.35, 1.0, lay.vitals) * not_osd;
+        let sweep_op = smoothstep(0.35, 1.0, lay.sweep) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -201,6 +211,11 @@ impl Painter {
         if vitals_op > 0.01 {
             begin_layer(canvas, &rect, vitals_op, center, s);
             self.vitals_panel(canvas, f, &rect);
+            canvas.restore();
+        }
+        if sweep_op > 0.01 {
+            begin_layer(canvas, &rect, sweep_op, center, s);
+            self.sweep_view(canvas, f, &rect);
             canvas.restore();
         }
         if osd_a > 0.01 {
@@ -411,8 +426,9 @@ impl Painter {
         }
     }
 
-    /// Vitals panel, 400 x 150: header with score and band, three rings, the net
-    /// text with a sparkline, then battery (when present) and the top reason tag.
+    /// Vitals panel, 400 x 220 (`layout::VITALS_*`): header with score and band, three
+    /// rings, the net text with a sparkline and disk I/O, the top-3 processes by CPU and
+    /// by RAM, then the reason tag, battery and the Sweep button at `VITALS_SWEEP`.
     /// Layout follows plan.html. Before the first reading the values show "…".
     fn vitals_panel(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
         let (s, t) = (f.scale, f.tokens);
@@ -570,12 +586,98 @@ impl Painter {
             canvas.draw_path(&b.detach(), &stroke_paint(col(t.accent, 1.0), 1.5 * s));
         }
 
-        // Bottom row: the top reason tag on the left, battery on the right.
-        let row_cy = oy + 132.0 * s;
+        // Disk I/O under the sparkline, level with the ring names.
+        let io = match reading {
+            Some(r) => format!(
+                "io r {} · w {}",
+                format_rate(r.disk_read_bps),
+                format_rate(r.disk_write_bps)
+            ),
+            None => "io …".to_string(),
+        };
+        let io = fit(&name_font, &io, 0.0, net_w);
+        draw_text(
+            canvas,
+            &name_font,
+            &io,
+            net_x,
+            oy + 115.0 * s,
+            0.0,
+            &fill_paint(col(t.text_dim, 1.0)),
+        );
+
+        // Top processes: CPU on the left, RAM on the right, three rows each.
+        let top = f.vitals.top();
+        let row_font = self.fonts.font(&t.font_label, Weight::Regular, 9.5 * s);
+        let columns: [TopColumn; 2] = [
+            ("TOP CPU", 20.0, 188.0, top.map(|p| p.cpu.as_slice()), true),
+            (
+                "TOP RAM",
+                212.0,
+                380.0,
+                top.map(|p| p.ram.as_slice()),
+                false,
+            ),
+        ];
+        canvas.draw_line(
+            (ox + 20.0 * s, oy + 124.0 * s),
+            (ox + 380.0 * s, oy + 124.0 * s),
+            &stroke_paint(col(t.surface2, 0.8), 1.0),
+        );
+        for (title, x0, x1, rows, is_cpu) in columns {
+            let (left, right_x) = (ox + x0 * s, ox + x1 * s);
+            draw_text(
+                canvas,
+                &name_font,
+                title,
+                left,
+                oy + 138.0 * s,
+                0.7 * s,
+                &fill_paint(col(t.text_dim, 1.0)),
+            );
+            let rows = rows.unwrap_or(&[]);
+            if top.is_none() || rows.is_empty() {
+                let txt = if top.is_none() { "…" } else { "-" };
+                draw_text(
+                    canvas,
+                    &row_font,
+                    txt,
+                    left,
+                    oy + 152.0 * s,
+                    0.0,
+                    &fill_paint(col(t.text_dim, 1.0)),
+                );
+            }
+            for (k, p) in rows.iter().take(dj_core::vitals::TOP_N).enumerate() {
+                let y = oy + (152.0 + k as f32 * 12.0) * s;
+                let val = if is_cpu {
+                    format!("{:.0}%", p.cpu_pct.clamp(0.0, 100.0))
+                } else {
+                    format_bytes(p.ram_bytes)
+                };
+                let vw = text_width(&row_font, &val, 0.0);
+                draw_text(
+                    canvas,
+                    &row_font,
+                    &val,
+                    right_x - vw,
+                    y,
+                    0.0,
+                    &fill_paint(col(t.text_dim, 1.0)),
+                );
+                let name = fit(&row_font, &p.name, 0.0, right_x - vw - 8.0 * s - left);
+                draw_text(canvas, &row_font, &name, left, y, 0.0, &ink);
+            }
+        }
+
+        // Bottom row: the top reason tag and battery on the left, Sweep on the right.
+        let btn = layout::VITALS_SWEEP;
+        let row_cy = oy + (btn.y + btn.h / 2.0) * s;
+        let mut cursor = ox + 20.0 * s;
         if let Some(reason) = health.and_then(|h| h.reasons.first()) {
             let text = reason.tag();
             let tw = text_width(&name_font, text, 0.0);
-            let tag = Rect::from_xywh(ox + 20.0 * s, row_cy - 8.0 * s, tw + 14.0 * s, 16.0 * s);
+            let tag = Rect::from_xywh(cursor, row_cy - 8.0 * s, tw + 14.0 * s, 16.0 * s);
             let tag_r = 8.0 * s;
             canvas.draw_rrect(
                 RRect::new_rect_xy(tag, tag_r, tag_r),
@@ -590,20 +692,70 @@ impl Painter {
                 0.0,
                 &fill_paint(col(t.warn, 1.0)),
             );
+            cursor = tag.right + 10.0 * s;
         }
         if let Some(b) = reading.and_then(|r| r.battery) {
             let txt = format!("BAT {}%{}", b.percent, if b.charging { " +" } else { "" });
-            let bw = text_width(&label, &txt, 0.0);
             draw_text(
                 canvas,
                 &label,
                 &txt,
-                right - bw,
+                cursor,
                 row_cy + 0.35 * 10.0 * s,
                 0.0,
                 &fill_paint(col(t.text_dim, 1.0)),
             );
         }
+
+        // Sweep button: broom + estimate. Filled with the accent when the disk is low.
+        let low_disk = health.is_some_and(|h| h.reasons.contains(&Reason::LowDisk));
+        let br = Rect::from_xywh(ox + btn.x * s, oy + btn.y * s, btn.w * s, btn.h * s);
+        let rad = br.height() / 2.0;
+        let (body, edge, btn_ink) = if low_disk {
+            (col(t.accent, 1.0), col(t.accent, 1.0), t.pill)
+        } else {
+            (col(t.surface1, 1.0), col(t.surface2, 0.9), t.text)
+        };
+        if low_disk {
+            let halo = br.with_outset((2.5 * s, 2.5 * s));
+            canvas.draw_rrect(
+                RRect::new_rect_xy(halo, rad + 2.5 * s, rad + 2.5 * s),
+                &stroke_paint(col(t.accent, 0.35), 1.5 * s),
+            );
+        }
+        canvas.draw_rrect(RRect::new_rect_xy(br, rad, rad), &fill_paint(body));
+        canvas.draw_rrect(
+            RRect::new_rect_xy(br.with_inset((0.5, 0.5)), rad - 0.5, rad - 0.5),
+            &stroke_paint(edge, 1.0),
+        );
+        let icon_size = 14.0 * s;
+        let gap = 6.0 * s;
+        let btn_font = self.fonts.font(&t.font_label, Weight::Medium, 10.5 * s);
+        let txt = fit(
+            &btn_font,
+            &f.estimate.label(),
+            0.0,
+            br.width() - icon_size - gap - 20.0 * s,
+        );
+        let tw = text_width(&btn_font, &txt, 0.0);
+        let x0 = br.center_x() - (icon_size + gap + tw) / 2.0;
+        draw_icon(
+            canvas,
+            Icon::Sweep,
+            x0 + icon_size / 2.0,
+            row_cy,
+            icon_size,
+            &stroke_paint(col(btn_ink, 1.0), 1.4 * s),
+        );
+        draw_text(
+            canvas,
+            &btn_font,
+            &txt,
+            x0 + icon_size + gap,
+            row_cy + 0.35 * 10.5 * s,
+            0.0,
+            &fill_paint(col(btn_ink, 1.0)),
+        );
     }
 
     /// Volume OSD: icon, level bar and percent, centred on the pill.
