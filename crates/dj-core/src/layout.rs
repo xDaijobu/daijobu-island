@@ -1,0 +1,119 @@
+//! Logical-pixel geometry (100% DPI). Positions in `home_*` are relative to the
+//! pill's top-left corner.
+
+use crate::features::FEATURES;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl Rect {
+    pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
+        Self { x, y, w, h }
+    }
+
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
+}
+
+/// Idle pill: 128 x 32, radius 16.
+pub const IDLE_W: f32 = 128.0;
+pub const IDLE_H: f32 = 32.0;
+pub const IDLE_R: f32 = 16.0;
+
+/// Expanded home grid.
+pub const HOME_W: f32 = 520.0;
+pub const HOME_H: f32 = 340.0;
+pub const HOME_R: f32 = 32.0;
+
+/// Gap between the top of the screen and the pill.
+pub const TOP_MARGIN: f32 = 6.0;
+/// Extra window rows below the largest pill so the AA edge is never clipped.
+const BOTTOM_SLACK: f32 = 2.0;
+
+pub const COLS: usize = 5;
+pub const TILE_W: f32 = 88.0;
+pub const TILE_H: f32 = 76.0;
+pub const TILE_GAP: f32 = 8.0;
+const PAD_X: f32 = 24.0;
+const GRID_Y: f32 = 52.0;
+
+pub const HEADER: Rect = Rect::new(PAD_X, 16.0, HOME_W - 2.0 * PAD_X, 28.0);
+pub const FOOTER: Rect = Rect::new(PAD_X, 304.0, HOME_W - 2.0 * PAD_X, 20.0);
+
+/// Window size (logical) that holds the largest state; the swap chain is this size.
+pub fn window_size() -> (f32, f32) {
+    (HOME_W, TOP_MARGIN + HOME_H + BOTTOM_SLACK)
+}
+
+/// One rect per entry of `FEATURES`, in order. A short last row is centred.
+pub fn home_tiles() -> Vec<Rect> {
+    let n = FEATURES.len();
+    let row_w = |count: usize| count as f32 * TILE_W + (count as f32 - 1.0) * TILE_GAP;
+    (0..n)
+        .map(|i| {
+            let (row, col) = (i / COLS, i % COLS);
+            let in_row = (n - row * COLS).min(COLS);
+            let x0 = PAD_X + (row_w(COLS) - row_w(in_row)) / 2.0;
+            Rect::new(
+                x0 + col as f32 * (TILE_W + TILE_GAP),
+                GRID_Y + row as f32 * (TILE_H + TILE_GAP),
+                TILE_W,
+                TILE_H,
+            )
+        })
+        .collect()
+}
+
+pub fn hit_tile(tiles: &[Rect], x: f32, y: f32) -> Option<usize> {
+    tiles.iter().position(|t| t.contains(x, y))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thirteen_tiles_inside_home_and_disjoint() {
+        let tiles = home_tiles();
+        assert_eq!(tiles.len(), 13);
+        let bounds = Rect::new(0.0, 0.0, HOME_W, HOME_H);
+        for (i, a) in tiles.iter().enumerate() {
+            assert!(a.x >= PAD_X - 0.01 && a.x + a.w <= HOME_W - PAD_X + 0.01, "tile {i} x");
+            assert!(a.y >= GRID_Y && a.y + a.h <= FOOTER.y, "tile {i} y");
+            assert!(bounds.contains(a.x, a.y));
+            for b in &tiles[i + 1..] {
+                let apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                assert!(apart);
+            }
+        }
+    }
+
+    #[test]
+    fn last_row_is_centred() {
+        let tiles = home_tiles();
+        let left = tiles[10].x;
+        let right = tiles[12].x + TILE_W;
+        assert!((left + right - HOME_W).abs() < 0.01);
+    }
+
+    #[test]
+    fn hit_testing() {
+        let tiles = home_tiles();
+        let t = tiles[7];
+        assert_eq!(hit_tile(&tiles, t.x + 1.0, t.y + 1.0), Some(7));
+        assert_eq!(hit_tile(&tiles, t.x + t.w + TILE_GAP / 2.0, t.y + 1.0), None);
+        assert_eq!(hit_tile(&tiles, 1.0, 1.0), None);
+    }
+
+    #[test]
+    fn window_holds_home() {
+        let (w, h) = window_size();
+        assert!(w >= HOME_W && h >= TOP_MARGIN + HOME_H);
+    }
+}

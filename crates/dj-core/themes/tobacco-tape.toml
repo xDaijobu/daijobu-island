@@ -1,0 +1,40 @@
+# Tobacco Tape: warm amber, the default.
+[meta]
+name   = "Tobacco Tape"
+author = "daijobu"
+mode   = "dark"
+
+[color]
+pill      = "#14110F"
+surface1  = "#1E1A17"
+surface2  = "#2B2520"
+text      = "#EDE3D2"
+text_dim  = "#A39785"
+accent    = "#E0A458"
+warn      = "#D65C4A"
+highlight = "#F2D9A8"
+accent_from_cover = 0.35
+
+[texture]
+grain         = 0.09
+grain_fps     = 18
+dither_levels = 6
+dither_cell   = 2
+scanlines     = 0.0
+
+[type]
+title  = "Geist"
+label  = "Geist Mono"
+digits = "Doto"
+
+[shape]
+radius_scale = 1.0
+hairline     = 0.09
+inner_glow   = 0.14
+
+[motion]
+expand   = { response = 0.45, damping = 0.75 }
+collapse = { response = 0.35, damping = 0.95 }
+
+[visualizer]
+style = "segment"

@@ -1,0 +1,31 @@
+# Paper Zine: photocopy paper, the light theme.
+[meta]
+name   = "Paper Zine"
+author = "daijobu"
+base   = "tobacco-tape"
+mode   = "light"
+
+[color]
+pill      = "#EFE8DA"
+surface1  = "#E4DCCB"
+surface2  = "#CFC5B1"
+text      = "#1E1B17"
+text_dim  = "#6E6555"
+accent    = "#C2452D"
+warn      = "#C2452D"
+highlight = "#1E1B17"
+
+[texture]
+grain         = 0.16
+dither_levels = 3
+
+[shape]
+radius_scale = 0.85
+hairline     = 0.14
+inner_glow   = 0.0
+
+[motion]
+expand = { response = 0.42, damping = 0.8 }
+
+[visualizer]
+style = "block"

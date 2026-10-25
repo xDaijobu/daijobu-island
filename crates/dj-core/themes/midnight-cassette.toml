@@ -1,0 +1,25 @@
+# Midnight Cassette: cold teal, 2 a.m.
+[meta]
+name   = "Midnight Cassette"
+author = "daijobu"
+base   = "tobacco-tape"
+mode   = "dark"
+
+[color]
+pill      = "#0F1214"
+surface1  = "#171C1F"
+surface2  = "#232A2E"
+text      = "#DDE6E3"
+text_dim  = "#8A9A98"
+accent    = "#7FB5A8"
+warn      = "#D9795F"
+highlight = "#BFE3DA"
+
+[texture]
+grain = 0.08
+
+[motion]
+expand   = { response = 0.5, damping = 0.8 }
+
+[visualizer]
+style = "bar"
