@@ -6,11 +6,15 @@ use crate::layout::{self, Rect};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// The reclaimable estimate is refreshed when it is older than this (and the panel opens).
 pub const CACHE_MAX_AGE_SECS: u64 = 6 * 60 * 60;
 /// Rows per page in a category preview list.
 pub const PAGE: usize = 6;
+/// The second click of "empty bin" must come at least this long after the first, so a
+/// double click never empties the bin.
+pub const BIN_CONFIRM_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Category {
@@ -246,11 +250,13 @@ pub enum Phase {
 }
 
 /// A pending two-step action: the first click arms it, the second runs it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Confirm {
-    EmptyBin,
-    /// Index into the big-files list.
-    Recycle(usize),
+    /// Armed at this instant; see [`BIN_CONFIRM_DELAY`].
+    EmptyBin(Instant),
+    /// The big file to recycle. Armed by path, so a list that changes under the
+    /// pointer never moves the confirmation to another file.
+    Recycle(PathBuf),
 }
 
 /// What the app must do after a click in the Sweep view.
@@ -337,6 +343,16 @@ impl SweepView {
         c.items = items;
         c.scanned = true;
         c.note = note;
+        if matches!(self.confirm, Some(Confirm::Recycle(_))) {
+            self.disarm();
+        }
+    }
+
+    /// Drops a pending confirmation and its status line.
+    fn disarm(&mut self) {
+        if self.confirm.take().is_some() {
+            self.status = None;
+        }
     }
 
     /// The preview is complete: "Clean" may enable.
@@ -406,6 +422,9 @@ impl SweepView {
 
     /// Drops one item (after it was recycled on its own).
     pub fn forget(&mut self, path: &PathBuf) {
+        if matches!(&self.confirm, Some(Confirm::Recycle(p)) if p == path) {
+            self.disarm();
+        }
         for c in &mut self.cats {
             if let Some(i) = c.items.iter().position(|it| &it.path == path) {
                 let it = c.items.remove(i);
@@ -437,6 +456,11 @@ impl SweepView {
     /// Handles a click at pill-local `(x, y)`. UI-only clicks (ticks, previews, pages,
     /// the first click of a confirm) change the view and return None.
     pub fn click(&mut self, x: f32, y: f32) -> Option<SweepCmd> {
+        self.click_at(x, y, Instant::now())
+    }
+
+    /// [`click`](Self::click) at a given time, for the empty-bin delay.
+    pub fn click_at(&mut self, x: f32, y: f32, now: Instant) -> Option<SweepCmd> {
         let armed = self.confirm.take();
         let hit = |r: Rect| r.contains(x, y);
         let busy = matches!(self.phase, Phase::Cleaning { .. });
@@ -464,11 +488,16 @@ impl SweepView {
                 return Some(SweepCmd::FlushDns);
             }
             if hit(layout::SW_BIN) {
-                if armed == Some(Confirm::EmptyBin) {
-                    self.status = None;
-                    return Some(SweepCmd::EmptyBin);
+                if let Some(Confirm::EmptyBin(at)) = armed {
+                    if now.saturating_duration_since(at) >= BIN_CONFIRM_DELAY {
+                        self.status = None;
+                        return Some(SweepCmd::EmptyBin);
+                    }
+                    // Too quick, like a double click: stay armed from the first click.
+                    self.confirm = Some(Confirm::EmptyBin(at));
+                    return None;
                 }
-                self.confirm = Some(Confirm::EmptyBin);
+                self.confirm = Some(Confirm::EmptyBin(now));
                 self.status = Some("click again to empty the bin".into());
                 return None;
             }
@@ -517,21 +546,21 @@ impl SweepView {
         if cat != Category::BigFiles || busy {
             return None;
         }
-        let rows: Vec<(usize, PathBuf)> = self
+        let rows: Vec<PathBuf> = self
             .page_items()
             .into_iter()
-            .map(|(i, it)| (i, it.path.clone()))
+            .map(|(_, it)| it.path.clone())
             .collect();
-        for (slot, (index, path)) in rows.into_iter().enumerate() {
+        for (slot, path) in rows.into_iter().enumerate() {
             if hit(layout::sw_reveal(slot)) {
                 return Some(SweepCmd::Reveal(path));
             }
             if hit(layout::sw_recycle(slot)) {
-                if armed == Some(Confirm::Recycle(index)) {
+                if matches!(&armed, Some(Confirm::Recycle(p)) if *p == path) {
                     self.status = None;
                     return Some(SweepCmd::Recycle(path));
                 }
-                self.confirm = Some(Confirm::Recycle(index));
+                self.confirm = Some(Confirm::Recycle(path));
                 self.status = Some("click again to recycle".into());
                 return None;
             }
@@ -723,20 +752,26 @@ mod tests {
     fn recycle_and_empty_bin_need_two_clicks() {
         let mut v = ready_view();
         let (bx, by) = mid(layout::SW_BIN);
-        assert_eq!(v.click(bx, by), None);
-        assert_eq!(v.confirm, Some(Confirm::EmptyBin));
-        assert_eq!(v.click(bx, by), Some(SweepCmd::EmptyBin));
+        let t0 = Instant::now();
+        let later = t0 + BIN_CONFIRM_DELAY;
+        assert_eq!(v.click_at(bx, by, t0), None);
+        assert_eq!(v.confirm, Some(Confirm::EmptyBin(t0)));
+        // A double click does not empty the bin, and keeps the first click's time.
+        let quick = t0 + Duration::from_millis(150);
+        assert_eq!(v.click_at(bx, by, quick), None);
+        assert_eq!(v.confirm, Some(Confirm::EmptyBin(t0)));
+        assert_eq!(v.click_at(bx, by, later), Some(SweepCmd::EmptyBin));
         // Another click in between disarms it.
-        v.click(bx, by);
-        v.click(5.0, 230.0);
+        v.click_at(bx, by, t0);
+        v.click_at(5.0, 230.0, t0);
         assert_eq!(v.confirm, None);
-        assert_eq!(v.click(bx, by), None);
+        assert_eq!(v.click_at(bx, by, later), None);
 
         v.preview = Some((Category::BigFiles, 0));
         v.confirm = None;
         let (rx, ry) = mid(layout::sw_recycle(1));
         assert_eq!(v.click(rx, ry), None);
-        assert_eq!(v.confirm, Some(Confirm::Recycle(1)));
+        assert_eq!(v.confirm, Some(Confirm::Recycle(PathBuf::from("big1"))));
         assert_eq!(
             v.click(rx, ry),
             Some(SweepCmd::Recycle(PathBuf::from("big1")))
@@ -746,6 +781,31 @@ mod tests {
             v.click(gx, gy),
             Some(SweepCmd::Reveal(PathBuf::from("big0")))
         );
+    }
+
+    #[test]
+    fn recycle_confirm_follows_the_file_not_the_row() {
+        let mut v = ready_view();
+        v.preview = Some((Category::BigFiles, 0));
+        let (rx, ry) = mid(layout::sw_recycle(1));
+        v.click(rx, ry);
+        assert_eq!(v.confirm, Some(Confirm::Recycle(PathBuf::from("big1"))));
+
+        // big0 goes away, so big2 slides into row 1. The second click there arms big2
+        // instead of recycling it.
+        v.forget(&PathBuf::from("big0"));
+        assert_eq!(v.page_items()[1].1.path, PathBuf::from("big2"));
+        assert_eq!(v.click(rx, ry), None);
+        assert_eq!(v.confirm, Some(Confirm::Recycle(PathBuf::from("big2"))));
+
+        // Forgetting the armed file disarms it, and so does a new big-files list.
+        v.forget(&PathBuf::from("big2"));
+        assert_eq!(v.confirm, None);
+        assert_eq!(v.status, None);
+        v.click(rx, ry);
+        assert!(v.confirm.is_some());
+        v.set_category(Category::BigFiles, vec![item("other", 9)], None);
+        assert_eq!(v.confirm, None);
     }
 
     #[test]

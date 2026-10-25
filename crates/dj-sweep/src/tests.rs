@@ -83,6 +83,8 @@ fn paths(s: &CategoryScan) -> Vec<PathBuf> {
 struct FakeOps {
     calls: Mutex<Vec<(&'static str, PathBuf)>>,
     fail: Mutex<HashSet<PathBuf>>,
+    /// Recycles of these report "deleted for good", like an item too big for the bin.
+    nuke: Mutex<HashSet<PathBuf>>,
 }
 
 impl FakeOps {
@@ -102,8 +104,13 @@ impl Ops for FakeOps {
     fn remove_permanent(&self, p: &Path) -> io::Result<u64> {
         self.act("remove", p)
     }
-    fn recycle(&self, p: &Path) -> io::Result<()> {
-        self.act("recycle", p).map(|_| ())
+    fn recycle(&self, p: &Path) -> io::Result<Recycled> {
+        self.act("recycle", p)?;
+        Ok(if self.nuke.lock().unwrap().contains(p) {
+            Recycled::DeletedForGood
+        } else {
+            Recycled::InBin
+        })
     }
     fn flush_dns(&self) -> io::Result<()> {
         self.calls.lock().unwrap().push(("dns", PathBuf::new()));
@@ -272,7 +279,7 @@ fn dev_purge_context_depth_and_git() {
     assert_eq!(got, want, "linked junction created: {linked}");
     assert_eq!(
         s.note.as_deref(),
-        Some("1 skipped (recent, tracked by git or contains .git)")
+        Some("1 skipped (recent, too big to check, or under git)")
     );
     let rs = s
         .items
@@ -393,8 +400,11 @@ fn clean_routes_logs_and_reports_progress() {
             ("recycle", big.clone())
         ]
     );
-    assert_eq!(out.freed, 5400);
+    // Recycled bytes are still on the disk, so they are not "freed".
+    assert_eq!(out.freed, 100);
+    assert_eq!(out.recycled, 5300);
     assert_eq!(out.failed, 0);
+    assert!(!out.log_failed);
     assert_eq!(
         out.gone,
         vec![tmp_file.clone(), target.clone(), big.clone()]
@@ -564,6 +574,151 @@ fn clean_reverifies_after_a_path_swap() {
     );
     assert_eq!(out.failed, 1);
     assert!(fx.root.join("t2\\keep").exists());
+}
+
+#[test]
+fn temp_falling_back_to_the_profile_is_never_cleaned() {
+    // TMP and TEMP unset: Windows hands out the profile as the temp folder.
+    let mut fx = Fx::new();
+    let home = fx.home();
+    fx.env.temp = home.clone();
+    let desktop = home.join("Desktop");
+    write(&desktop.join("thesis.docx"), 100);
+    write(&home.join("Downloads\\setup.exe"), 200);
+    let report = fx
+        .env
+        .local_appdata
+        .join("Microsoft\\Windows\\WER\\ReportQueue\\AppHang_y");
+    write(&report.join("Report.wer"), 10);
+
+    // The preview offers only the error report, and says why temp was skipped.
+    let s = fx.scan(Category::Temp);
+    assert_eq!(paths(&s), vec![report]);
+    let note = s.note.unwrap();
+    assert!(note.starts_with("temp files skipped: "), "{note}");
+
+    // Even a hand-made clean list cannot reach the profile's folders.
+    let ops = FakeOps::default();
+    let log = OpLog::new(fx.root.join("operations.log"));
+    let out = clean(
+        &fx.env,
+        &[
+            (Category::Temp, desktop.clone()),
+            (Category::Temp, home.join("Downloads")),
+        ],
+        &ops,
+        &log,
+        "b1",
+        &mut |_, _| {},
+    );
+    assert!(ops.calls().is_empty());
+    assert_eq!(out.failed, 2);
+    assert!(desktop.join("thesis.docx").exists());
+    assert!(home.join("Downloads\\setup.exe").exists());
+
+    // Any other temp folder than %LOCALAPPDATA%\Temp is skipped the same way.
+    for other in [fx.root.join("Temp"), fx.env.local_appdata.clone()] {
+        fx.env.temp = other;
+        assert!(fx.scan(Category::Temp).note.is_some());
+    }
+}
+
+#[test]
+fn scan_env_needs_an_absolute_profile() {
+    let vars = |profile: Option<&str>| {
+        let profile = profile.map(PathBuf::from);
+        move |k: &str| (k == "USERPROFILE").then(|| profile.clone()).flatten()
+    };
+    let temp = PathBuf::from(r"C:\Users\ann\AppData\Local\Temp");
+    for bad in [None, Some(""), Some("ann"), Some(r"C:\"), Some(r"C:\Users")] {
+        assert!(
+            ScanEnv::from_vars(vars(bad), temp.clone(), vec![]).is_err(),
+            "{bad:?}"
+        );
+    }
+    let env = ScanEnv::from_vars(
+        vars(Some(r"C:\Users\ann")),
+        temp,
+        vec![PathBuf::from("relative"), PathBuf::from(r"D:\work")],
+    )
+    .unwrap();
+    assert_eq!(env.profile, PathBuf::from(r"C:\Users\ann"));
+    assert_eq!(
+        env.local_appdata,
+        PathBuf::from(r"C:\Users\ann\AppData\Local")
+    );
+    assert_eq!(env.project_roots, vec![PathBuf::from(r"D:\work")]);
+}
+
+#[test]
+fn a_recycle_that_deleted_for_good_is_logged_as_removed() {
+    let fx = Fx::new();
+    let big = fx.home().join("Videos\\huge.mkv");
+    write(&big, 5000);
+    let ops = FakeOps::default();
+    ops.nuke.lock().unwrap().insert(big.clone());
+    let log = OpLog::new(fx.root.join("operations.log"));
+    let out = clean(
+        &fx.env,
+        &[(Category::BigFiles, big.clone())],
+        &ops,
+        &log,
+        "m2",
+        &mut |_, _| {},
+    );
+    assert_eq!((out.freed, out.recycled, out.failed), (5000, 0, 0));
+    assert_eq!(out.gone, vec![big.clone()]);
+    let lines = log_lines(&fx.root.join("operations.log"));
+    assert!(
+        lines[0].ends_with(&format!(
+            "REMOVED {} (big_files, 4.9 KB, not recycled: deleted for good)",
+            big.display()
+        )),
+        "{}",
+        lines[0]
+    );
+}
+
+#[test]
+fn dev_purge_skips_projects_too_big_to_check() {
+    let fx = Fx::new();
+    let pr = fx.home().join("Projects");
+    write(&pr.join("huge\\Cargo.toml"), 1);
+    write(&pr.join("huge\\target\\x"), 10);
+    let src = pr.join("huge\\src");
+    std::fs::create_dir_all(&src).unwrap();
+    for i in 0..=fs::ACTIVITY_MAX_ENTRIES {
+        std::fs::write(src.join(format!("{i}")), b"").unwrap();
+    }
+    let s = fx.scan(Category::DevPurge);
+    assert!(s.items.is_empty());
+    assert_eq!(
+        s.note.as_deref(),
+        Some("1 skipped (recent, too big to check, or under git)")
+    );
+}
+
+#[test]
+fn oplog_reports_write_errors() {
+    let fx = Fx::new();
+    // The log's folder is a file, so the log cannot be created.
+    write(&fx.root.join("blocker"), 1);
+    let log = OpLog::new(fx.root.join("blocker\\operations.log"));
+    assert!(log
+        .record("r", Action::Removed, Path::new(r"C:\x"), "d")
+        .is_err());
+    let tmp_file = fx.env.temp.join("old.tmp");
+    write(&tmp_file, 10);
+    let out = clean(
+        &fx.env,
+        &[(Category::Temp, tmp_file.clone())],
+        &FakeOps::default(),
+        &log,
+        "r",
+        &mut |_, _| {},
+    );
+    assert_eq!(out.gone, vec![tmp_file]);
+    assert!(out.log_failed);
 }
 
 #[test]

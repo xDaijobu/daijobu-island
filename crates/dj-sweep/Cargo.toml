@@ -9,6 +9,7 @@ dj-core = { path = "../dj-core" }
 serde_json = { workspace = true }
 windows = { workspace = true, features = [
   "Win32_Foundation",
+  "Win32_Storage_FileSystem",
   "Win32_System_Com",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_LibraryLoader",

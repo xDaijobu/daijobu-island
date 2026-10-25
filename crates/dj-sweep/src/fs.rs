@@ -5,7 +5,7 @@
 use crate::rules::{self, CandidateFacts, ProjectFacts};
 use std::fs::{self, Metadata};
 use std::io;
-use std::os::windows::fs::MetadataExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -19,6 +19,12 @@ const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
 const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x4_0000;
 const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const FILE_LIST_DIRECTORY: u32 = 0x1;
+const FILE_READ_ATTRIBUTES: u32 = 0x80;
+const FILE_SHARE_READ: u32 = 0x1;
+const FILE_SHARE_WRITE: u32 = 0x2;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 /// Symlinks, junctions, mount points, cloud placeholders: anything we must not follow.
 pub fn is_reparse(md: &Metadata) -> bool {
@@ -62,7 +68,9 @@ impl<'a> Budget<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tally {
     pub bytes: u64,
-    /// Newest modification time of any file or folder seen (including the root).
+    /// Newest modification or creation time of any file or folder seen (including
+    /// the root). Creation counts because copied or unpacked files keep an old
+    /// modification time.
     pub newest: Option<SystemTime>,
     /// A `.git` folder or file somewhere below the root.
     pub has_git: bool,
@@ -72,7 +80,7 @@ pub struct Tally {
 
 impl Tally {
     fn see(&mut self, md: &Metadata) {
-        if let Ok(t) = md.modified() {
+        for t in [md.modified(), md.created()].into_iter().flatten() {
             self.newest = Some(self.newest.map_or(t, |n| n.max(t)));
         }
     }
@@ -197,14 +205,25 @@ pub fn candidate_facts(dir: &Path) -> CandidateFacts {
     }
 }
 
-/// The newest change to the project's own files: files up to three folders deep,
-/// skipping build-output folders and `.git` internals (except its index and HEAD,
-/// which move on commit and checkout). Folder times are ignored, because creating
-/// `node_modules` alone should not count as work on the project.
-pub fn project_activity(dir: &Path, budget: &Budget) -> Option<SystemTime> {
+/// A project walk stops after this many entries; the project then counts as unknown.
+pub const ACTIVITY_MAX_ENTRIES: usize = 20_000;
+
+/// Folders that are build output or package caches at any depth, so a write inside
+/// them is not work on the project. Any other folder is walked, including `bin`,
+/// `build` and `dist`, which can hold sources.
+const ACTIVITY_SKIP_ANY_DEPTH: &[&str] = &["node_modules", "__pycache__", ".git"];
+
+/// The newest change to the project's own files, at any depth, or `Err` when it
+/// cannot be known within [`ACTIVITY_MAX_ENTRIES`] and the budget (the caller then
+/// leaves the project alone). Skipped: `.git` internals (except its index and HEAD,
+/// which move on commit and checkout), virtual environments, the folders in
+/// [`ACTIVITY_SKIP_ANY_DEPTH`], and direct children that pass the purge context rule
+/// (build output of this very project, like `target` next to `Cargo.toml`). Folder
+/// times are ignored, because creating `node_modules` alone should not count as work.
+pub fn project_activity(dir: &Path, budget: &Budget) -> Result<Option<SystemTime>, String> {
     let mut newest: Option<SystemTime> = None;
     let mut bump = |md: &Metadata| {
-        if let Ok(t) = md.modified() {
+        for t in [md.modified(), md.created()].into_iter().flatten() {
             newest = Some(newest.map_or(t, |n| n.max(t)));
         }
     };
@@ -213,30 +232,43 @@ pub fn project_activity(dir: &Path, budget: &Budget) -> Option<SystemTime> {
             bump(&md);
         }
     }
+    let facts = project_facts(dir);
+    let unknown = || Err("project too big to check for recent work".to_string());
     let mut seen = 0usize;
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     while let Some((d, depth)) = stack.pop() {
-        if budget.over() || seen > 5000 {
-            break;
+        if budget.over() {
+            return unknown();
         }
         let Ok(rd) = fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
             seen += 1;
+            if seen > ACTIVITY_MAX_ENTRIES {
+                return unknown();
+            }
             let Ok(md) = e.metadata() else { continue };
             if is_reparse(&md) {
                 continue;
             }
-            let name = e.file_name().to_string_lossy().to_string();
-            if md.is_dir() {
-                if depth < 3 && !rules::is_purge_name(&name) && !name.eq_ignore_ascii_case(".git") {
-                    stack.push((e.path(), depth + 1));
-                }
-            } else {
+            if !md.is_dir() {
                 bump(&md);
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            let path = e.path();
+            let skip = ACTIVITY_SKIP_ANY_DEPTH
+                .iter()
+                .any(|s| name.eq_ignore_ascii_case(s))
+                || candidate_facts(&path).pyvenv_cfg
+                || (depth == 0
+                    && rules::is_purge_name(&name)
+                    && rules::purge_context_ok(&name, &facts, &candidate_facts(&path)));
+            if !skip {
+                stack.push((path, depth + 1));
             }
         }
     }
-    newest
+    Ok(newest)
 }
 
 /// Does git track anything inside `project\name`? `Ok(false)` when the project is not
@@ -290,20 +322,32 @@ fn remove_rec(p: &Path, freed: &mut u64, err: &mut Option<io::Error>) {
         Err(e) => return note(e, err),
     };
     if is_reparse(&md) {
-        // Remove the link itself. A directory link is removed with RemoveDirectory,
-        // which does not touch the target.
-        // `md.is_dir()` is false for links, so ask the attributes.
-        let r = if md.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
-            fs::remove_dir(p)
-        } else {
-            fs::remove_file(p)
-        };
-        if let Err(e) = r {
+        if let Err(e) = remove_link(p, &md) {
             note(e, err);
         }
         return;
     }
     if md.is_dir() {
+        // Hold the folder open, without delete sharing, while its contents go. Until
+        // the handle closes it cannot be renamed, deleted or swapped for a junction,
+        // so the listing below is of this very folder. The handle is opened on the
+        // reparse point itself, so a swap that happened before it shows up here.
+        let held = match hold_dir(p) {
+            Ok(f) => f,
+            Err(e) => return note(e, err),
+        };
+        match held.metadata() {
+            Ok(h) if is_reparse(&h) => {
+                drop(held);
+                if let Err(e) = remove_link(p, &h) {
+                    note(e, err);
+                }
+                return;
+            }
+            Ok(h) if h.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 => {}
+            Ok(_) => return note(io::Error::other("changed while deleting"), err),
+            Err(e) => return note(e, err),
+        }
         match fs::read_dir(p) {
             Ok(rd) => {
                 for e in rd.flatten() {
@@ -312,6 +356,7 @@ fn remove_rec(p: &Path, freed: &mut u64, err: &mut Option<io::Error>) {
             }
             Err(e) => return note(e, err),
         }
+        drop(held);
         if let Err(e) = fs::remove_dir(p) {
             note(e, err);
         }
@@ -327,6 +372,28 @@ fn remove_rec(p: &Path, freed: &mut u64, err: &mut Option<io::Error>) {
             Err(e) => note(e, err),
         }
     }
+}
+
+/// Removes a link itself. A directory link is removed with RemoveDirectory, which
+/// does not touch the target. `md.is_dir()` is false for links, so ask the attributes.
+fn remove_link(p: &Path, md: &Metadata) -> io::Result<()> {
+    if md.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        fs::remove_dir(p)
+    } else {
+        fs::remove_file(p)
+    }
+}
+
+/// Opens `p` (a folder, or the reparse point itself) for listing, sharing read and
+/// write but not delete, so nobody can rename or remove it while the handle lives.
+/// The list access matters: a handle with attribute access only is ignored by the
+/// share check, and the folder could still be renamed.
+pub fn hold_dir(p: &Path) -> io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(p)
 }
 
 #[cfg(test)]
@@ -494,11 +561,59 @@ mod tests {
         let (_t, root) = tmp();
         let cancel = AtomicBool::new(false);
         let b = Budget::new(Duration::from_secs(30), &cancel);
-        assert_eq!(project_activity(&root, &b), None);
+        assert_eq!(project_activity(&root, &b), Ok(None));
         write(&root.join("node_modules").join("x.js"), 1);
-        assert_eq!(project_activity(&root, &b), None);
-        write(&root.join("src").join("main.rs"), 1);
-        assert!(project_activity(&root, &b).is_some());
+        write(&root.join("a").join("node_modules").join("y.js"), 1);
+        write(&root.join(".venv").join("pyvenv.cfg"), 1);
+        assert_eq!(project_activity(&root, &b), Ok(None));
+        // `target` is build output only next to Cargo.toml (written below), so here
+        // it is walked like any other folder.
+        write(&root.join("target").join("notes.txt"), 1);
+        assert!(project_activity(&root, &b).unwrap().is_some());
+        fs::remove_dir_all(root.join("target")).unwrap();
+        write(&root.join("Cargo.toml"), 1);
+        let marker = project_activity(&root, &b).unwrap();
+        assert!(marker.is_some(), "Cargo.toml itself is a project file");
+        fs::remove_file(root.join("Cargo.toml")).unwrap();
+        // Deep sources count (no depth cap), and so do `bin`, `build` and `dist`.
+        write(&root.join("src/a/b/c/d/e/main.rs"), 1);
+        assert!(project_activity(&root, &b).unwrap().is_some());
+        fs::remove_dir_all(root.join("src")).unwrap();
+        for d in ["bin", "build", "dist"] {
+            write(&root.join(d).join("tool.sh"), 1);
+            assert!(project_activity(&root, &b).unwrap().is_some(), "{d}");
+            fs::remove_dir_all(root.join(d)).unwrap();
+        }
+        // Out of budget: unknown, never "quiet".
+        let zero = AtomicBool::new(false);
+        let b0 = Budget::new(Duration::ZERO, &zero);
+        assert!(project_activity(&root, &b0).is_err());
+    }
+
+    #[test]
+    fn a_held_folder_cannot_be_swapped() {
+        let (_t, root) = tmp();
+        let dir = root.join("d");
+        write(&dir.join("f"), 1);
+        let held = hold_dir(&dir).unwrap();
+        assert!(!is_reparse(&held.metadata().unwrap()));
+        // While the handle lives, the folder can be neither renamed nor removed, so it
+        // cannot be replaced by a junction. Its contents can still be deleted.
+        assert!(fs::rename(&dir, root.join("moved")).is_err());
+        assert!(fs::remove_dir_all(&dir).is_err() || dir.exists());
+        fs::remove_file(dir.join("f")).ok();
+        drop(held);
+        assert!(fs::rename(&dir, root.join("moved")).is_ok());
+
+        // Held through a junction, the handle is the junction itself.
+        let target = root.join("target");
+        write(&target.join("keep"), 1);
+        if !junction(&root.join("link"), &target) {
+            eprintln!("skip: could not create a junction");
+            return;
+        }
+        let held = hold_dir(&root.join("link")).unwrap();
+        assert!(is_reparse(&held.metadata().unwrap()));
     }
 
     #[test]

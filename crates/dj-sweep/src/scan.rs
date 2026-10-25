@@ -25,6 +25,16 @@ fn name_of(p: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// `Ok` when `env.temp` is the usual `%LOCALAPPDATA%\Temp` (see `rules::check_temp_dir`).
+fn temp_ok(env: &ScanEnv) -> Result<(), String> {
+    rules::check_temp_dir(
+        &env.temp,
+        &env.local_appdata,
+        &env.profile,
+        &env.project_roots,
+    )
+}
+
 fn wer_dirs(env: &ScanEnv) -> [PathBuf; 2] {
     let wer = env.local_appdata.join("Microsoft\\Windows\\WER");
     [wer.join("ReportArchive"), wer.join("ReportQueue")]
@@ -73,6 +83,7 @@ pub(crate) fn check(
                     .is_some_and(|n| rules::is_older_than(n, env.now, rules::TEMP_MIN_AGE_DAYS))
             };
             if rules::same_path(parent, &env.temp) {
+                temp_ok(env)?;
                 let t = measured()?;
                 if !old(&t) {
                     return Err("used in the last 7 days".into());
@@ -172,7 +183,7 @@ pub(crate) fn check(
             if !rules::purge_context_ok(&name, &facts, &cfacts) {
                 return Err("no project marker".into());
             }
-            if let Some(t) = sfs::project_activity(parent, budget) {
+            if let Some(t) = sfs::project_activity(parent, budget)? {
                 if !rules::is_older_than(t, env.now, rules::PURGE_QUIET_DAYS) {
                     return Err("project touched in the last 14 days".into());
                 }
@@ -242,7 +253,14 @@ fn candidates(
     match cat {
         Category::Temp => {
             let mut v = Vec::new();
-            for dir in [env.temp.clone()]
+            let temp = match temp_ok(env) {
+                Ok(()) => Some(env.temp.clone()),
+                Err(why) => {
+                    notes.push(format!("temp files skipped: {why}"));
+                    None
+                }
+            };
+            for dir in temp
                 .into_iter()
                 .chain(wer_dirs(env))
                 .chain([crash_dumps(env)])
@@ -391,8 +409,11 @@ pub(crate) fn run(env: &ScanEnv, cat: Category, budget: &Budget) -> CategoryScan
     let paths = candidates(env, &guard, cat, budget, &mut notes);
     let mut items = Vec::new();
     let mut skipped = 0usize;
+    // Big-file checks only read metadata, so they still run when the walk used up the
+    // budget; otherwise a large profile would always list nothing.
+    let cheap = cat == Category::BigFiles;
     for p in paths {
-        if budget.over() {
+        if budget.cancelled() || (budget.over() && !cheap) {
             break;
         }
         match check(env, &guard, cat, &p, budget) {
@@ -407,7 +428,7 @@ pub(crate) fn run(env: &ScanEnv, cat: Category, budget: &Budget) -> CategoryScan
     }
     if skipped > 0 {
         notes.push(format!(
-            "{skipped} skipped (recent, tracked by git or contains .git)"
+            "{skipped} skipped (recent, too big to check, or under git)"
         ));
     }
     if budget.cancelled() {

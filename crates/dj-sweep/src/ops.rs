@@ -2,13 +2,14 @@
 //! empty bin, reveal in Explorer, and the running-process probe. This is the only
 //! module with `unsafe`. Tests never call it; they use a fake `Ops`.
 
-use crate::{fs as sfs, rules, Ops, WinOps};
+use crate::{fs as sfs, rules, Ops, Recycled, WinOps};
 use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 use windows::core::{s, w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, RPC_E_CHANGED_MODE};
+use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
     COINIT_DISABLE_OLE1DDE,
@@ -25,6 +26,9 @@ use windows::Win32::UI::Shell::{
     FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI,
     SHERB_NOSOUND, SHQUERYRBINFO,
 };
+
+/// `GetDriveTypeW` for a hard disk (from WinBase.h).
+const DRIVE_FIXED: u32 = 3;
 
 fn win_err(e: windows::core::Error) -> io::Error {
     io::Error::other(e.message())
@@ -61,11 +65,21 @@ impl Ops for WinOps {
         sfs::remove_tree(p)
     }
 
-    fn recycle(&self, p: &Path) -> io::Result<()> {
+    fn recycle(&self, p: &Path) -> io::Result<Recycled> {
+        let plain = rules::plain_path(p);
+        let root = volume_root(&plain)?;
+        // Only fixed drives have a Recycle Bin. Elsewhere "recycle" would mean "delete".
+        // SAFETY: `root` is a valid NUL-terminated wide string for the call.
+        if unsafe { GetDriveTypeW(&root) } != DRIVE_FIXED {
+            return Err(io::Error::other("this drive has no recycle bin"));
+        }
+        let before =
+            bin_items(&root).ok_or_else(|| io::Error::other("this drive has no recycle bin"))?;
         let _com = ComGuard::new()?;
-        let path = HSTRING::from(rules::plain_path(p).as_os_str());
-        // FOF_WANTNUKEWARNING: if an item is too big for the bin, Windows asks before
-        // deleting it for good instead of doing so silently.
+        let path = HSTRING::from(plain.as_os_str());
+        // FOF_WANTNUKEWARNING stays: without it, FOF_NOCONFIRMATION lets Windows delete
+        // an item that does not fit in the bin for good, silently. With it, Windows asks
+        // first, and the bin count below tells whether the item really went to the bin.
         let flags = FOF_ALLOWUNDO
             | FOFX_RECYCLEONDELETE
             | FOF_NOCONFIRMATION
@@ -86,7 +100,12 @@ impl Ops for WinOps {
                 return Err(io::Error::other("recycle was cancelled"));
             }
         }
-        Ok(())
+        // Recycling adds one entry to the bin, whatever the item's size. When the
+        // count cannot be read afterwards, the earlier checks stand.
+        Ok(match bin_items(&root) {
+            Some(after) if after <= before => Recycled::DeletedForGood,
+            _ => Recycled::InBin,
+        })
     }
 
     fn flush_dns(&self) -> io::Result<()> {
@@ -143,20 +162,42 @@ impl Ops for WinOps {
     }
 }
 
-/// Lowercased exe names of the running processes, or empty if the snapshot fails.
-pub fn running_processes() -> Vec<String> {
+/// `C:\` for `C:\Users\ann\x.bin`: the root of the volume that holds `p`, as a
+/// NUL-terminated wide string.
+fn volume_root(p: &Path) -> io::Result<HSTRING> {
+    let path = HSTRING::from(p.as_os_str());
+    let mut buf = [0u16; 261];
+    // SAFETY: `path` is NUL-terminated and outlives the call; the buffer length is
+    // passed with the slice.
+    unsafe { GetVolumePathNameW(&path, &mut buf) }.map_err(win_err)?;
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Ok(HSTRING::from_wide(&buf[..len]))
+}
+
+/// Entries in the Recycle Bin of the volume at `root`, or None if it has none.
+fn bin_items(root: &HSTRING) -> Option<i64> {
+    let mut info = SHQUERYRBINFO {
+        cbSize: std::mem::size_of::<SHQUERYRBINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `root` is NUL-terminated; `info` is a valid, sized out-parameter.
+    unsafe { SHQueryRecycleBinW(root, &mut info) }.ok()?;
+    Some(info.i64NumItems)
+}
+
+/// Lowercased exe names of the running processes, or None if they cannot be listed.
+pub fn running_processes() -> Option<Vec<String>> {
     let mut out = Vec::new();
     // SAFETY: the snapshot handle is checked, iterated with a correctly sized
     // PROCESSENTRY32W and closed before returning.
     unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return out;
-        };
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
         let mut e = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
         };
-        let mut ok = Process32FirstW(snap, &mut e).is_ok();
+        let first = Process32FirstW(snap, &mut e).is_ok();
+        let mut ok = first;
         while ok {
             let len = e
                 .szExeFile
@@ -167,6 +208,10 @@ pub fn running_processes() -> Vec<String> {
             ok = Process32NextW(snap, &mut e).is_ok();
         }
         let _ = CloseHandle(snap);
+        // An empty list would read as "nothing is running".
+        if !first {
+            return None;
+        }
     }
-    out
+    Some(out)
 }
