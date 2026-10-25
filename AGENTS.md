@@ -37,13 +37,14 @@ app/                 binary crate `daijobu` (window wiring, tray, storage, main 
 crates/dj-core/      domain: springs, themes, feature registry, layout, island state machine
 crates/dj-render/    Skia on D3D12 + DirectComposition, fonts, SkSL effects, icons, painting
 crates/dj-win/       Win32: window, message loop, tray, hotkeys, autostart, single instance
+crates/dj-vitals/    Win32 samplers for the Vitals panel: CPU, RAM, system drive, net, battery, uptime
 crates/dj-core/themes/   built-in themes (TOML)
 assets/fonts/        embedded OFL fonts + licenses
 docs/                plan.html (design) and images/ (README images)
 task/                progress.md, stage briefs and reports
 ```
 
-Crates planned for later stages (`dj-media`, `dj-audio`, `dj-vitals`, `dj-sweep`, `dj-capture`, `dj-clip`, `dj-tile`, `dj-ipc`) are added only when their stage starts.
+Crates planned for later stages (`dj-media`, `dj-audio`, `dj-sweep`, `dj-capture`, `dj-clip`, `dj-tile`, `dj-ipc`) are added only when their stage starts.
 
 ## Commands
 
