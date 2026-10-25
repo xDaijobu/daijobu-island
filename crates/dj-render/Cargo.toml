@@ -7,7 +7,10 @@ edition.workspace = true
 dj-core = { path = "../dj-core" }
 skia-safe = { workspace = true }
 windows = { workspace = true, features = [
-  "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D12",
-  "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_DirectComposition",
-  "Win32_Security",
+  "Win32_Foundation",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D12",
+  "Win32_Graphics_DirectComposition",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
 ] }
