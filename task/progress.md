@@ -2,7 +2,7 @@
 
 How we work: **one stage at a time.** Each stage runs in its own Orca worktree, with a Claude Sonnet 5.5 agent spawned there. When a stage is done, its status and log are updated here.
 
-Spec and design: [`docs/plan.html`](../docs/plan.html) · README: [`README.md`](../README.md)
+Spec and design: [`docs/plan.html`](../docs/plan.html) · README: [`README.md`](../README.md) · Repo: https://github.com/xDaijobu/daijobu-island
 
 Legend: ⬜ todo · 🟡 in progress · ✅ done · 🔒 locked (coming soon in the app)
 
@@ -65,6 +65,7 @@ Run `daijobu.exe`. The pill appears at the top center. Clicking it expands smoot
 - Deviations: skia-safe uses default features + `d3d` + `textlayout`, because the prebuilt for a minimal feature set isn't published and a source build hit "Filename too long". The exe is about 8.6 MB.
 - Not verified yet (needs a human check): a real right-click on the tray icon, absence from Alt-Tab, runtime DPI change and multi-monitor, device-lost recovery, exclusive-fullscreen games.
 - Follow-ups: exe icon, CI (clippy + test), fix the TOML example in plan.html (several keys on one line), activity scheduler (needed before Stage 2).
+- 2026-10-25: public repo https://github.com/xDaijobu/daijobu-island created. PR #1 (`stage-1-app-shell` → `master`): https://github.com/xDaijobu/daijobu-island/pull/1
 
 ---
 
