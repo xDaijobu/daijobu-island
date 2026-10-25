@@ -1,15 +1,21 @@
-//! System samplers for the Vitals panel: CPU, RAM, system drive, network, battery, uptime.
-//! Win32 only. Pure rate and delta helpers are in `calc` and have no Win32 dependency.
+//! System samplers for the Vitals panel: CPU, RAM, system drive, network, disk I/O,
+//! battery, uptime and the top processes. Win32 only. Pure rate and delta helpers are
+//! in `calc` and have no Win32 dependency.
 
 pub mod calc;
 mod win;
 
 use calc::{CpuTimes, NetTotals};
-use dj_core::vitals::Reading;
+use dj_core::vitals::{top_procs, ProcUsage, Reading, TopProcs, TOP_N};
+use std::collections::HashMap;
 use std::time::Instant;
 
-/// Takes one reading per call. Holds the counter baselines for CPU and network.
-/// Moved into a worker thread, so it is `Send`.
+/// A process CPU baseline older than this is dropped instead of averaged, so the first
+/// list after the panel opens doesn't average over minutes.
+const MAX_TOP_GAP_SECS: f64 = 5.0;
+
+/// Takes one reading per call. Holds the counter baselines for CPU, network, disk I/O
+/// and per-process CPU time. Moved into a worker thread, so it is `Send`.
 ///
 /// Every field falls back on its own: a failed API gives 0 for that field, and
 /// battery gives `None` when unknown. `sample` never panics and never errors.
@@ -17,6 +23,11 @@ use std::time::Instant;
 pub struct Sampler {
     cpu: Option<CpuTimes>,
     net: Option<(NetTotals, Instant)>,
+    disk: Option<win::DiskCounters>,
+    /// pid -> (creation time, CPU time) from the previous top-process pass.
+    procs: HashMap<u32, (u64, u64)>,
+    procs_at: Option<Instant>,
+    ncpu: usize,
 }
 
 impl Sampler {
@@ -25,6 +36,10 @@ impl Sampler {
         Self {
             cpu: win::cpu_times(),
             net: win::net_totals().map(|t| (t, Instant::now())),
+            disk: win::DiskCounters::open(),
+            procs: HashMap::new(),
+            procs_at: None,
+            ncpu: std::thread::available_parallelism().map_or(1, |n| n.get()),
         }
     }
 
@@ -64,15 +79,57 @@ impl Sampler {
             None => (0.0, 0.0),
         };
 
+        let (disk_read_bps, disk_write_bps) = self
+            .disk
+            .as_mut()
+            .and_then(win::DiskCounters::read)
+            .unwrap_or((0.0, 0.0));
+
         Reading {
             cpu_pct,
             ram_pct,
             disk_pct,
             net_down_bps,
             net_up_bps,
+            disk_read_bps,
+            disk_write_bps,
             battery: win::battery(),
             uptime_secs: win::tick_count_ms() / 1000,
         }
+    }
+
+    /// The top processes by CPU (since the previous call) and by working set. The first
+    /// call, or one after a long gap, only sets the CPU baseline and lists RAM.
+    pub fn top(&mut self) -> TopProcs {
+        let procs = win::processes();
+        let now = Instant::now();
+        let secs = self
+            .procs_at
+            .map(|t| now.duration_since(t).as_secs_f64())
+            .filter(|s| *s <= MAX_TOP_GAP_SECS);
+        let entries: Vec<ProcUsage> = procs
+            .iter()
+            .map(|p| {
+                let cpu_pct = match (secs, self.procs.get(&p.pid)) {
+                    // Same pid and creation time: the same process as last time.
+                    (Some(secs), Some(&(created, cpu))) if created == p.created => {
+                        calc::proc_cpu_pct(p.cpu.saturating_sub(cpu), secs, self.ncpu)
+                    }
+                    _ => 0.0,
+                };
+                ProcUsage {
+                    name: p.name.clone(),
+                    cpu_pct,
+                    ram_bytes: p.working_set,
+                }
+            })
+            .collect();
+        self.procs = procs
+            .iter()
+            .map(|p| (p.pid, (p.created, p.cpu)))
+            .collect();
+        self.procs_at = Some(now);
+        top_procs(&entries, TOP_N)
     }
 }
 

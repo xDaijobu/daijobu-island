@@ -11,6 +11,7 @@ pub struct Config {
     pub music: MusicConfig,
     pub osd: OsdConfig,
     pub vitals: VitalsConfig,
+    pub sweep: SweepConfig,
 }
 
 /// `[music]` section. The YouTube Music profile itself lives in `~/.daijobu/ytmusic/`.
@@ -36,6 +37,26 @@ pub struct VitalsConfig {
     pub health_lamp: bool,
 }
 
+/// `[sweep]` section.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SweepConfig {
+    /// Folders that Dev purge looks in, at most four levels deep. A leading `~` is the
+    /// user profile.
+    pub project_roots: Vec<String>,
+}
+
+impl Default for SweepConfig {
+    fn default() -> Self {
+        Self {
+            project_roots: ["~/Documents", "~/Projects", "~/Code", "~/source/repos", "~/dev"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -44,6 +65,7 @@ impl Default for Config {
             music: MusicConfig::default(),
             osd: OsdConfig::default(),
             vitals: VitalsConfig::default(),
+            sweep: SweepConfig::default(),
         }
     }
 }
@@ -87,6 +109,9 @@ mod tests {
                 replace_volume_flyout: false,
             },
             vitals: VitalsConfig { health_lamp: false },
+            sweep: SweepConfig {
+                project_roots: vec!["D:/work".into()],
+            },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);
         assert_eq!(Config::parse("not [ toml"), Config::default());
@@ -103,6 +128,15 @@ mod tests {
         assert!(Config::parse("theme = \"x\"").osd.replace_volume_flyout);
         let off = Config::parse("[osd]\nreplace_volume_flyout = false\n");
         assert!(!off.osd.replace_volume_flyout);
+    }
+
+    #[test]
+    fn sweep_roots_default_and_read_the_sweep_table() {
+        let d = Config::parse("theme = \"x\"").sweep.project_roots;
+        assert_eq!(d.len(), 5);
+        assert_eq!(d[0], "~/Documents");
+        let c = Config::parse("[sweep]\nproject_roots = [\"~/src\"]\n");
+        assert_eq!(c.sweep.project_roots, ["~/src"]);
     }
 
     #[test]

@@ -1,5 +1,5 @@
-//! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel and
-//! the OSD overlay,
+//! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel with
+//! its Sweep view, and the OSD overlay,
 //! driven by springs. Time only enters through `step(dt)`, so everything here is
 //! deterministic.
 
@@ -23,6 +23,9 @@ pub enum IslandState {
     MusicExpanded,
     /// The Vitals panel, opened from the Home tile. An empty click collapses it.
     Vitals,
+    /// Sweep, opened from the Vitals panel's button. Its controls are hit-tested by
+    /// `sweep::SweepView`; empty clicks do nothing, so a clean is never left by accident.
+    Sweep,
 }
 
 impl IslandState {
@@ -34,6 +37,7 @@ impl IslandState {
             IslandState::MusicCompact => 2,
             IslandState::MusicExpanded => 3,
             IslandState::Vitals => 4,
+            IslandState::Sweep => 5,
         }
     }
 }
@@ -78,6 +82,12 @@ pub enum ClickOutcome {
     /// The OSD level bar was clicked: set the master volume to this level (0..=1).
     SetVolume(f32),
     Music(MusicAction),
+    /// The Vitals panel's "reclaimable" button: the island moved to Sweep. The app
+    /// starts the preview scan.
+    OpenSweep,
+    /// A click inside the Sweep view, in view-local px. The app passes it to
+    /// `SweepView::click`.
+    Sweep { x: f32, y: f32 },
 }
 
 /// Opacity of each content layer, 0..1. At most one is 1 once settled.
@@ -88,6 +98,7 @@ pub struct Layers {
     pub compact: f32,
     pub expanded: f32,
     pub vitals: f32,
+    pub sweep: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -111,7 +122,7 @@ pub struct Island {
     h: Spring,
     r: Spring,
     /// One opacity spring per content layer, indexed by `IslandState::layer`.
-    layers: [Spring; 5],
+    layers: [Spring; 6],
     tiles: Vec<Rect>,
     hover: Option<usize>,
     shake: Option<(usize, f32)>,
@@ -135,6 +146,7 @@ impl Island {
             r: Spring::new(layout::IDLE_R * tokens.radius_scale, spec, 0.02),
             layers: [
                 fade(true),
+                fade(false),
                 fade(false),
                 fade(false),
                 fade(false),
@@ -174,6 +186,7 @@ impl Island {
                 layout::MUSIC_EXP_R,
             ),
             IslandState::Vitals => (layout::VITALS_W, layout::VITALS_H, layout::VITALS_R),
+            IslandState::Sweep => (layout::SWEEP_W, layout::SWEEP_H, layout::SWEEP_R),
         }
     }
 
@@ -274,6 +287,21 @@ impl Island {
         }
     }
 
+    /// Opens the Sweep view (from the Vitals panel's button).
+    pub fn open_sweep(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::Sweep {
+            self.set_state(IslandState::Sweep, tokens);
+        }
+    }
+
+    /// Window-logical `(x, y)` relative to a view of width `w` that is anchored at the
+    /// pill's centre-top, as the painter draws it. Unlike `pill_rect`, this stays put
+    /// while the pill is still morphing.
+    fn view_local(x: f32, y: f32, w: f32) -> (f32, f32) {
+        let (win_w, _) = layout::window_size();
+        (x - (win_w - w) / 2.0, y - layout::TOP_MARGIN)
+    }
+
     /// Collapses to the rest state: compact when a track is loaded, otherwise Idle.
     pub fn collapse(&mut self, tokens: &ResolvedTokens) {
         let rest = self.rest_state();
@@ -348,10 +376,20 @@ impl Island {
                 ClickOutcome::Expanded
             }
             IslandState::MusicExpanded => self.music_click(x, y, tokens),
-            // The panel has no controls: like an empty click in the other views, it collapses.
+            // The Sweep button opens Sweep; anywhere else collapses, like the other views.
             IslandState::Vitals => {
-                self.collapse(tokens);
-                ClickOutcome::Collapsed
+                let (lx, ly) = Self::view_local(x, y, layout::VITALS_W);
+                if layout::VITALS_SWEEP.contains(lx, ly) {
+                    self.open_sweep(tokens);
+                    ClickOutcome::OpenSweep
+                } else {
+                    self.collapse(tokens);
+                    ClickOutcome::Collapsed
+                }
+            }
+            IslandState::Sweep => {
+                let (lx, ly) = Self::view_local(x, y, layout::SWEEP_W);
+                ClickOutcome::Sweep { x: lx, y: ly }
             }
             IslandState::Home => match self.tile_at(x, y) {
                 Some(i) if FEATURES[i].availability == Availability::Locked => {
@@ -473,6 +511,7 @@ impl Island {
                 compact: v(2),
                 expanded: v(3),
                 vitals: v(4),
+                sweep: v(5),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -788,8 +827,8 @@ mod tests {
         settle(&mut i, &t);
         let l = i.view().layers;
         assert_eq!(
-            (l.idle, l.home, l.compact, l.expanded, l.vitals),
-            (0.0, 0.0, 0.0, 1.0, 0.0)
+            (l.idle, l.home, l.compact, l.expanded, l.vitals, l.sweep),
+            (0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
         );
     }
 
@@ -867,6 +906,73 @@ mod tests {
         assert_eq!((r.w, r.h), (layout::VITALS_W, layout::VITALS_H));
         assert_eq!(i.view().layers.vitals, 1.0);
         assert_eq!(i.view().osd.alpha, 0.0);
+    }
+
+    fn open_settled_vitals(t: &ResolvedTokens) -> Island {
+        let mut i = Island::new(t);
+        i.expand(t);
+        i.open_vitals(t);
+        settle(&mut i, t);
+        i
+    }
+
+    #[test]
+    fn vitals_button_opens_sweep_and_back_returns() {
+        let t = tokens();
+        let mut i = open_settled_vitals(&t);
+        let (x, y) = at(&i, layout::VITALS_SWEEP);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::OpenSweep);
+        assert_eq!(i.state(), IslandState::Sweep);
+        settle(&mut i, &t);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::SWEEP_W, layout::SWEEP_H));
+        let l = i.view().layers;
+        assert_eq!((l.vitals, l.sweep), (0.0, 1.0));
+        // Back is the app's call (after `SweepView::click` says so).
+        i.open_vitals(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        assert_eq!(i.view().layers.sweep, 0.0);
+    }
+
+    #[test]
+    fn sweep_clicks_report_view_local_coordinates_even_mid_morph() {
+        let t = tokens();
+        let mut i = open_settled_vitals(&t);
+        i.open_sweep(&t);
+        // Not settled: the pill is still growing, but the content is anchored centre-top.
+        i.step(1.0 / 144.0, &t);
+        let (win_w, _) = layout::window_size();
+        let x0 = (win_w - layout::SWEEP_W) / 2.0;
+        let c = layout::SW_CLEAN;
+        let out = i.click(x0 + c.x + 3.0, layout::TOP_MARGIN + c.y + 3.0, &t);
+        let ClickOutcome::Sweep { x, y } = out else {
+            panic!("sweep click expected, got {out:?}");
+        };
+        assert!(c.contains(x, y));
+        settle(&mut i, &t);
+        // An empty spot does not collapse Sweep.
+        let (cx, cy) = center(&i);
+        assert!(matches!(i.click(cx, cy, &t), ClickOutcome::Sweep { .. }));
+        assert_eq!(i.state(), IslandState::Sweep);
+    }
+
+    #[test]
+    fn osd_over_sweep_returns_to_sweep() {
+        let t = tokens();
+        let mut i = open_settled_vitals(&t);
+        i.open_sweep(&t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.6), &t);
+        settle_pinned(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Sweep);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::OSD_W, layout::OSD_H));
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::SWEEP_W, layout::SWEEP_H));
+        assert_eq!(i.view().layers.sweep, 1.0);
     }
 
     #[test]

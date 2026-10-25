@@ -1,5 +1,5 @@
 //! Health score: 100 minus penalties, mapped to a band, with reason tags.
-//! Pure function of a `Reading`. The weights are ours (see `task/progress.md`, Stage 4).
+//! Pure function of a `Reading`. The weights are ours (see `task/progress.md`, Stages 4-5).
 
 use crate::vitals::Reading;
 
@@ -20,6 +20,7 @@ pub enum Reason {
     HighCpu,
     HighRam,
     LowDisk,
+    BusyDisk,
     RestartSoon,
 }
 
@@ -56,6 +57,7 @@ impl Reason {
             Reason::HighCpu => "High CPU",
             Reason::HighRam => "High RAM",
             Reason::LowDisk => "Low disk",
+            Reason::BusyDisk => "Busy disk",
             Reason::RestartSoon => "Restart soon",
         }
     }
@@ -66,17 +68,19 @@ pub fn health(r: &Reading) -> Health {
     let cpu = cpu_penalty(pct(r.cpu_pct));
     let ram = ram_penalty(pct(r.ram_pct));
     let disk = disk_penalty(pct(r.disk_pct));
+    let io = io_penalty(r.disk_io_bps());
     let uptime = f64::from(uptime_penalty(r.uptime_secs));
 
-    let total = cpu + ram + disk + uptime;
+    let total = cpu + ram + disk + io + uptime;
     // `round` rounds halves away from zero, so 84.5 becomes 85.
     let score = (100.0 - total).round().clamp(0.0, 100.0) as u8;
 
-    // Stable sort: equal penalties keep the CPU, RAM, Disk, Uptime order.
+    // Stable sort: equal penalties keep the CPU, RAM, Disk, I/O, Uptime order.
     let mut ranked: Vec<(f64, Reason)> = [
         (cpu, Reason::HighCpu),
         (ram, Reason::HighRam),
         (disk, Reason::LowDisk),
+        (io, Reason::BusyDisk),
         (uptime, Reason::RestartSoon),
     ]
     .into_iter()
@@ -132,6 +136,22 @@ fn disk_penalty(x: f64) -> f64 {
         lerp(x, 80.0, 0.0, 93.0, 10.0)
     } else {
         lerp(x, 93.0, 10.0, 100.0, 20.0)
+    }
+}
+
+/// One MB in the I/O breakpoints. The panel formats rates with a 1024 base, so the
+/// penalty uses the unit the user reads.
+const MB: f64 = 1024.0 * 1024.0;
+
+/// Disk I/O (read + write): none up to 50 MB/s, linear up to 10 at 150 MB/s and above.
+fn io_penalty(bps: f64) -> f64 {
+    let mbps = if bps.is_finite() { bps.max(0.0) / MB } else { 0.0 };
+    if mbps <= 50.0 {
+        0.0
+    } else if mbps < 150.0 {
+        lerp(mbps, 50.0, 0.0, 150.0, 10.0)
+    } else {
+        10.0
     }
 }
 
@@ -204,6 +224,35 @@ mod tests {
         assert_eq!(score_of(&reading(0.0, 0.0, 100.0, 0)), 80);
     }
 
+    fn io(read_mb: f64, write_mb: f64) -> Reading {
+        Reading {
+            disk_read_bps: read_mb * MB,
+            disk_write_bps: write_mb * MB,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn disk_io_penalty_breakpoints() {
+        assert_eq!(io_penalty(0.0), 0.0);
+        assert_eq!(io_penalty(50.0 * MB), 0.0);
+        assert!((io_penalty(100.0 * MB) - 5.0).abs() < 1e-9);
+        assert_eq!(io_penalty(150.0 * MB), 10.0);
+        assert_eq!(io_penalty(900.0 * MB), 10.0);
+        assert_eq!(io_penalty(-1.0), 0.0);
+        assert_eq!(io_penalty(f64::NAN), 0.0);
+        assert_eq!(io_penalty(f64::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn disk_io_penalty_counts_read_plus_write() {
+        // 30 + 30 = 60 MB/s: penalty 1.
+        assert_eq!(score_of(&io(30.0, 30.0)), 99);
+        assert_eq!(score_of(&io(25.0, 25.0)), 100);
+        assert_eq!(score_of(&io(100.0, 100.0)), 90);
+        assert_eq!(health(&io(100.0, 100.0)).reasons, vec![Reason::BusyDisk]);
+    }
+
     #[test]
     fn linear_midpoint_penalty() {
         // Midway between 50 (0) and 85 (15) the CPU penalty is 7.5.
@@ -260,10 +309,13 @@ mod tests {
 
     #[test]
     fn extreme_reading_stays_within_bounds() {
-        let max = reading(100.0, 100.0, 100.0, u64::MAX);
+        let max = Reading {
+            disk_read_bps: 1e12,
+            ..reading(100.0, 100.0, 100.0, u64::MAX)
+        };
         let h = health(&max);
-        // Largest possible sum is 30 + 25 + 20 + 3 = 78, so the floor is 22.
-        assert_eq!(h.score, 22);
+        // Largest possible sum is 30 + 25 + 20 + 10 + 3 = 88, so the floor is 12.
+        assert_eq!(h.score, 12);
         assert_eq!(h.band, Band::Dame);
         assert_eq!(
             h.reasons,
@@ -271,6 +323,7 @@ mod tests {
                 Reason::HighCpu,
                 Reason::HighRam,
                 Reason::LowDisk,
+                Reason::BusyDisk,
                 Reason::RestartSoon
             ]
         );
@@ -343,6 +396,7 @@ mod tests {
         assert_eq!(Reason::HighCpu.tag(), "High CPU");
         assert_eq!(Reason::HighRam.tag(), "High RAM");
         assert_eq!(Reason::LowDisk.tag(), "Low disk");
+        assert_eq!(Reason::BusyDisk.tag(), "Busy disk");
         assert_eq!(Reason::RestartSoon.tag(), "Restart soon");
     }
 }

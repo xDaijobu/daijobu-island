@@ -210,8 +210,11 @@ impl App {
     /// Queues the worker's readings. Redraws when the panel is open or the lamp colour changed.
     fn drain_vitals(&mut self) {
         let lamp_before = self.lamp_warn();
-        for reading in self.worker.drain() {
-            self.vitals.push(reading);
+        for sample in self.worker.drain() {
+            self.vitals.push(sample.reading);
+            if let Some(top) = sample.top {
+                self.vitals.set_top(top);
+            }
         }
         if self.island.state() == IslandState::Vitals || self.lamp_warn() != lamp_before {
             self.dirty = true;
