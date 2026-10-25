@@ -272,9 +272,10 @@
     </div>
     <div class="card">
       <span class="tag a">dari Mole (konsep)</span>
-      <h3 style="margin-top:10px">Vitals dan Sweep</h3>
+      <h3 style="margin-top:10px">Vitals (+ Sweep di dalamnya)</h3>
       <ul>
         <li><b>Vitals:</b> health score 0–100, CPU, RAM, disk, net ↑↓, battery, top proses</li>
+        <li><b>Sweep ada di dalam panel Vitals</b>: diagnosis ("Low disk") → tombol "🧹 6.8 GB bisa dibersihin" → view Sweep. Tile Sweep terpisah dihapus (12 fitur)</li>
         <li><b>Quick Clean:</b> temp, WER, cache browser/app/dev. Preview dulu, baru eksekusi</li>
         <li><b>Dev Purge:</b> <code>node_modules</code>, <code>target</code>, <code>dist</code>, <code>.venv</code>, dan lain-lain, pakai aturan konteks yang aman</li>
         <li><b>Big files:</b> top 20 file terbesar, ada tombol reveal dan recycle</li>
@@ -680,10 +681,10 @@ band: 85+ <span class="k">daijobu</span> · 65+ ok · 45+ hmm · &lt;45 <span st
     <li><b>Snap stack</b>: preview ngambang, countdown, multi-select, drag & drop OLE (banyak file sekaligus)</li>
     <li><b>Clipboard history</b>: ala Win+V, dengan pencarian, pin, dan privasi</li>
     <li><b>dj CLI</b> / API named pipe</li></ul></div>
-  <div class="phase"><h3><span>F3</span>Vitals, Sweep, Tile</h3><ul>
+  <div class="phase"><h3><span>F3</span>Vitals + Sweep, Tile</h3><ul>
     <li><b>Tile</b>: zona, layout picker di island, hotkey, editor custom</li>
     <li><b>Scenes</b> dan <b>Boot Scene</b>: snapshot, restore, urutan dan delay, Task Scheduler + <code>dj-elevated</code> buat app admin</li>
-    <li>Dashboard vitals lengkap, health score, top proses, sparkline</li>
+    <li>Vitals lengkap (disk I/O, top proses) dengan <b>Sweep di dalam panel Vitals</b>: diagnosis lalu bersih-bersih di satu tempat</li>
     <li>Quick Clean, Dev Purge, Big files, Quick actions, History. Semua lewat preview + recycle + oplog</li></ul></div>
   <div class="phase"><h3><span>F4</span>Extras</h3><ul>
     <li>File Shelf, Ambient mixer + lofi radio</li>
@@ -821,7 +822,7 @@ const S={
   notif:{w:360,h:72,r:28,label:'notifikasi'},
   timer:{w:172,h:36,r:18,label:'timer'},
   vitals:{w:400,h:150,r:32,label:'vitals'},
-  sweep:{w:400,h:200,r:32,label:'sweep'},
+  sweep:{w:400,h:200,r:32,label:'vitals · sweep'},
   split:{w:300,h:36,r:18,label:'split'},
   snap:{w:330,h:72,r:26,label:'snap'},
   tile:{w:400,h:176,r:32,label:'tile'},

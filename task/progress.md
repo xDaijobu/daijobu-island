@@ -17,15 +17,15 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 2 | **Music = YouTube Music**: one-time sign-in, headless WebView2, island = player | ✅ merged (PR #2), live test pending | `xDaijobu/stage-2-music` | Haiku 5.5 via Orca · brief: [`stage-2-brief.md`](stage-2-brief.md) |
 | 2b | **Music Library**: search, library (liked/playlists/listen again), queue, all inside the island (native Skia; data via the hidden YT Music engine) | 🔒 | — | after Stage 2 sign-in is confirmed; mockup in plan.html first |
 | 3 | **OSD volume** | ✅ merged (PR #3), live test pending | `stage-3-osd` | done ahead of Stage 2's PR · Haiku 5.5 + subagents · brief: [`stage-3-brief.md`](stage-3-brief.md) |
-| 4 | **Vitals (compact)** | 🔵 PR #4, live test pending | `stage-4-vitals` (stacked on stage 3) | headless · Haiku 5.5 + subagents · brief: [`stage-4-brief.md`](stage-4-brief.md) |
-| 5 | Timer / Pomodoro | 🔒 | — | |
-| 6 | Snap + Snap stack | 🔒 | — | |
-| 7 | Clipboard history | 🔒 | — | |
-| 8 | Notifications | 🔒 | — | needs sparse MSIX |
-| 9 | Lyrics | 🔒 | — | |
-| 10 | dj CLI | 🔒 | — | |
-| 11 | Tile + Scenes + Boot Scene | 🔒 | — | |
-| 12 | Vitals (full) + Sweep | 🔒 | — | |
+| 4 | **Vitals (compact)** | ✅ merged (PR #4), live test pending | — | Haiku started, Opus 5.5 finished · lock-icon fix by the coordinator after the first live run |
+| 5 | **Vitals + Sweep**: Sweep merged into the Vitals panel (diagnose → clean), full vitals (disk I/O, top processes) | ⬜ next | — | decided 2026-10-25: the Sweep tile is removed (12 features) |
+| 6 | Timer / Pomodoro | 🔒 | — | |
+| 7 | Snap + Snap stack | 🔒 | — | |
+| 8 | Clipboard history | 🔒 | — | |
+| 9 | Notifications | 🔒 | — | needs sparse MSIX |
+| 10 | Lyrics | 🔒 | — | |
+| 11 | dj CLI | 🔒 | — | |
+| 12 | Tile + Scenes + Boot Scene | 🔒 | — | |
 | 13 | Shelf, Ambient, glance extras | 🔒 | — | |
 
 The order of stages 2+ can still change. Only one stage runs at a time.
@@ -187,6 +187,7 @@ Open Home → Vitals: the rings and net show live values once per second, and th
 ---
 
 ## Changelog
+- 2026-10-25: PR #4 (Vitals) merged; stage worktrees cleaned up. **Sweep is merged into Vitals** and moved up to Stage 5 (the old Stage 12 is folded in). Stages from Timer onwards shift by one.
 - 2026-10-25: PRs #2 (Music) and #3 (OSD) merged at the user's request before live testing ("fixes can come later"). Their worktrees and branches were removed. Focus is on Stage 4.
 - 2026-10-25: Stage 2 held (code done). Stage 3 (OSD volume) started.
 - 2026-10-25: Stage 2 redefined: Music = YouTube Music (headless WebView2).
