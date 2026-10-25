@@ -44,7 +44,11 @@ pub fn make_icon() -> Result<HICON> {
             // Rounded pill 28 x 14 centred in the icon, plus a lamp dot on its left.
             let (cx, cy, hw, hh) = (16.0_f32, 16.0_f32, 14.0_f32, 7.0_f32);
             let (qx, qy) = ((fx - cx).abs() - (hw - hh), (fy - cy).abs());
-            let d = if qx > 0.0 { (qx * qx + qy * qy).sqrt() } else { qy } - hh;
+            let d = if qx > 0.0 {
+                (qx * qx + qy * qy).sqrt()
+            } else {
+                qy
+            } - hh;
             let a = (0.5 - d).clamp(0.0, 1.0);
             let ld = ((fx - 9.5).powi(2) + (fy - cy).powi(2)).sqrt() - 2.6;
             let l = (0.5 - ld).clamp(0.0, 1.0);
@@ -105,12 +109,20 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
             let _ = AppendMenuW(m, flags, id, PCWSTR(t.as_ptr()));
         };
         for (i, (name, checked)) in spec.themes.iter().enumerate() {
-            let flags = if *checked { MF_STRING | MF_CHECKED } else { MF_STRING };
+            let flags = if *checked {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            };
             append(themes, flags, CMD_THEME_BASE + i, name);
         }
         append(menu, MF_STRING, CMD_TOGGLE, "Show / Hide");
         let _ = AppendMenuW(menu, MF_POPUP, themes.0 as usize, w!("Theme"));
-        let flags = if spec.autostart { MF_STRING | MF_CHECKED } else { MF_STRING };
+        let flags = if spec.autostart {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
         append(menu, flags, CMD_AUTOSTART, "Start with Windows");
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         append(menu, MF_STRING, CMD_QUIT, "Quit");

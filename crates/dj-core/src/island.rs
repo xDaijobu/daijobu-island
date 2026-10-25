@@ -86,11 +86,18 @@ impl Island {
     fn set_state(&mut self, state: IslandState, tokens: &ResolvedTokens) {
         self.state = state;
         let (w, h, r) = Self::base_size(state);
-        let spec = if state == IslandState::Home { tokens.expand } else { tokens.collapse };
+        let spec = if state == IslandState::Home {
+            tokens.expand
+        } else {
+            tokens.collapse
+        };
         self.w.retarget(w, spec);
         self.h.retarget(h, spec);
         self.r.retarget(r * tokens.radius_scale, spec);
-        self.fade.retarget(if state == IslandState::Home { 1.0 } else { 0.0 }, FADE_SPEC);
+        self.fade.retarget(
+            if state == IslandState::Home { 1.0 } else { 0.0 },
+            FADE_SPEC,
+        );
         self.hover = None;
     }
 
@@ -160,7 +167,11 @@ impl Island {
         // Theme switches change the radius scale and spring params mid-flight.
         let (_, _, base_r) = Self::base_size(self.state);
         self.r.target = base_r * tokens.radius_scale;
-        let spec = if self.state == IslandState::Home { tokens.expand } else { tokens.collapse };
+        let spec = if self.state == IslandState::Home {
+            tokens.expand
+        } else {
+            tokens.collapse
+        };
         for s in [&mut self.w, &mut self.h, &mut self.r] {
             s.spec = spec;
             s.step(dt);
@@ -191,7 +202,9 @@ impl Island {
                 let decay = 1.0 - t / SHAKE_SECS;
                 (i, (t * 55.0).sin() * 5.0 * decay * decay)
             }),
-            hint: self.hint.map(|(i, left)| (i, (left / HINT_FADE_SECS).min(1.0))),
+            hint: self
+                .hint
+                .map(|(i, left)| (i, (left / HINT_FADE_SECS).min(1.0))),
         }
     }
 }
@@ -202,7 +215,10 @@ mod tests {
     use crate::theme::{ThemeRegistry, DEFAULT_THEME};
 
     fn tokens() -> ResolvedTokens {
-        ThemeRegistry::with_builtins().get(DEFAULT_THEME).unwrap().clone()
+        ThemeRegistry::with_builtins()
+            .get(DEFAULT_THEME)
+            .unwrap()
+            .clone()
     }
 
     fn settle(i: &mut Island, t: &ResolvedTokens) {

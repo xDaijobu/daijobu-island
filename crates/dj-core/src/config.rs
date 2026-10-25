@@ -12,7 +12,10 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { theme: crate::theme::DEFAULT_THEME.to_string(), start_with_windows: false }
+        Self {
+            theme: crate::theme::DEFAULT_THEME.to_string(),
+            start_with_windows: false,
+        }
     }
 }
 
@@ -33,7 +36,10 @@ mod tests {
 
     #[test]
     fn roundtrip_and_defaults() {
-        let c = Config { theme: "paper-zine".into(), start_with_windows: true };
+        let c = Config {
+            theme: "paper-zine".into(),
+            start_with_windows: true,
+        };
         assert_eq!(Config::parse(&c.to_toml()), c);
         assert_eq!(Config::parse("not [ toml"), Config::default());
         assert!(!Config::parse("theme = \"x\"").start_with_windows);

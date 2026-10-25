@@ -46,7 +46,14 @@ pub struct Spring {
 impl Spring {
     /// `eps` is the distance (in the spring's own units) under which it counts as at rest.
     pub fn new(value: f32, spec: SpringSpec, eps: f32) -> Self {
-        Self { value, velocity: 0.0, target: value, spec, eps, leftover: 0.0 }
+        Self {
+            value,
+            velocity: 0.0,
+            target: value,
+            spec,
+            eps,
+            leftover: 0.0,
+        }
     }
 
     /// Moves the target; the current velocity is preserved.

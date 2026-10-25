@@ -136,6 +136,8 @@ mod tests {
         assert!(m.relative_luminance() > a.relative_luminance());
         assert!(m.relative_luminance() < b.relative_luminance());
         let rt = Rgb::from_oklab(a.to_oklab());
-        assert!((rt.r - a.r).abs() < 0.01 && (rt.g - a.g).abs() < 0.01 && (rt.b - a.b).abs() < 0.01);
+        assert!(
+            (rt.r - a.r).abs() < 0.01 && (rt.g - a.g).abs() < 0.01 && (rt.b - a.b).abs() < 0.01
+        );
     }
 }

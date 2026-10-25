@@ -84,11 +84,15 @@ mod tests {
         assert_eq!(tiles.len(), 13);
         let bounds = Rect::new(0.0, 0.0, HOME_W, HOME_H);
         for (i, a) in tiles.iter().enumerate() {
-            assert!(a.x >= PAD_X - 0.01 && a.x + a.w <= HOME_W - PAD_X + 0.01, "tile {i} x");
+            assert!(
+                a.x >= PAD_X - 0.01 && a.x + a.w <= HOME_W - PAD_X + 0.01,
+                "tile {i} x"
+            );
             assert!(a.y >= GRID_Y && a.y + a.h <= FOOTER.y, "tile {i} y");
             assert!(bounds.contains(a.x, a.y));
             for b in &tiles[i + 1..] {
-                let apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                let apart =
+                    a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
                 assert!(apart);
             }
         }
@@ -107,7 +111,10 @@ mod tests {
         let tiles = home_tiles();
         let t = tiles[7];
         assert_eq!(hit_tile(&tiles, t.x + 1.0, t.y + 1.0), Some(7));
-        assert_eq!(hit_tile(&tiles, t.x + t.w + TILE_GAP / 2.0, t.y + 1.0), None);
+        assert_eq!(
+            hit_tile(&tiles, t.x + t.w + TILE_GAP / 2.0, t.y + 1.0),
+            None
+        );
         assert_eq!(hit_tile(&tiles, 1.0, 1.0), None);
     }
 

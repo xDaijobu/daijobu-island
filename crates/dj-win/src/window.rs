@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint, SetWindowRgn, HGDIOBJ, MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY,
+    CreateRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint, SetWindowRgn, HGDIOBJ,
+    MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
@@ -31,8 +31,14 @@ const CLASS_NAME: PCWSTR = w!("DaijobuIslandWindow");
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     /// Left button pressed, client coordinates in device pixels.
-    Click { x: i32, y: i32 },
-    Move { x: i32, y: i32 },
+    Click {
+        x: i32,
+        y: i32,
+    },
+    Move {
+        x: i32,
+        y: i32,
+    },
     Leave,
     Hotkey(i32),
     TrayLeft,
@@ -82,14 +88,27 @@ pub fn primary_monitor() -> Monitor {
     // returned by the system and used immediately.
     unsafe {
         let hmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-        let mut rc = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
         if GetMonitorInfoW(hmon, &mut info).as_bool() {
             rc = info.rcMonitor;
         }
         let (mut dx, mut dy) = (96u32, 96u32);
         let _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-        Monitor { left: rc.left, top: rc.top, width: rc.right - rc.left, dpi: dx.max(96) }
+        Monitor {
+            left: rc.left,
+            top: rc.top,
+            width: rc.right - rc.left,
+            dpi: dx.max(96),
+        }
     }
 }
 
@@ -190,7 +209,13 @@ pub const MOD_CTRL_ALT: u32 = MOD_CONTROL.0 | MOD_ALT.0;
 pub fn register_hotkey(hwnd: HWND, id: i32, modifiers: u32, vk: u32) -> bool {
     // SAFETY: valid window handle.
     unsafe {
-        RegisterHotKey(Some(hwnd), id, HOT_KEY_MODIFIERS(modifiers) | MOD_NOREPEAT, vk).is_ok()
+        RegisterHotKey(
+            Some(hwnd),
+            id,
+            HOT_KEY_MODIFIERS(modifiers) | MOD_NOREPEAT,
+            vk,
+        )
+        .is_ok()
     }
 }
 
@@ -236,7 +261,10 @@ pub fn run(handler: &mut dyn Handler) {
 
 fn lparam_xy(lp: LPARAM) -> (i32, i32) {
     let v = lp.0 as u32;
-    (i32::from(v as u16 as i16), i32::from((v >> 16) as u16 as i16))
+    (
+        i32::from(v as u16 as i16),
+        i32::from((v >> 16) as u16 as i16),
+    )
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {

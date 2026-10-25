@@ -13,7 +13,10 @@ pub const TRANSITION_SECS: f32 = 0.45;
 
 const BUILTINS: [(&str, &str); 4] = [
     ("tobacco-tape", include_str!("../themes/tobacco-tape.toml")),
-    ("midnight-cassette", include_str!("../themes/midnight-cassette.toml")),
+    (
+        "midnight-cassette",
+        include_str!("../themes/midnight-cassette.toml"),
+    ),
     ("paper-zine", include_str!("../themes/paper-zine.toml")),
     ("clean", include_str!("../themes/clean.toml")),
 ];
@@ -45,17 +48,44 @@ macro_rules! section {
     };
 }
 
-section!(Meta { name: String, author: String, base: String, mode: Mode });
+section!(Meta {
+    name: String,
+    author: String,
+    base: String,
+    mode: Mode
+});
 section!(ColorSec {
-    pill: String, surface1: String, surface2: String, text: String, text_dim: String,
-    accent: String, warn: String, highlight: String, accent_from_cover: f32,
+    pill: String,
+    surface1: String,
+    surface2: String,
+    text: String,
+    text_dim: String,
+    accent: String,
+    warn: String,
+    highlight: String,
+    accent_from_cover: f32,
 });
 section!(TextureSec {
-    grain: f32, grain_fps: f32, dither_levels: f32, dither_cell: f32, scanlines: f32,
+    grain: f32,
+    grain_fps: f32,
+    dither_levels: f32,
+    dither_cell: f32,
+    scanlines: f32,
 });
-section!(TypeSec { title: String, label: String, digits: String });
-section!(ShapeSec { radius_scale: f32, hairline: f32, inner_glow: f32 });
-section!(MotionSec { expand: SpringToml, collapse: SpringToml });
+section!(TypeSec {
+    title: String,
+    label: String,
+    digits: String
+});
+section!(ShapeSec {
+    radius_scale: f32,
+    hairline: f32,
+    inner_glow: f32
+});
+section!(MotionSec {
+    expand: SpringToml,
+    collapse: SpringToml
+});
 section!(VisSec { style: String });
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -192,20 +222,68 @@ pub fn resolve_tokens(f: &ThemeFile) -> Result<ResolvedTokens, String> {
         accent: col(&c.accent, "color.accent")?,
         warn: col(&c.warn, "color.warn")?,
         highlight: col(&c.highlight, "color.highlight")?,
-        accent_from_cover: range(req(c.accent_from_cover, "color.accent_from_cover")?, 0.0, 1.0, "color.accent_from_cover")?,
-        grain: range(req(f.texture.grain, "texture.grain")?, 0.0, 1.0, "texture.grain")?,
-        grain_fps: range(req(f.texture.grain_fps, "texture.grain_fps")?, 1.0, 60.0, "texture.grain_fps")?,
-        dither_levels: range(req(f.texture.dither_levels, "texture.dither_levels")?, 2.0, 64.0, "texture.dither_levels")?,
-        dither_cell: range(req(f.texture.dither_cell, "texture.dither_cell")?, 1.0, 8.0, "texture.dither_cell")?,
-        scanlines: range(req(f.texture.scanlines, "texture.scanlines")?, 0.0, 1.0, "texture.scanlines")?,
+        accent_from_cover: range(
+            req(c.accent_from_cover, "color.accent_from_cover")?,
+            0.0,
+            1.0,
+            "color.accent_from_cover",
+        )?,
+        grain: range(
+            req(f.texture.grain, "texture.grain")?,
+            0.0,
+            1.0,
+            "texture.grain",
+        )?,
+        grain_fps: range(
+            req(f.texture.grain_fps, "texture.grain_fps")?,
+            1.0,
+            60.0,
+            "texture.grain_fps",
+        )?,
+        dither_levels: range(
+            req(f.texture.dither_levels, "texture.dither_levels")?,
+            2.0,
+            64.0,
+            "texture.dither_levels",
+        )?,
+        dither_cell: range(
+            req(f.texture.dither_cell, "texture.dither_cell")?,
+            1.0,
+            8.0,
+            "texture.dither_cell",
+        )?,
+        scanlines: range(
+            req(f.texture.scanlines, "texture.scanlines")?,
+            0.0,
+            1.0,
+            "texture.scanlines",
+        )?,
         font_title: req(f.typography.title.clone(), "type.title")?,
         font_label: req(f.typography.label.clone(), "type.label")?,
         font_digits: req(f.typography.digits.clone(), "type.digits")?,
-        radius_scale: range(req(f.shape.radius_scale, "shape.radius_scale")?, 0.25, 2.0, "shape.radius_scale")?,
-        hairline: range(req(f.shape.hairline, "shape.hairline")?, 0.0, 1.0, "shape.hairline")?,
-        inner_glow: range(req(f.shape.inner_glow, "shape.inner_glow")?, 0.0, 1.0, "shape.inner_glow")?,
+        radius_scale: range(
+            req(f.shape.radius_scale, "shape.radius_scale")?,
+            0.25,
+            2.0,
+            "shape.radius_scale",
+        )?,
+        hairline: range(
+            req(f.shape.hairline, "shape.hairline")?,
+            0.0,
+            1.0,
+            "shape.hairline",
+        )?,
+        inner_glow: range(
+            req(f.shape.inner_glow, "shape.inner_glow")?,
+            0.0,
+            1.0,
+            "shape.inner_glow",
+        )?,
         expand: spring(req(f.motion.expand, "motion.expand")?, "motion.expand")?,
-        collapse: spring(req(f.motion.collapse, "motion.collapse")?, "motion.collapse")?,
+        collapse: spring(
+            req(f.motion.collapse, "motion.collapse")?,
+            "motion.collapse",
+        )?,
         visualizer: req(f.visualizer.style.clone(), "visualizer.style")?,
     };
     let ratio = t.text.contrast(t.pill);
@@ -298,14 +376,21 @@ impl ThemeRegistry {
         user_ids.sort();
         user_ids.dedup();
         self.order = builtin_ids;
-        self.order.extend(user_ids.into_iter().filter(|i| self.resolved.contains_key(i) && !BUILTINS.iter().any(|b| b.0 == i)));
+        self.order.extend(
+            user_ids
+                .into_iter()
+                .filter(|i| self.resolved.contains_key(i) && !BUILTINS.iter().any(|b| b.0 == i)),
+        );
     }
 
     fn merged(&self, id: &str, visiting: &mut Vec<String>) -> Result<ThemeFile, String> {
         if visiting.iter().any(|v| v == id) {
             return Err(format!("`base` cycle: {} -> {id}", visiting.join(" -> ")));
         }
-        let entry = self.raw.get(id).ok_or_else(|| format!("unknown base theme `{id}`"))?;
+        let entry = self
+            .raw
+            .get(id)
+            .ok_or_else(|| format!("unknown base theme `{id}`"))?;
         visiting.push(id.to_string());
         let merged = match &entry.file.meta.base {
             Some(base) => entry.file.over(&self.merged(base, visiting)?),
@@ -338,7 +423,11 @@ impl ThemeRegistry {
 
     /// The id after `current` in cycling order (wraps; falls back to the first).
     pub fn next_id(&self, current: &str) -> &str {
-        let i = self.order.iter().position(|i| i == current).map_or(0, |i| i + 1);
+        let i = self
+            .order
+            .iter()
+            .position(|i| i == current)
+            .map_or(0, |i| i + 1);
         &self.order[i % self.order.len()]
     }
 }
@@ -353,7 +442,12 @@ pub struct ThemeAnim {
 
 impl ThemeAnim {
     pub fn new(tokens: ResolvedTokens) -> Self {
-        Self { from: tokens.clone(), to: tokens.clone(), current: tokens, t: 1.0 }
+        Self {
+            from: tokens.clone(),
+            to: tokens.clone(),
+            current: tokens,
+            t: 1.0,
+        }
     }
 
     /// Starts a transition from wherever the tokens currently are.
@@ -376,7 +470,11 @@ impl ThemeAnim {
         } else {
             1.0 - (-2.0 * self.t + 2.0).powi(3) / 2.0
         };
-        self.current = if self.t >= 1.0 { self.to.clone() } else { self.from.lerp(&self.to, e) };
+        self.current = if self.t >= 1.0 {
+            self.to.clone()
+        } else {
+            self.from.lerp(&self.to, e)
+        };
     }
 
     pub fn animating(&self) -> bool {
@@ -403,7 +501,10 @@ mod tests {
     #[test]
     fn builtins_parse_validate_and_are_ordered() {
         let r = ThemeRegistry::with_builtins();
-        assert_eq!(r.ids(), ["tobacco-tape", "midnight-cassette", "paper-zine", "clean"]);
+        assert_eq!(
+            r.ids(),
+            ["tobacco-tape", "midnight-cassette", "paper-zine", "clean"]
+        );
         assert!(r.rejected().is_empty());
         let paper = r.get("paper-zine").unwrap();
         assert_eq!(paper.mode, Mode::Light);
@@ -441,7 +542,10 @@ accent = "#A8C686"
         let mut r = ThemeRegistry::with_builtins();
         r.set_user_themes([
             user("a", "[meta]\nname=\"A\"\nbase=\"b\"\n[texture]\ngrain=0.5"),
-            user("b", "[meta]\nname=\"B\"\nbase=\"clean\"\n[texture]\ngrain=0.2\nscanlines=0.3"),
+            user(
+                "b",
+                "[meta]\nname=\"B\"\nbase=\"clean\"\n[texture]\ngrain=0.2\nscanlines=0.3",
+            ),
             user("x", "[meta]\nname=\"X\"\nbase=\"y\""),
             user("y", "[meta]\nname=\"Y\"\nbase=\"x\""),
         ]);
@@ -449,7 +553,10 @@ accent = "#A8C686"
         assert_eq!(a.grain, 0.5);
         assert_eq!(a.scanlines, 0.3);
         assert!(r.get("x").is_none() && r.get("y").is_none());
-        assert!(r.rejected().iter().any(|(id, why)| id == "x" && why.contains("cycle")));
+        assert!(r
+            .rejected()
+            .iter()
+            .any(|(id, why)| id == "x" && why.contains("cycle")));
     }
 
     #[test]
@@ -471,8 +578,14 @@ accent = "#A8C686"
         r.set_user_themes([
             user("junk", "this is [ not toml"),
             user("nobase", "[meta]\nname=\"No base\""),
-            user("badhex", "[meta]\nname=\"Bad\"\nbase=\"clean\"\n[color]\npill=\"red\""),
-            user("badrange", "[meta]\nname=\"R\"\nbase=\"clean\"\n[texture]\ngrain=3.0"),
+            user(
+                "badhex",
+                "[meta]\nname=\"Bad\"\nbase=\"clean\"\n[color]\npill=\"red\"",
+            ),
+            user(
+                "badrange",
+                "[meta]\nname=\"R\"\nbase=\"clean\"\n[texture]\ngrain=3.0",
+            ),
             user("nobasetheme", "[meta]\nname=\"N\"\nbase=\"nope\""),
         ]);
         for id in ["junk", "nobase", "badhex", "badrange", "nobasetheme"] {

@@ -93,7 +93,10 @@ fn fit(font: &Font, s: &str, tracking: f32, max_w: f32) -> String {
 
 impl Painter {
     pub fn new() -> Result<Self, String> {
-        Ok(Self { fonts: Fonts::new()?, fx: Effects::new()? })
+        Ok(Self {
+            fonts: Fonts::new()?,
+            fx: Effects::new()?,
+        })
     }
 
     pub fn paint(&mut self, canvas: &Canvas, f: &Frame) {
@@ -195,7 +198,11 @@ impl Painter {
         let label = self.fonts.font(&t.font_label, Weight::Medium, 10.0 * s);
         let h = layout::HEADER;
         let hy = oy + (h.y + h.h / 2.0) * s;
-        canvas.draw_circle((ox + (h.x + 3.0) * s, hy), 2.6 * s, &fill_paint(col(t.accent, 1.0)));
+        canvas.draw_circle(
+            (ox + (h.x + 3.0) * s, hy),
+            2.6 * s,
+            &fill_paint(col(t.accent, 1.0)),
+        );
         draw_text(
             canvas,
             &label,
@@ -233,18 +240,43 @@ impl Painter {
             let rr = RRect::new_rect_xy(tr, tile_radius, tile_radius);
             canvas.draw_rrect(rr, &fill_paint(col(body, 1.0)));
             canvas.draw_rrect(
-                RRect::new_rect_xy(tr.with_inset((0.5, 0.5)), tile_radius - 0.5, tile_radius - 0.5),
+                RRect::new_rect_xy(
+                    tr.with_inset((0.5, 0.5)),
+                    tile_radius - 0.5,
+                    tile_radius - 0.5,
+                ),
                 &stroke_paint(col(t.surface2, 0.9), 1.0),
             );
             let ink = if hovered { t.text } else { t.text_dim };
             let (cx, top) = (tr.center_x(), tr.top);
-            draw_icon(canvas, feat.icon, cx, top + 27.0 * s, 24.0 * s, &stroke_paint(col(ink, 0.95), 1.6 * s));
-            draw_lock(canvas, tr.right - 11.0 * s, top + 11.0 * s, 10.0 * s, &fill_paint(col(t.text_dim, 0.75)));
+            draw_icon(
+                canvas,
+                feat.icon,
+                cx,
+                top + 27.0 * s,
+                24.0 * s,
+                &stroke_paint(col(ink, 0.95), 1.6 * s),
+            );
+            draw_lock(
+                canvas,
+                tr.right - 11.0 * s,
+                top + 11.0 * s,
+                10.0 * s,
+                &fill_paint(col(t.text_dim, 0.75)),
+            );
             let name = feat.name.to_uppercase();
             let tracking = 0.7 * s;
             let nm = fit(&name_font, &name, tracking, tr.width() - 8.0 * s);
             let nw = text_width(&name_font, &nm, tracking);
-            draw_text(canvas, &name_font, &nm, cx - nw / 2.0, top + 62.0 * s, tracking, &fill_paint(col(ink, 1.0)));
+            draw_text(
+                canvas,
+                &name_font,
+                &nm,
+                cx - nw / 2.0,
+                top + 62.0 * s,
+                tracking,
+                &fill_paint(col(ink, 1.0)),
+            );
         }
 
         // Footer: hint > notice > default line, plus the theme name on the right.
@@ -254,7 +286,15 @@ impl Painter {
         let base_y = foot.center_y() + 0.35 * 9.0 * s;
         let theme_name = t.name.to_uppercase();
         let tw = text_width(&small, &theme_name, tracking);
-        draw_text(canvas, &small, &theme_name, foot.right - tw, base_y, tracking, &fill_paint(col(t.text_dim, 0.7)));
+        draw_text(
+            canvas,
+            &small,
+            &theme_name,
+            foot.right - tw,
+            base_y,
+            tracking,
+            &fill_paint(col(t.text_dim, 0.7)),
+        );
         let room = foot.width() - tw - 16.0 * s;
 
         let hint = v.hint.map(|(i, a)| (FEATURES[i].name.to_uppercase(), a));
@@ -263,10 +303,26 @@ impl Painter {
             Some(n) => (fit(&small, &n.to_uppercase(), tracking, room), t.warn),
             None => ("13 FEATURES - ALL COMING SOON".to_string(), t.text_dim),
         };
-        draw_text(canvas, &small, &idle_line.0, foot.left, base_y, tracking, &fill_paint(col(idle_line.1, 1.0 - hint_a)));
+        draw_text(
+            canvas,
+            &small,
+            &idle_line.0,
+            foot.left,
+            base_y,
+            tracking,
+            &fill_paint(col(idle_line.1, 1.0 - hint_a)),
+        );
         if let Some((name, a)) = hint {
             let line = fit(&small, &format!("{name} - COMING SOON"), tracking, room);
-            draw_text(canvas, &small, &line, foot.left, base_y, tracking, &fill_paint(col(t.accent, a)));
+            draw_text(
+                canvas,
+                &small,
+                &line,
+                foot.left,
+                base_y,
+                tracking,
+                &fill_paint(col(t.accent, a)),
+            );
         }
     }
 }
@@ -278,7 +334,12 @@ fn begin_layer(canvas: &Canvas, bounds: &Rect, opacity: f32, pivot: (f32, f32), 
     p.set_alpha_f(opacity);
     let sigma = (1.0 - opacity) * 7.0 * scale;
     if sigma > 0.3 {
-        p.set_image_filter(image_filters::blur((sigma, sigma), TileMode::Decal, None, None));
+        p.set_image_filter(image_filters::blur(
+            (sigma, sigma),
+            TileMode::Decal,
+            None,
+            None,
+        ));
     }
     canvas.save_layer(&SaveLayerRec::default().bounds(bounds).paint(&p));
     let k = 0.94 + 0.06 * opacity;

@@ -32,13 +32,32 @@ impl Fonts {
             mgr.new_from_data(Data::new_copy(bytes), None)
                 .ok_or_else(|| format!("embedded font {what} failed to load"))
         };
-        embedded.insert(("Geist", Weight::Regular), load(GEIST_REGULAR, "Geist Regular")?);
-        embedded.insert(("Geist", Weight::Medium), load(GEIST_MEDIUM, "Geist Medium")?);
-        embedded.insert(("Geist", Weight::SemiBold), load(GEIST_SEMIBOLD, "Geist SemiBold")?);
-        embedded.insert(("Geist Mono", Weight::Regular), load(MONO_REGULAR, "Geist Mono Regular")?);
-        embedded.insert(("Geist Mono", Weight::Medium), load(MONO_MEDIUM, "Geist Mono Medium")?);
+        embedded.insert(
+            ("Geist", Weight::Regular),
+            load(GEIST_REGULAR, "Geist Regular")?,
+        );
+        embedded.insert(
+            ("Geist", Weight::Medium),
+            load(GEIST_MEDIUM, "Geist Medium")?,
+        );
+        embedded.insert(
+            ("Geist", Weight::SemiBold),
+            load(GEIST_SEMIBOLD, "Geist SemiBold")?,
+        );
+        embedded.insert(
+            ("Geist Mono", Weight::Regular),
+            load(MONO_REGULAR, "Geist Mono Regular")?,
+        );
+        embedded.insert(
+            ("Geist Mono", Weight::Medium),
+            load(MONO_MEDIUM, "Geist Mono Medium")?,
+        );
         embedded.insert(("Doto", Weight::Regular), load(DOTO, "Doto")?);
-        Ok(Self { mgr, embedded, resolved: HashMap::new() })
+        Ok(Self {
+            mgr,
+            embedded,
+            resolved: HashMap::new(),
+        })
     }
 
     fn embedded_face(&self, family: &str, weight: Weight) -> Option<Typeface> {

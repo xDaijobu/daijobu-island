@@ -35,16 +35,46 @@ pub fn draw_icon(canvas: &Canvas, icon: Icon, cx: f32, cy: f32, size: f32, paint
         }
         Icon::Osd => {
             canvas.draw_path(
-                &poly(&[(-9.0, -3.0), (-5.0, -3.0), (0.0, -7.5), (0.0, 7.5), (-5.0, 3.0), (-9.0, 3.0)], true),
+                &poly(
+                    &[
+                        (-9.0, -3.0),
+                        (-5.0, -3.0),
+                        (0.0, -7.5),
+                        (0.0, 7.5),
+                        (-5.0, 3.0),
+                        (-9.0, 3.0),
+                    ],
+                    true,
+                ),
                 paint,
             );
-            canvas.draw_arc(Rect::from_xywh(-4.0, -5.0, 10.0, 10.0), -45.0, 90.0, false, paint);
-            canvas.draw_arc(Rect::from_xywh(-6.5, -9.0, 17.0, 18.0), -45.0, 90.0, false, paint);
+            canvas.draw_arc(
+                Rect::from_xywh(-4.0, -5.0, 10.0, 10.0),
+                -45.0,
+                90.0,
+                false,
+                paint,
+            );
+            canvas.draw_arc(
+                Rect::from_xywh(-6.5, -9.0, 17.0, 18.0),
+                -45.0,
+                90.0,
+                false,
+                paint,
+            );
         }
         Icon::Vitals => {
             canvas.draw_path(
                 &poly(
-                    &[(-10.0, 1.0), (-5.0, 1.0), (-2.5, -7.0), (1.0, 8.0), (3.5, -2.0), (5.0, 1.0), (10.0, 1.0)],
+                    &[
+                        (-10.0, 1.0),
+                        (-5.0, 1.0),
+                        (-2.5, -7.0),
+                        (1.0, 8.0),
+                        (3.5, -2.0),
+                        (5.0, 1.0),
+                        (10.0, 1.0),
+                    ],
                     false,
                 ),
                 paint,
@@ -59,7 +89,14 @@ pub fn draw_icon(canvas: &Canvas, icon: Icon, cx: f32, cy: f32, size: f32, paint
         Icon::Snap => {
             for (sx, sy) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
                 canvas.draw_path(
-                    &poly(&[(sx * 3.0, sy * 9.0), (sx * 9.0, sy * 9.0), (sx * 9.0, sy * 3.0)], false),
+                    &poly(
+                        &[
+                            (sx * 3.0, sy * 9.0),
+                            (sx * 9.0, sy * 9.0),
+                            (sx * 9.0, sy * 3.0),
+                        ],
+                        false,
+                    ),
                     paint,
                 );
             }
@@ -80,7 +117,13 @@ pub fn draw_icon(canvas: &Canvas, icon: Icon, cx: f32, cy: f32, size: f32, paint
             b.close();
             canvas.draw_path(&b.detach(), paint);
             line(canvas, (-9.0, 4.5), (9.0, 4.5), paint);
-            canvas.draw_arc(Rect::from_xywh(-2.5, 3.0, 5.0, 6.0), 20.0, 140.0, false, paint);
+            canvas.draw_arc(
+                Rect::from_xywh(-2.5, 3.0, 5.0, 6.0),
+                20.0,
+                140.0,
+                false,
+                paint,
+            );
         }
         Icon::Lyrics => {
             line(canvas, (-10.0, -5.0), (3.0, -5.0), paint);
@@ -90,7 +133,10 @@ pub fn draw_icon(canvas: &Canvas, icon: Icon, cx: f32, cy: f32, size: f32, paint
             line(canvas, (7.8, 5.0), (7.8, -5.5), paint);
         }
         Icon::Cli => {
-            canvas.draw_path(&poly(&[(-9.0, -5.0), (-3.0, 0.0), (-9.0, 5.0)], false), paint);
+            canvas.draw_path(
+                &poly(&[(-9.0, -5.0), (-3.0, 0.0), (-9.0, 5.0)], false),
+                paint,
+            );
             line(canvas, (0.0, 6.0), (9.0, 6.0), paint);
         }
         Icon::Tile => {
@@ -100,11 +146,17 @@ pub fn draw_icon(canvas: &Canvas, icon: Icon, cx: f32, cy: f32, size: f32, paint
         }
         Icon::Sweep => {
             line(canvas, (8.0, -9.5), (0.5, -1.0), paint);
-            canvas.draw_path(&poly(&[(-1.5, -1.5), (3.5, 2.5), (-1.5, 9.0), (-9.0, 4.0)], true), paint);
+            canvas.draw_path(
+                &poly(&[(-1.5, -1.5), (3.5, 2.5), (-1.5, 9.0), (-9.0, 4.0)], true),
+                paint,
+            );
             line(canvas, (-4.5, 3.5), (-1.0, 6.5), paint);
         }
         Icon::Shelf => {
-            canvas.draw_path(&poly(&[(-9.5, 1.0), (-9.5, 8.0), (9.5, 8.0), (9.5, 1.0)], false), paint);
+            canvas.draw_path(
+                &poly(&[(-9.5, 1.0), (-9.5, 8.0), (9.5, 8.0), (9.5, 1.0)], false),
+                paint,
+            );
             canvas.draw_rrect(rrect(-4.5, -9.0, 9.0, 11.0, 1.5), paint);
         }
         Icon::Ambient => {

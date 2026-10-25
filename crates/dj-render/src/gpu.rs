@@ -11,14 +11,15 @@ use skia_safe::gpu::{
 };
 use skia_safe::{Color, ColorType, Surface};
 use windows::core::Interface;
-use windows::Win32::Foundation::{HWND, DXGI_STATUS_OCCLUDED};
+use windows::Win32::Foundation::{DXGI_STATUS_OCCLUDED, HWND};
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
 use windows::Win32::Graphics::Direct3D12::{
     D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device, D3D12_COMMAND_LIST_TYPE_DIRECT,
     D3D12_COMMAND_QUEUE_DESC, D3D12_RESOURCE_STATE_PRESENT,
 };
 use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice2, IDCompositionDesktopDevice, IDCompositionTarget, IDCompositionVisual2,
+    DCompositionCreateDevice2, IDCompositionDesktopDevice, IDCompositionTarget,
+    IDCompositionVisual2,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -104,7 +105,10 @@ impl Renderer {
                         Height: height,
                         Format: DXGI_FORMAT_B8G8R8A8_UNORM,
                         Stereo: false.into(),
-                        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
                         BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                         BufferCount: BUFFERS as u32,
                         Scaling: DXGI_SCALING_STRETCH,
@@ -119,16 +123,23 @@ impl Renderer {
                 .map_err(setup("IDXGISwapChain3"))?;
 
             let dcomp: IDCompositionDesktopDevice =
-                DCompositionCreateDevice2(None::<&windows::core::IUnknown>).map_err(setup("DirectComposition device"))?;
-            let target = dcomp.CreateTargetForHwnd(hwnd, true).map_err(setup("DComp target"))?;
+                DCompositionCreateDevice2(None::<&windows::core::IUnknown>)
+                    .map_err(setup("DirectComposition device"))?;
+            let target = dcomp
+                .CreateTargetForHwnd(hwnd, true)
+                .map_err(setup("DComp target"))?;
             let visual = dcomp.CreateVisual().map_err(setup("DComp visual"))?;
-            visual.SetContent(&swap_chain).map_err(setup("DComp content"))?;
+            visual
+                .SetContent(&swap_chain)
+                .map_err(setup("DComp content"))?;
             target.SetRoot(&visual).map_err(setup("DComp root"))?;
             dcomp.Commit().map_err(setup("DComp commit"))?;
 
             let mut surfaces = Vec::with_capacity(BUFFERS);
             for i in 0..BUFFERS {
-                let resource = swap_chain.GetBuffer(i as u32).map_err(setup("swap chain buffer"))?;
+                let resource = swap_chain
+                    .GetBuffer(i as u32)
+                    .map_err(setup("swap chain buffer"))?;
                 let target = backend_render_targets::make_d3d(
                     (width as i32, height as i32),
                     &TextureResourceInfo {
@@ -218,8 +229,12 @@ fn pick_adapter(factory: &IDXGIFactory4) -> Result<(IDXGIAdapter1, ID3D12Device)
         let mut i = 0;
         while let Ok(adapter) = factory.EnumAdapters1(i) {
             i += 1;
-            let Ok(desc) = adapter.GetDesc1() else { continue };
-            if (DXGI_ADAPTER_FLAG(desc.Flags as _) & DXGI_ADAPTER_FLAG_SOFTWARE) != DXGI_ADAPTER_FLAG_NONE {
+            let Ok(desc) = adapter.GetDesc1() else {
+                continue;
+            };
+            if (DXGI_ADAPTER_FLAG(desc.Flags as _) & DXGI_ADAPTER_FLAG_SOFTWARE)
+                != DXGI_ADAPTER_FLAG_NONE
+            {
                 continue;
             }
             let mut device: Option<ID3D12Device> = None;
@@ -232,7 +247,8 @@ fn pick_adapter(factory: &IDXGIFactory4) -> Result<(IDXGIAdapter1, ID3D12Device)
         // No hardware adapter (VM / RDP): fall back to WARP.
         let warp: IDXGIAdapter1 = factory.EnumWarpAdapter().map_err(setup("WARP adapter"))?;
         let mut device: Option<ID3D12Device> = None;
-        D3D12CreateDevice(&warp, D3D_FEATURE_LEVEL_11_0, &mut device).map_err(setup("D3D12 device"))?;
+        D3D12CreateDevice(&warp, D3D_FEATURE_LEVEL_11_0, &mut device)
+            .map_err(setup("D3D12 device"))?;
         device
             .map(|d| (warp, d))
             .ok_or_else(|| RenderError::Setup("D3D12 device".into()))

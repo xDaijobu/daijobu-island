@@ -27,6 +27,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_VALUE: PCWSTR = w!("DaijobuIsland");
+#[cfg(test)]
+const TEST_VALUE: PCWSTR = w!("DaijobuIslandUnitTest");
 
 /// Returns false if another instance already holds the named mutex.
 pub fn acquire_single_instance() -> bool {
@@ -48,28 +50,42 @@ fn open_run_key(access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Opti
 
 /// True if `HKCU\...\Run\DaijobuIsland` exists.
 pub fn autostart_enabled() -> bool {
-    let Some(key) = open_run_key(KEY_QUERY_VALUE) else { return false };
+    autostart_enabled_for(RUN_VALUE)
+}
+
+fn autostart_enabled_for(value: PCWSTR) -> bool {
+    let Some(key) = open_run_key(KEY_QUERY_VALUE) else {
+        return false;
+    };
     // SAFETY: querying only the existence of the value; the key is closed after.
-    let found = unsafe {
-        let r = RegQueryValueExW(key, RUN_VALUE, None, None, None, None);
+    unsafe {
+        let r = RegQueryValueExW(key, value, None, None, None, None);
         let _ = RegCloseKey(key);
         r.is_ok()
-    };
-    found
+    }
 }
 
 /// Adds or removes the Run entry. `exe` is stored quoted.
 pub fn set_autostart(enabled: bool, exe: &Path) -> bool {
-    let Some(key) = open_run_key(KEY_SET_VALUE) else { return false };
+    set_autostart_for(RUN_VALUE, enabled, exe)
+}
+
+fn set_autostart_for(name: PCWSTR, enabled: bool, exe: &Path) -> bool {
+    let Some(key) = open_run_key(KEY_SET_VALUE) else {
+        return false;
+    };
     // SAFETY: the byte slice covers exactly the UTF-16 buffer, including the NUL.
     unsafe {
         let ok = if enabled {
-            let value: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain(Some(0)).collect();
+            let value: Vec<u16> = format!("\"{}\"", exe.display())
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
             let bytes = std::slice::from_raw_parts(value.as_ptr().cast::<u8>(), value.len() * 2);
-            RegSetValueExW(key, RUN_VALUE, None, REG_SZ, Some(bytes)).is_ok()
+            RegSetValueExW(key, name, None, REG_SZ, Some(bytes)).is_ok()
         } else {
             // Deleting a value that is already gone is success.
-            let _ = RegDeleteValueW(key, RUN_VALUE);
+            let _ = RegDeleteValueW(key, name);
             true
         };
         let _ = RegCloseKey(key);
@@ -81,11 +97,16 @@ pub fn set_autostart(enabled: bool, exe: &Path) -> bool {
 pub fn local_time() -> (u32, u32, u32) {
     // SAFETY: no pointers involved.
     let t = unsafe { GetLocalTime() };
-    (u32::from(t.wHour), u32::from(t.wMinute), u32::from(t.wSecond))
+    (
+        u32::from(t.wHour),
+        u32::from(t.wMinute),
+        u32::from(t.wSecond),
+    )
 }
 
 static TOPMOST_HWND: AtomicIsize = AtomicIsize::new(0);
 
+// SAFETY: only ever invoked by the system as a WINEVENTPROC; it ignores all arguments.
 unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,
@@ -134,7 +155,12 @@ pub fn install_topmost_hook(hwnd: HWND) {
 /// on every change (the window debounces).
 pub fn watch_dir(hwnd: HWND, dir: &Path) {
     let hwnd_raw = hwnd.0 as isize;
-    let dir: Vec<u16> = dir.as_os_str().to_string_lossy().encode_utf16().chain(Some(0)).collect();
+    let dir: Vec<u16> = dir
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
     std::thread::spawn(move || {
         // SAFETY: the directory handle and buffer live for the whole thread; the
         // window handle is only used with PostMessageW, which is thread-safe.
@@ -177,4 +203,26 @@ pub fn watch_dir(hwnd: HWND, dir: &Path) {
             let _ = CloseHandle(handle);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autostart_roundtrip_uses_a_scratch_value() {
+        let exe = Path::new(r"C:\Program Files\Daijobu Island\daijobu.exe");
+        assert!(set_autostart_for(TEST_VALUE, true, exe));
+        assert!(autostart_enabled_for(TEST_VALUE));
+        assert!(set_autostart_for(TEST_VALUE, false, exe));
+        assert!(!autostart_enabled_for(TEST_VALUE));
+        // Removing something that is already gone still succeeds.
+        assert!(set_autostart_for(TEST_VALUE, false, exe));
+    }
+
+    #[test]
+    fn local_time_is_sane() {
+        let (h, m, s) = local_time();
+        assert!(h < 24 && m < 60 && s < 61);
+    }
 }

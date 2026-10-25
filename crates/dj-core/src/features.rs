@@ -34,7 +34,12 @@ pub struct Feature {
 }
 
 const fn locked(id: &'static str, name: &'static str, icon: Icon) -> Feature {
-    Feature { id, name, icon, availability: Availability::Locked }
+    Feature {
+        id,
+        name,
+        icon,
+        availability: Availability::Locked,
+    }
 }
 
 pub const FEATURES: [Feature; 13] = [
@@ -62,6 +67,8 @@ mod tests {
     fn ids_unique_and_all_locked_in_stage_1() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
-        assert!(FEATURES.iter().all(|f| f.availability == Availability::Locked));
+        assert!(FEATURES
+            .iter()
+            .all(|f| f.availability == Availability::Locked));
     }
 }
