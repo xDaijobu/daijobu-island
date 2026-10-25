@@ -17,6 +17,8 @@ const HINT_FADE_SECS: f32 = 0.3;
 pub enum IslandState {
     Idle,
     Home,
+    /// The Vitals panel, opened from the Home tile. Any click returns to Home.
+    Vitals,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,6 +50,8 @@ pub struct IslandView {
     pub hint: Option<(usize, f32)>,
     /// The volume pill. Its `alpha` also hides the idle/home content while > 0.
     pub osd: OsdView,
+    /// Opacity of the Vitals panel, 0..=1. Hides the idle/home content while > 0.
+    pub vitals: f32,
 }
 
 pub struct Island {
@@ -56,6 +60,8 @@ pub struct Island {
     h: Spring,
     r: Spring,
     fade: Spring,
+    /// Vitals panel opacity: 1 while the state is Vitals.
+    vfade: Spring,
     tiles: Vec<Rect>,
     hover: Option<usize>,
     shake: Option<(usize, f32)>,
@@ -76,6 +82,7 @@ impl Island {
             h: Spring::new(layout::IDLE_H, spec, 0.02),
             r: Spring::new(layout::IDLE_R * tokens.radius_scale, spec, 0.02),
             fade: Spring::new(0.0, FADE_SPEC, 0.002),
+            vfade: Spring::new(0.0, FADE_SPEC, 0.002),
             tiles: layout::home_tiles(),
             hover: None,
             shake: None,
@@ -94,6 +101,7 @@ impl Island {
         match state {
             IslandState::Idle => (layout::IDLE_W, layout::IDLE_H, layout::IDLE_R),
             IslandState::Home => (layout::HOME_W, layout::HOME_H, layout::HOME_R),
+            IslandState::Vitals => (layout::VITALS_W, layout::VITALS_H, layout::VITALS_R),
         }
     }
 
@@ -128,7 +136,22 @@ impl Island {
             if state == IslandState::Home { 1.0 } else { 0.0 },
             FADE_SPEC,
         );
+        self.vfade.retarget(
+            if state == IslandState::Vitals {
+                1.0
+            } else {
+                0.0
+            },
+            FADE_SPEC,
+        );
         self.hover = None;
+    }
+
+    /// Opens the Vitals panel. The app samples only while `state()` is Vitals.
+    pub fn open_vitals(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::Vitals {
+            self.set_state(IslandState::Vitals, tokens);
+        }
     }
 
     /// Shows the volume pill (or refreshes its value and hold timer).
@@ -219,6 +242,10 @@ impl Island {
                 ClickOutcome::Locked(i)
             }
             Some(i) => ClickOutcome::Open(i),
+            None if self.state == IslandState::Vitals => {
+                self.set_state(IslandState::Home, tokens);
+                ClickOutcome::Collapsed
+            }
             None => {
                 self.collapse(tokens);
                 ClickOutcome::Collapsed
@@ -255,6 +282,7 @@ impl Island {
             s.step(dt);
         }
         self.fade.step(dt);
+        self.vfade.step(dt);
         if let Some((i, t)) = self.shake {
             self.shake = (t + dt < SHAKE_SECS).then_some((i, t + dt));
         }
@@ -264,7 +292,11 @@ impl Island {
     }
 
     pub fn is_animating(&self) -> bool {
-        !(self.w.settled() && self.h.settled() && self.r.settled() && self.fade.settled())
+        !(self.w.settled()
+            && self.h.settled()
+            && self.r.settled()
+            && self.fade.settled()
+            && self.vfade.settled())
             || self.shake.is_some()
             || self.hint.is_some()
             || self.osd.is_animating()
@@ -276,6 +308,7 @@ impl Island {
             rect,
             radius: self.r.value.min(rect.h / 2.0).max(0.0),
             fade: self.fade.value,
+            vitals: self.vfade.value.clamp(0.0, 1.0),
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
                 let decay = 1.0 - t / SHAKE_SECS;
@@ -311,6 +344,27 @@ mod tests {
     fn center(i: &Island) -> (f32, f32) {
         let p = i.pill_rect();
         (p.x + p.w / 2.0, p.y + p.h / 2.0)
+    }
+
+    #[test]
+    fn vitals_opens_from_home_and_any_click_returns_to_home() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        settle(&mut i, &t);
+        i.open_vitals(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let v = i.view();
+        assert!((v.vitals - 1.0).abs() < 0.01);
+        assert!(v.fade < 0.01);
+        assert!((v.rect.w - layout::VITALS_W).abs() < 0.5);
+        assert!((v.rect.h - layout::VITALS_H).abs() < 0.5);
+        let (x, y) = center(&i);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
+        assert_eq!(i.state(), IslandState::Home);
+        settle(&mut i, &t);
+        assert!(i.view().vitals < 0.01);
     }
 
     #[test]

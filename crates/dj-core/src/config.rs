@@ -9,6 +9,7 @@ pub struct Config {
     pub theme: String,
     pub start_with_windows: bool,
     pub osd: OsdConfig,
+    pub vitals: VitalsConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -18,12 +19,20 @@ pub struct OsdConfig {
     pub replace_volume_flyout: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VitalsConfig {
+    /// Tint the idle pill's lamp by the health band (warn colour when the band is low).
+    pub health_lamp: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             theme: crate::theme::DEFAULT_THEME.to_string(),
             start_with_windows: false,
             osd: OsdConfig::default(),
+            vitals: VitalsConfig::default(),
         }
     }
 }
@@ -33,6 +42,12 @@ impl Default for OsdConfig {
         Self {
             replace_volume_flyout: true,
         }
+    }
+}
+
+impl Default for VitalsConfig {
+    fn default() -> Self {
+        Self { health_lamp: true }
     }
 }
 
@@ -59,6 +74,7 @@ mod tests {
             osd: OsdConfig {
                 replace_volume_flyout: false,
             },
+            vitals: VitalsConfig { health_lamp: false },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);
         assert_eq!(Config::parse("not [ toml"), Config::default());
@@ -71,5 +87,13 @@ mod tests {
         assert!(Config::parse("theme = \"x\"").osd.replace_volume_flyout);
         let off = Config::parse("[osd]\nreplace_volume_flyout = false\n");
         assert!(!off.osd.replace_volume_flyout);
+    }
+
+    #[test]
+    fn vitals_health_lamp_defaults_on_and_reads_the_vitals_table() {
+        assert!(Config::default().vitals.health_lamp);
+        assert!(Config::parse("theme = \"x\"").vitals.health_lamp);
+        let off = Config::parse("[vitals]\nhealth_lamp = false\n");
+        assert!(!off.vitals.health_lamp);
     }
 }

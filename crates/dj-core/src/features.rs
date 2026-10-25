@@ -54,7 +54,7 @@ const fn available(id: &'static str, name: &'static str, icon: Icon) -> Feature 
 pub const FEATURES: [Feature; 13] = [
     locked("media", "Media", Icon::Media),
     available("osd", "OSD", Icon::Osd),
-    locked("vitals", "Vitals", Icon::Vitals),
+    available("vitals", "Vitals", Icon::Vitals),
     locked("timer", "Timer", Icon::Timer),
     locked("snap", "Snap", Icon::Snap),
     locked("clipboard", "Clipboard", Icon::Clipboard),
@@ -73,7 +73,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ids_unique_and_only_osd_available_in_stage_3() {
+    fn ids_unique_and_only_osd_and_vitals_available_in_stage_4() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
         let open: Vec<_> = FEATURES
@@ -81,6 +81,6 @@ mod tests {
             .filter(|f| f.availability == Availability::Available)
             .map(|f| f.id)
             .collect();
-        assert_eq!(open, ["osd"]);
+        assert_eq!(open, ["osd", "vitals"]);
     }
 }
