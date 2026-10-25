@@ -8,5 +8,6 @@ pub mod features;
 pub mod island;
 pub mod layout;
 pub mod music;
+pub mod osd;
 pub mod spring;
 pub mod theme;

@@ -8,12 +8,13 @@ use dj_core::features::FEATURES;
 use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction};
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
+use dj_core::osd::Volume;
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{Frame, MusicFrame, RenderError, Renderer};
 use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
-use dj_win::{system, window, Event, Handler, HICON, HWND};
+use dj_win::{hook, system, volume, window, Event, Handler, HICON, HWND};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
@@ -26,6 +27,9 @@ const TIMER_VU: usize = 2;
 const VU_MS: u32 = 33;
 const VK_H: u32 = 0x48;
 const VK_T: u32 = 0x54;
+const VK_VOLUME_MUTE: u32 = 0xAD;
+const VK_VOLUME_DOWN: u32 = 0xAE;
+const VK_VOLUME_UP: u32 = 0xAF;
 /// Frame step used for the first frame after idle, and the cap for long stalls.
 const FIRST_DT: f32 = 1.0 / 120.0;
 const MAX_DT: f32 = 0.05;
@@ -51,6 +55,8 @@ pub struct App {
     last_rect: Option<IRect>,
     icon: Option<HICON>,
     exe: PathBuf,
+    /// The default render endpoint. None if the audio stack is unavailable.
+    mixer: Option<volume::Mixer>,
     session: Session,
     /// The hidden YouTube Music engine, when running.
     engine: Option<Engine>,
@@ -100,6 +106,7 @@ impl App {
             last_rect: None,
             icon: None,
             exe,
+            mixer: None,
             session,
             engine: None,
             state_at: Instant::now(),
@@ -134,11 +141,46 @@ impl App {
         }
         system::install_topmost_hook(self.hwnd);
         system::watch_dir(self.hwnd, &storage::themes_dir());
+        self.install_volume();
         self.arm_clock_timer();
         // Make the Run entry match the config (also refreshes a stale exe path).
         if self.config.start_with_windows || system::autostart_enabled() {
             system::set_autostart(self.config.start_with_windows, &self.exe);
         }
+    }
+
+    /// Volume endpoint notifications always run (the pill shows any change). The volume
+    /// keys are only taken over when `[osd] replace_volume_flyout` is on.
+    fn install_volume(&mut self) {
+        volume::init_com();
+        match volume::Mixer::new(self.hwnd) {
+            Ok(m) => self.mixer = Some(m),
+            Err(e) => storage::log(&format!("volume endpoint: {e}")),
+        }
+        // Without an endpoint the keys would be swallowed and do nothing, so the flyout stays.
+        if self.config.osd.replace_volume_flyout
+            && self.mixer.is_some()
+            && !hook::install(self.hwnd)
+        {
+            storage::log("cannot install the volume key hook");
+        }
+    }
+
+    /// Shows the OSD with the endpoint's current level and mute state.
+    fn show_volume(&mut self) {
+        let Some((level, muted)) = self.mixer.as_ref().and_then(|m| m.read()) else {
+            return;
+        };
+        let tokens = self.anim.current().clone();
+        self.island.show_osd(Volume { level, muted }, &tokens);
+        self.dirty = true;
+    }
+
+    fn set_level(&mut self, level: f32) {
+        if let Some(m) = self.mixer.as_ref() {
+            m.set_level(level);
+        }
+        self.show_volume();
     }
 
     /// Fires at the next minute boundary so the clock never needs polling.
@@ -415,14 +457,6 @@ impl App {
         }
     }
 
-    fn quit(&mut self) {
-        self.engine = None;
-        tray::remove(self.hwnd);
-        window::unregister_hotkey(self.hwnd, HOTKEY_TOGGLE);
-        window::unregister_hotkey(self.hwnd, HOTKEY_THEME);
-        window::quit();
-    }
-
     fn show_tray_menu(&mut self) {
         let themes: Vec<(String, bool)> = self
             .registry
@@ -465,6 +499,16 @@ impl App {
         }
     }
 
+    fn quit(&mut self) {
+        self.engine = None;
+        hook::uninstall();
+        self.mixer = None; // unregisters the audio callbacks
+        tray::remove(self.hwnd);
+        window::unregister_hotkey(self.hwnd, HOTKEY_TOGGLE);
+        window::unregister_hotkey(self.hwnd, HOTKEY_THEME);
+        window::quit();
+    }
+
     fn device_rect(&self) -> IRect {
         let r = self.island.view().rect;
         let s = self.scale;
@@ -503,6 +547,12 @@ impl Handler for App {
                 if outcome != ClickOutcome::Ignored {
                     self.dirty = true;
                 }
+                match outcome {
+                    ClickOutcome::SetVolume(level) => self.set_level(level),
+                    // The OSD tile is a manual peek at the current volume.
+                    ClickOutcome::Open(i) if FEATURES[i].id == "osd" => self.show_volume(),
+                    _ => {}
+                }
             }
             Event::Move { x, y } => {
                 if self
@@ -511,6 +561,40 @@ impl Handler for App {
                 {
                     self.dirty = true;
                 }
+            }
+            Event::Drag { x, y } => {
+                let (lx, ly) = (x as f32 / self.scale, y as f32 / self.scale);
+                match self.island.drag(lx) {
+                    Some(level) => {
+                        self.set_level(level);
+                        self.dirty = true;
+                    }
+                    None => {
+                        if self.island.hover(lx, ly) {
+                            self.dirty = true;
+                        }
+                    }
+                }
+            }
+            Event::Release => self.island.release(),
+            Event::VolumeChanged => self.show_volume(),
+            Event::DefaultDeviceChanged => {
+                if let Some(m) = self.mixer.as_mut() {
+                    if let Err(e) = m.reacquire() {
+                        storage::log(&format!("volume endpoint: {e}"));
+                    }
+                }
+            }
+            Event::VolumeKey(vk) => {
+                if let Some(m) = self.mixer.as_ref() {
+                    match vk {
+                        VK_VOLUME_UP => m.step(true),
+                        VK_VOLUME_DOWN => m.step(false),
+                        VK_VOLUME_MUTE => m.toggle_mute(),
+                        _ => {}
+                    }
+                }
+                self.show_volume();
             }
             Event::Leave => {
                 if self.island.clear_hover() {

@@ -4,7 +4,7 @@
 
 use crate::fonts::{Fonts, Weight};
 use crate::fx::Effects;
-use crate::icons::{draw_icon, draw_lock};
+use crate::icons::{draw_icon, draw_lock, draw_volume_icon};
 use dj_core::color::Rgb;
 use dj_core::features::FEATURES;
 use dj_core::island::{IslandView, MusicUi};
@@ -159,12 +159,15 @@ impl Painter {
         }
 
         // The outgoing content (idle) fades early and the incoming one late, so two
-        // layers are rarely half-visible at once.
+        // layers are rarely half-visible at once. The OSD takes over the pill, so every
+        // content layer fades out while it is up.
+        let osd_a = v.osd.alpha;
         let lay = v.layers;
-        let idle_op = 1.0 - smoothstep(0.0, 0.45, 1.0 - lay.idle);
-        let home_op = smoothstep(0.35, 1.0, lay.home);
-        let compact_op = smoothstep(0.35, 1.0, lay.compact);
-        let expanded_op = smoothstep(0.35, 1.0, lay.expanded);
+        let not_osd = 1.0 - osd_a;
+        let idle_op = (1.0 - smoothstep(0.0, 0.45, 1.0 - lay.idle)) * not_osd;
+        let home_op = smoothstep(0.35, 1.0, lay.home) * not_osd;
+        let compact_op = smoothstep(0.35, 1.0, lay.compact) * not_osd;
+        let expanded_op = smoothstep(0.35, 1.0, lay.expanded) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -184,6 +187,11 @@ impl Painter {
         if expanded_op > 0.01 {
             begin_layer(canvas, &rect, expanded_op, center, s);
             self.music_expanded(canvas, f, &rect);
+            canvas.restore();
+        }
+        if osd_a > 0.01 {
+            begin_layer(canvas, &rect, osd_a, center, s);
+            self.osd(canvas, f, &rect);
             canvas.restore();
         }
 
@@ -364,6 +372,53 @@ impl Painter {
                 &fill_paint(col(t.accent, a)),
             );
         }
+    }
+
+    /// Volume OSD: icon, level bar and percent, centred on the pill.
+    fn osd(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
+        let (s, t, o) = (f.scale, f.tokens, f.view.osd);
+        let ox = rect.center_x() - layout::OSD_W * s / 2.0;
+        let oy = rect.center_y() - layout::OSD_H * s / 2.0;
+        let mid_y = oy + layout::OSD_H * s / 2.0;
+        let at = |r: LRect| Rect::from_xywh(ox + r.x * s, oy + r.y * s, r.w * s, r.h * s);
+        let ink = if o.muted { t.text_dim } else { t.text };
+
+        draw_volume_icon(
+            canvas,
+            o.icon,
+            ox + layout::OSD_ICON_CX * s,
+            mid_y,
+            layout::OSD_ICON_SIZE * s,
+            &stroke_paint(col(ink, 1.0), 1.6 * s),
+        );
+
+        let bar = at(layout::OSD_BAR);
+        let bar_r = bar.height() / 2.0;
+        canvas.draw_rrect(
+            RRect::new_rect_xy(bar, bar_r, bar_r),
+            &fill_paint(col(t.surface2, 1.0)),
+        );
+        let fill_w = o.level.clamp(0.0, 1.0) * layout::OSD_BAR.w * s;
+        if fill_w >= 0.5 * s {
+            let fill = Rect::from_xywh(bar.left, bar.top, fill_w, bar.height());
+            canvas.draw_rrect(
+                RRect::new_rect_xy(fill, 2.0 * s, 2.0 * s),
+                &fill_paint(col(ink, 1.0)),
+            );
+        }
+
+        let font = self.fonts.font(&t.font_digits, Weight::Medium, 12.0 * s);
+        let txt = o.percent.to_string();
+        let tw = text_width(&font, &txt, 0.0);
+        draw_text(
+            canvas,
+            &font,
+            &txt,
+            ox + layout::OSD_VALUE_RIGHT * s - tw,
+            mid_y + 0.35 * 12.0 * s,
+            0.0,
+            &fill_paint(col(ink, 1.0)),
+        );
     }
 }
 

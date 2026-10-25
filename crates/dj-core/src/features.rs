@@ -53,7 +53,7 @@ const fn available(id: &'static str, name: &'static str, icon: Icon) -> Feature 
 
 pub const FEATURES: [Feature; 13] = [
     available("music", "Music", Icon::Media),
-    locked("osd", "OSD", Icon::Osd),
+    available("osd", "OSD", Icon::Osd),
     locked("vitals", "Vitals", Icon::Vitals),
     locked("timer", "Timer", Icon::Timer),
     locked("snap", "Snap", Icon::Snap),
@@ -73,7 +73,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ids_unique_and_only_music_is_available() {
+    fn ids_unique_and_only_music_and_osd_are_available() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
         assert_eq!(FEATURES.len(), 13);
@@ -82,7 +82,7 @@ mod tests {
             .filter(|f| f.availability == Availability::Available)
             .map(|f| f.id)
             .collect();
-        assert_eq!(open, ["music"]);
+        assert_eq!(open, ["music", "osd"]);
         assert_eq!(FEATURES[0].name, "Music");
     }
 }

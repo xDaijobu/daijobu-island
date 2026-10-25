@@ -1,8 +1,10 @@
-//! The island state machine: Idle pill, Home grid and the Music views, driven by
-//! springs. Time only enters through `step(dt)`, so everything here is deterministic.
+//! The island state machine: Idle pill, Home grid, the Music views and the OSD overlay,
+//! driven by springs. Time only enters through `step(dt)`, so everything here is
+//! deterministic.
 
 use crate::features::{Availability, FEATURES};
 use crate::layout::{self, Rect};
+use crate::osd::{Osd, OsdView, Volume};
 use crate::spring::{Spring, SpringSpec};
 use crate::theme::ResolvedTokens;
 
@@ -29,11 +31,6 @@ impl IslandState {
             IslandState::MusicCompact => 2,
             IslandState::MusicExpanded => 3,
         }
-    }
-
-    /// Expanded states use the theme's expand spring; the rest use collapse.
-    fn grows(self) -> bool {
-        matches!(self, IslandState::Home | IslandState::MusicExpanded)
     }
 }
 
@@ -71,8 +68,11 @@ pub enum ClickOutcome {
     Home,
     /// A locked tile was clicked (index into `FEATURES`): shake + "coming soon".
     Locked(usize),
-    /// An available tile was clicked (index into `FEATURES`). The app opens it.
+    /// An available tile was clicked (index into `FEATURES`). The app opens its view;
+    /// the OSD tile calls `show_osd` with the current volume.
     Open(usize),
+    /// The OSD level bar was clicked: set the master volume to this level (0..=1).
+    SetVolume(f32),
     Music(MusicAction),
 }
 
@@ -96,6 +96,8 @@ pub struct IslandView {
     pub shake: Option<(usize, f32)>,
     /// Tile index and opacity of the "coming soon" hint.
     pub hint: Option<(usize, f32)>,
+    /// The volume pill. Its `alpha` also hides the content layers while > 0.
+    pub osd: OsdView,
 }
 
 pub struct Island {
@@ -110,6 +112,11 @@ pub struct Island {
     shake: Option<(usize, f32)>,
     hint: Option<(usize, f32)>,
     music: MusicUi,
+    osd: Osd,
+    /// True while the user drags the OSD bar.
+    dragging: bool,
+    /// True when the pill is growing (picks the expand or collapse spring).
+    expanding: bool,
 }
 
 impl Island {
@@ -127,6 +134,9 @@ impl Island {
             shake: None,
             hint: None,
             music: MusicUi::default(),
+            osd: Osd::new(),
+            dragging: false,
+            expanding: true,
         }
     }
 
@@ -164,10 +174,22 @@ impl Island {
         }
     }
 
-    fn set_state(&mut self, state: IslandState, tokens: &ResolvedTokens) {
-        self.state = state;
-        let (w, h, r) = Self::base_size(state);
-        let spec = if state.grows() {
+    /// The pill's resting size: the OSD size while it is up, else the state's size.
+    /// The OSD only covers the state; it never changes it, so the state returns after.
+    fn target_size(&self) -> (f32, f32, f32) {
+        if self.osd.is_visible() {
+            (layout::OSD_W, layout::OSD_H, layout::OSD_R)
+        } else {
+            Self::base_size(self.state)
+        }
+    }
+
+    /// Retargets the pill springs to `target_size`. Grow uses the expand spring,
+    /// shrink the collapse spring.
+    fn sync_pill(&mut self, tokens: &ResolvedTokens) {
+        let (w, h, r) = self.target_size();
+        self.expanding = w * h > self.w.target * self.h.target;
+        let spec = if self.expanding {
             tokens.expand
         } else {
             tokens.collapse
@@ -175,10 +197,48 @@ impl Island {
         self.w.retarget(w, spec);
         self.h.retarget(h, spec);
         self.r.retarget(r * tokens.radius_scale, spec);
+    }
+
+    fn set_state(&mut self, state: IslandState, tokens: &ResolvedTokens) {
+        self.state = state;
         for (i, layer) in self.layers.iter_mut().enumerate() {
             layer.retarget(if i == state.layer() { 1.0 } else { 0.0 }, FADE_SPEC);
         }
+        self.sync_pill(tokens);
         self.hover = None;
+    }
+
+    /// Shows the volume pill (or refreshes its value and hold timer).
+    pub fn show_osd(&mut self, volume: Volume, tokens: &ResolvedTokens) {
+        let was_visible = self.osd.is_visible();
+        self.osd.show(volume);
+        if !was_visible {
+            self.sync_pill(tokens);
+        }
+        self.hover = None;
+    }
+
+    /// Ends a bar drag. Call on mouse-up.
+    pub fn release(&mut self) {
+        if self.dragging {
+            self.dragging = false;
+            self.osd.pin(false);
+        }
+    }
+
+    /// Level for a drag at window-logical `x` while the bar is held. None if not dragging.
+    /// Unlike the click, the drag doesn't need to stay over the bar.
+    pub fn drag(&mut self, x: f32) -> Option<f32> {
+        if !self.dragging {
+            return None;
+        }
+        Some(Self::bar_level(x))
+    }
+
+    /// Maps a window-logical `x` onto the OSD bar, clamped to 0..=1.
+    fn bar_level(x: f32) -> f32 {
+        let bar = layout::osd_rect().x + layout::OSD_BAR.x;
+        ((x - bar) / layout::OSD_BAR.w).clamp(0.0, 1.0)
     }
 
     pub fn expand(&mut self, tokens: &ResolvedTokens) {
@@ -232,7 +292,10 @@ impl Island {
 
     fn tile_at(&self, x: f32, y: f32) -> Option<usize> {
         let p = self.pill_rect();
-        if self.state != IslandState::Home || self.layers[IslandState::Home.layer()].value < 0.5 {
+        if self.state != IslandState::Home
+            || self.layers[IslandState::Home.layer()].value < 0.5
+            || self.osd.is_visible()
+        {
             return None;
         }
         layout::hit_tile(&self.tiles, x - p.x, y - p.y)
@@ -240,6 +303,18 @@ impl Island {
 
     /// `(x, y)` in window-logical px.
     pub fn click(&mut self, x: f32, y: f32, tokens: &ResolvedTokens) -> ClickOutcome {
+        if self.osd.is_visible() {
+            // The OSD owns the pill while it is up: only the bar responds.
+            let r = layout::osd_rect();
+            return match layout::osd_level_at(x - r.x, y - r.y) {
+                Some(level) => {
+                    self.dragging = true;
+                    self.osd.pin(true);
+                    ClickOutcome::SetVolume(level)
+                }
+                None => ClickOutcome::Ignored,
+            };
+        }
         if !self.pill_rect().contains(x, y) {
             return ClickOutcome::Ignored;
         }
@@ -327,10 +402,13 @@ impl Island {
     }
 
     pub fn step(&mut self, dt: f32, tokens: &ResolvedTokens) {
+        if self.osd.step(dt) {
+            self.sync_pill(tokens);
+        }
         // Theme switches change the radius scale and spring params mid-flight.
-        let (_, _, base_r) = Self::base_size(self.state);
+        let (_, _, base_r) = self.target_size();
         self.r.target = base_r * tokens.radius_scale;
-        let spec = if self.state.grows() {
+        let spec = if self.expanding {
             tokens.expand
         } else {
             tokens.collapse
@@ -355,6 +433,7 @@ impl Island {
             || self.layers.iter().any(|l| !l.settled())
             || self.shake.is_some()
             || self.hint.is_some()
+            || self.osd.is_animating()
     }
 
     pub fn view(&self) -> IslandView {
@@ -377,6 +456,7 @@ impl Island {
             hint: self
                 .hint
                 .map(|(i, left)| (i, (left / HINT_FADE_SECS).min(1.0))),
+            osd: self.osd.view(),
         }
     }
 }
@@ -400,6 +480,15 @@ mod tests {
         assert!(!i.is_animating());
     }
 
+    /// Pins the OSD so it stays up, then steps until the springs rest at the OSD size.
+    fn settle_pinned(i: &mut Island, t: &ResolvedTokens) {
+        i.osd.pin(true);
+        for _ in 0..1000 {
+            i.step(1.0 / 144.0, t);
+        }
+        assert!(i.osd.is_visible());
+    }
+
     fn center(i: &Island) -> (f32, f32) {
         let p = i.pill_rect();
         (p.x + p.w / 2.0, p.y + p.h / 2.0)
@@ -415,6 +504,13 @@ mod tests {
             signed_in: true,
             has_track: true,
             blocked: false,
+        }
+    }
+
+    fn vol(level: f32) -> Volume {
+        Volume {
+            level,
+            muted: false,
         }
     }
 
@@ -678,5 +774,124 @@ mod tests {
         let i = Island::new(&t);
         let v = i.view();
         assert!(v.radius <= v.rect.h / 2.0);
+    }
+
+    #[test]
+    fn osd_morphs_the_pill_and_returns_to_idle_after_the_hold() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_osd(vol(0.5), &t);
+        settle_pinned(&mut i, &t);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::OSD_W, layout::OSD_H));
+        assert_eq!(i.view().osd.alpha, 1.0);
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::IDLE_W, layout::IDLE_H));
+        assert_eq!(i.state(), IslandState::Idle);
+        assert_eq!(i.view().osd.alpha, 0.0);
+    }
+
+    #[test]
+    fn osd_from_home_returns_to_home() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        let (cx, cy) = center(&i);
+        i.click(cx, cy, &t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.2), &t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Home);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::HOME_W, layout::HOME_H));
+        assert_eq!(i.view().layers.home, 1.0);
+    }
+
+    #[test]
+    fn osd_over_music_returns_to_music() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.4), &t);
+        settle_pinned(&mut i, &t);
+        // The OSD takes the pill and hides the Music content, but the state stays put.
+        assert_eq!(i.state(), IslandState::MusicExpanded);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::OSD_W, layout::OSD_H));
+        assert_eq!(i.view().osd.alpha, 1.0);
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        // Once the OSD hides, the expanded Music view is back, and it still answers.
+        assert_eq!(i.state(), IslandState::MusicExpanded);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::MUSIC_EXP_W, layout::MUSIC_EXP_H));
+        assert_eq!(i.view().layers.expanded, 1.0);
+        assert_eq!(i.view().osd.alpha, 0.0);
+        let (x, y) = at(&i, layout::ME_PLAY);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Music(MusicAction::PlayPause)
+        );
+    }
+
+    #[test]
+    fn osd_tile_opens_through_home_and_tiles_are_not_hit_while_osd_is_up() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        let (cx, cy) = center(&i);
+        i.click(cx, cy, &t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.5), &t);
+        let p = i.pill_rect();
+        let tile = layout::home_tiles()[1];
+        assert!(!i.hover(p.x + tile.x + 2.0, p.y + tile.y + 2.0));
+        // The OSD tile opens the OSD view: clicking it on Home reports Open.
+        settle(&mut i, &t);
+        let p = i.pill_rect();
+        assert_eq!(
+            i.click(p.x + tile.x + 5.0, p.y + tile.y + 5.0, &t),
+            ClickOutcome::Open(1)
+        );
+    }
+
+    #[test]
+    fn osd_bar_click_and_drag_set_the_level_and_clamp() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_osd(vol(0.0), &t);
+        settle_pinned(&mut i, &t);
+        let r = layout::osd_rect();
+        let bar = layout::OSD_BAR;
+        let mid_x = r.x + bar.x + bar.w / 2.0;
+        let mid_y = r.y + bar.y + bar.h / 2.0;
+        assert_eq!(i.click(mid_x, mid_y, &t), ClickOutcome::SetVolume(0.5));
+        // Drag past the right end: clamped to 1.0 even though the pointer left the hit area.
+        assert_eq!(i.drag(r.x + bar.x + bar.w + 80.0), Some(1.0));
+        assert_eq!(i.drag(r.x + bar.x - 80.0), Some(0.0));
+        i.release();
+        assert_eq!(i.drag(mid_x), None);
+        // A click outside the bar, while the OSD is up, does nothing.
+        assert_eq!(i.click(r.x + 2.0, r.y + 2.0, &t), ClickOutcome::Ignored);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn osd_stays_up_while_dragging() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_osd(vol(0.3), &t);
+        let r = layout::osd_rect();
+        let bar = layout::OSD_BAR;
+        i.click(r.x + bar.x + 1.0, r.y + bar.y + 1.0, &t);
+        for _ in 0..600 {
+            i.step(1.0 / 120.0, &t);
+        }
+        assert_eq!(i.view().osd.alpha, 1.0);
+        i.release();
+        settle(&mut i, &t);
+        assert_eq!(i.view().osd.alpha, 0.0);
     }
 }
