@@ -120,7 +120,11 @@ impl App {
             Ok(m) => self.mixer = Some(m),
             Err(e) => storage::log(&format!("volume endpoint: {e}")),
         }
-        if self.config.osd.replace_volume_flyout && !hook::install(self.hwnd) {
+        // Without an endpoint the keys would be swallowed and do nothing, so the flyout stays.
+        if self.config.osd.replace_volume_flyout
+            && self.mixer.is_some()
+            && !hook::install(self.hwnd)
+        {
             storage::log("cannot install the volume key hook");
         }
     }
