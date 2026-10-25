@@ -20,6 +20,7 @@ pub enum Icon {
     Lyrics,
     Cli,
     Tile,
+    /// Not a tile: Sweep lives inside the Vitals panel. The panel's button draws it.
     Sweep,
     Shelf,
     Ambient,
@@ -51,7 +52,7 @@ const fn available(id: &'static str, name: &'static str, icon: Icon) -> Feature 
     }
 }
 
-pub const FEATURES: [Feature; 13] = [
+pub const FEATURES: [Feature; 12] = [
     available("music", "Music", Icon::Media),
     available("osd", "OSD", Icon::Osd),
     available("vitals", "Vitals", Icon::Vitals),
@@ -62,7 +63,6 @@ pub const FEATURES: [Feature; 13] = [
     locked("lyrics", "Lyrics", Icon::Lyrics),
     locked("cli", "dj CLI", Icon::Cli),
     locked("tile", "Tile & Scenes", Icon::Tile),
-    locked("sweep", "Sweep", Icon::Sweep),
     locked("shelf", "Shelf", Icon::Shelf),
     locked("ambient", "Ambient", Icon::Ambient),
 ];
@@ -76,7 +76,7 @@ mod tests {
     fn ids_unique_and_only_music_osd_and_vitals_are_available() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
-        assert_eq!(FEATURES.len(), 13);
+        assert_eq!(FEATURES.len(), 12);
         let open: Vec<_> = FEATURES
             .iter()
             .filter(|f| f.availability == Availability::Available)
@@ -84,5 +84,13 @@ mod tests {
             .collect();
         assert_eq!(open, ["music", "osd", "vitals"]);
         assert_eq!(FEATURES[0].name, "Music");
+    }
+
+    #[test]
+    fn sweep_is_not_a_tile() {
+        // Sweep moved into the Vitals panel (Stage 5).
+        assert!(FEATURES
+            .iter()
+            .all(|f| f.id != "sweep" && f.icon != Icon::Sweep));
     }
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dj-core", "crates/dj-render", "crates/dj-win", "crates/dj-music", "crates/dj-vitals", "app"]
+members = ["crates/dj-core", "crates/dj-render", "crates/dj-win", "crates/dj-music", "crates/dj-vitals", "crates/dj-sweep", "app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ windows = "0.62"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 serde_json = "1"
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

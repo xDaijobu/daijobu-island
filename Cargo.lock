@@ -129,6 +129,7 @@ dependencies = [
  "dj-core",
  "dj-music",
  "dj-render",
+ "dj-sweep",
  "dj-vitals",
  "dj-win",
 ]
@@ -169,6 +170,16 @@ version = "0.1.0"
 dependencies = [
  "dj-core",
  "skia-safe",
+ "windows",
+]
+
+[[package]]
+name = "dj-sweep"
+version = "0.1.0"
+dependencies = [
+ "dj-core",
+ "serde_json",
+ "tempfile",
  "windows",
 ]
 

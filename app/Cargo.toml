@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 dj-core = { path = "../crates/dj-core" }
 dj-render = { path = "../crates/dj-render" }
+dj-sweep = { path = "../crates/dj-sweep" }
 dj-vitals = { path = "../crates/dj-vitals" }
 dj-win = { path = "../crates/dj-win" }
 dj-music = { path = "../crates/dj-music" }

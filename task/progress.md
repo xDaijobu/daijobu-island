@@ -18,7 +18,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 2b | **Music Library**: search, library (liked/playlists/listen again), queue, all inside the island (native Skia; data via the hidden YT Music engine) | 🔒 | — | after Stage 2 sign-in is confirmed; mockup in plan.html first |
 | 3 | **OSD volume** | ✅ merged (PR #3), live test pending | `stage-3-osd` | done ahead of Stage 2's PR · Haiku 5.5 + subagents · brief: [`stage-3-brief.md`](stage-3-brief.md) |
 | 4 | **Vitals (compact)** | ✅ merged (PR #4), live test pending | — | Haiku started, Opus 5.5 finished · lock-icon fix by the coordinator after the first live run |
-| 5 | **Vitals + Sweep**: Sweep merged into the Vitals panel (diagnose → clean), full vitals (disk I/O, top processes) | ⬜ next | — | decided 2026-10-25: the Sweep tile is removed (12 features) |
+| 5 | **Vitals + Sweep**: Sweep merged into the Vitals panel (diagnose → clean), full vitals (disk I/O, top processes) | 🔵 PR open, live test pending | `stage-5-vitals-sweep` | Opus 5.5 (4 agents: sweep, wiring, render, safety review) · headless · brief: [`stage-5-brief.md`](stage-5-brief.md) |
 | 6 | Timer / Pomodoro | 🔒 | — | |
 | 7 | Snap + Snap stack | 🔒 | — | |
 | 8 | Clipboard history | 🔒 | — | |
@@ -183,6 +183,57 @@ Open Home → Vitals: the rings and net show live values once per second, and th
 ### Log
 - 2026-10-25: stage defined. Starts from the `stage-3-osd` branch (stacked) once Stage 3 is done.
 - 2026-10-25: Haiku was stopped part-way and Opus 5.5 finished the stage. It merged Stage 3 (OSD + Music); Music, OSD and Vitals are all Available. 12 commits; clippy is clean; tests pass. The coordinator checked `build --release` (2m45s, exe 9.8 MB). Live checks (values, lamp, panel visuals, idle CPU) are user to test. Report: `task/stage-4-report.md`.
+
+---
+
+## Stage 5: Vitals + Sweep
+
+**Goal:** Vitals diagnoses and Sweep cleans, in one panel. You see "Low disk", click "🧹 6.8 GB reclaimable", preview, clean, and watch the disk ring and score improve.
+
+### Scope
+- [ ] **Remove the Sweep tile** from the registry (12 features). Vitals stays Available, and the tests are updated.
+- [ ] **Full vitals** (`dj-vitals`):
+  - **disk I/O** (read + write bytes/s, through PDH `\PhysicalDisk(_Total)\Disk Bytes/sec` or an equivalent Win32 API)
+  - **top processes**: top 3 by CPU and top 3 by RAM (Toolhelp snapshot + process times / memory counters), sampled only while the panel is open
+  - the health score gains a disk-I/O penalty: none below 50 MB/s, linear up to 10 at 150 MB/s and above
+- [ ] **`crates/dj-sweep`**. Every category list is **our own**, written from Windows knowledge. Nothing is copied from Mole.
+  - **Temp & reports:** user `%TEMP%` older than 7 days, WER ReportArchive/ReportQueue, and CrashDumps `*.dmp` older than 7 days.
+  - **Browser caches:** Chrome, Edge, Brave and Vivaldi per profile (`Cache`, `Code Cache`, `GPUCache`), plus Firefox `cache2`. Skip a browser while its process is running.
+  - **App & dev caches:** path-based only, with no spawning of tools. VS Code/Discord/Slack Electron caches, npm `_cacache`, pip cache, Cargo `registry/cache`, Yarn cache, and the Go build cache.
+  - **Dev purge:** roots from config `[sweep] project_roots` (default `~/Documents`, `~/Projects`, `~/Code`, `~/source/repos`, `~/dev`), depth ≤ 4.
+    - Candidates: `node_modules`, `target`, `dist`, `build`, `.next`, `.venv`/`venv`, `__pycache__`, `bin`/`obj`. Each needs a **context marker**:
+      - `target` needs `Cargo.toml` or `pom.xml`
+      - `bin`/`obj` need a `*.csproj`
+      - `build`/`dist` need a build signal (`package.json` with a build script, CMake, Gradle, pyproject `[build-system]`)
+    - The candidate must be a direct child of the project, contain no nested `.git`, and have **no git-tracked files** (`git ls-files`; skip on error).
+    - Skip any project touched in the last 14 days.
+  - **Big files:** the top 20 under the user profile (skipping protected paths), with *Reveal* (`explorer /select`) and *Recycle*.
+  - **Quick actions:** flush DNS (`DnsFlushResolverCache`) and empty the Recycle Bin (`SHEmptyRecycleBinW`, with a confirm step).
+- [ ] **Safety (mandatory):**
+  - A protected-path guard (Windows, Program Files, ProgramData, the profile root itself, `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, browser `Login Data`/`Cookies`/`Local Storage`/`IndexedDB`/`Sessions`, Credentials/Vault/Crypto, `AppData\Local\Packages`, and `~/.daijobu` itself).
+  - Never follow reparse points. Resolve the final path and re-verify immediately before deleting.
+  - **Preview is required** before the Clean button enables.
+  - Purge and big files go to the **Recycle Bin** (`IFileOperation`). Only temp/cache entries are deleted permanently.
+  - Scans run off the UI thread, with a time budget. Admin-only locations are out of scope for this stage.
+  - Every action is logged to `~/.daijobu/operations.log` (`[time] [sweep run=<id>] REMOVED|RECYCLED|FAILED <path> (detail)`).
+- [ ] **Reclaimable estimate:** a cached background scan stored in `~/.daijobu/sweep-cache.toml`. It refreshes when older than 6 h and the panel opens, never on a hot loop, and never while the island is hidden.
+- [ ] **UI:**
+  - The Vitals panel gets a "🧹 X reclaimable" button, made prominent when the reason is "Low disk", plus disk I/O and top-3 processes.
+  - The button morphs into the **Sweep view**: category checklist with sizes, a per-category preview list, a "Clean X" button, progress, then a result ("Freed 4.1 GB").
+  - Afterwards it goes back to Vitals with the disk ring and score refreshed. The OSD still overlays it.
+- [ ] Idle CPU ≈ 0. No scanning unless the panel is open, the cache is stale, or the user asks.
+- [ ] Tests (**temp dirs only**): protected-path guard, reparse skip, age filter, purge context rules, git-tracked skip, size aggregation, oplog format, disk-I/O penalty, top-N selection. `build --release`, `clippy -D warnings` and `test` pass.
+
+### Acceptance
+Home → Vitals shows the score, rings, disk I/O, top processes and "🧹 X reclaimable". Click it → Sweep → preview the categories → Clean. The files go to the Recycle Bin or are removed (temp/cache), the log has entries, and Vitals shows more free disk. Protected paths are never touched.
+
+### Rules for the agent
+**HEADLESS** (don't run the exe; fmt/clippy/test only; `CARGO_BUILD_JOBS=2`). **Never delete or scan the user's real files.** Every scan and delete in tests runs inside temp directories. The user does the real clean themselves.
+
+### Log
+- 2026-10-25: stage defined (the user asked for Sweep inside Vitals).
+- 2026-10-26: built by 4 parallel Opus agents. fmt, clippy -D warnings, 188 tests and the release build pass (verified by the coordinator). PR opened; live test pending.
+- 2026-10-26: merged at the user's request before the safety fixes. **Open BLOCKER:** the Temp category trusts `%TEMP%` (if unset, Windows falls back to the profile, so profile folders could be deleted permanently). Do not clean "temp & reports" until it is fixed. Also open: junction TOCTOU in `remove_rec`, `FOF_WANTNUKEWARNING` on recycle, the 14-day activity cap, the big-file confirm armed by index, and a few lows (see the PR #6 comments). Unfinished fix: local branch `wip/stage-5-safety-fixes`. `task/stage-5-report.md` is not written yet.
 
 ---
 

@@ -2,6 +2,7 @@
 //! Win32 events.
 
 use crate::storage;
+use crate::sweep::{Job, Msg, ScanId, Sweeper};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
 use dj_core::config::Config;
@@ -10,6 +11,7 @@ use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction};
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
+use dj_core::sweep::{format_bytes, Estimate, Phase, Removal, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
@@ -19,12 +21,18 @@ use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
 use dj_win::{hook, system, volume, window, Event, Handler, HICON, HWND};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOTKEY_TOGGLE: i32 = 1;
 const HOTKEY_THEME: i32 = 2;
 const TIMER_CLOCK: usize = 1;
 const TIMER_VU: usize = 2;
+/// One-shot: the Sweep result has been on screen long enough, back to Vitals.
+const TIMER_SWEEP_DONE: usize = 4;
+const SWEEP_DONE_MS: u32 = 4_000;
+/// A stale estimate is retried at most this often, so a scan that keeps failing or
+/// being cancelled is never restarted in a loop.
+const ESTIMATE_RETRY: Duration = Duration::from_secs(10 * 60);
 /// About 30 fps for the VU.
 const VU_MS: u32 = 33;
 const VK_H: u32 = 0x48;
@@ -73,6 +81,16 @@ pub struct App {
     /// Health samples and their history for the Vitals panel and the idle lamp.
     vitals: Vitals,
     worker: Worker,
+    /// Sweep: the view model, the reclaimable cache and the worker running the jobs.
+    sweep: SweepView,
+    sweep_cache: SweepCache,
+    sweeper: Sweeper,
+    /// The running estimate and preview scans, by id. Results of other ids are stale.
+    estimate_scan: Option<ScanId>,
+    preview_scan: Option<ScanId>,
+    estimate_started: Option<Instant>,
+    /// A clean (or a single recycle) is running.
+    cleaning: bool,
 }
 
 impl App {
@@ -95,6 +113,14 @@ impl App {
             ..Session::default()
         };
         let worker = Worker::start(hwnd);
+        let profile = std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let sweeper = Sweeper::start(
+            hwnd,
+            config.sweep.roots(&profile),
+            storage::operations_log_path(),
+        );
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -123,6 +149,13 @@ impl App {
             vu_armed: false,
             vitals: Vitals::new(),
             worker,
+            sweep: SweepView::new(),
+            sweep_cache: storage::load_sweep_cache(),
+            sweeper,
+            estimate_scan: None,
+            preview_scan: None,
+            estimate_started: None,
+            cleaning: false,
         };
         app.relayout();
         app.install_shell_integration();
@@ -210,10 +243,224 @@ impl App {
     /// Queues the worker's readings. Redraws when the panel is open or the lamp colour changed.
     fn drain_vitals(&mut self) {
         let lamp_before = self.lamp_warn();
-        for reading in self.worker.drain() {
-            self.vitals.push(reading);
+        for sample in self.worker.drain() {
+            self.vitals.push(sample.reading);
+            if let Some(top) = sample.top {
+                self.vitals.set_top(top);
+            }
         }
         if self.island.state() == IslandState::Vitals || self.lamp_warn() != lamp_before {
+            self.dirty = true;
+        }
+    }
+
+    // ---- Sweep ----
+
+    fn now_unix() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
+
+    /// What the Vitals panel's Sweep button shows.
+    fn estimate(&self) -> Estimate {
+        Estimate::from_cache(&self.sweep_cache, self.estimate_scan.is_some())
+    }
+
+    /// Starts, keeps or cancels sweep scans for what is on screen:
+    /// - the estimate runs only while the Vitals panel is open and visible, when the
+    ///   cache is stale, and at most once per `ESTIMATE_RETRY`;
+    /// - the preview runs only while the Sweep view is open and visible.
+    fn sync_sweep(&mut self) {
+        let state = self.island.state();
+        let in_panel = matches!(state, IslandState::Vitals | IslandState::Sweep);
+        if self.estimate_scan.is_some() && (!self.visible || !in_panel) {
+            self.sweeper.cancel_scan();
+            self.estimate_scan = None;
+            // Cancelled, not failed: the next panel open may try again.
+            self.estimate_started = None;
+        }
+        if self.preview_scan.is_some() && (!self.visible || state != IslandState::Sweep) {
+            self.sweeper.cancel_scan();
+            self.preview_scan = None;
+        }
+        if !self.visible || self.cleaning {
+            return;
+        }
+        if state == IslandState::Sweep
+            && self.sweep.phase == Phase::Scanning
+            && self.preview_scan.is_none()
+        {
+            // The preview was cancelled (hidden mid-scan): run it again.
+            self.start_preview();
+        } else if state == IslandState::Vitals
+            && self.estimate_scan.is_none()
+            && self.preview_scan.is_none()
+            && self.sweep_cache.is_stale(Self::now_unix())
+            && self
+                .estimate_started
+                .is_none_or(|t| t.elapsed() >= ESTIMATE_RETRY)
+        {
+            self.estimate_started = Some(Instant::now());
+            self.estimate_scan = Some(self.sweeper.scan(false));
+            self.dirty = true;
+        }
+    }
+
+    fn start_preview(&mut self) {
+        if self.estimate_scan.take().is_some() {
+            // The preview gives fresher totals anyway.
+            self.sweeper.cancel_scan();
+            self.estimate_started = None;
+        }
+        self.sweep.start_scan();
+        self.preview_scan = Some(self.sweeper.scan(true));
+        self.dirty = true;
+    }
+
+    /// Saves the totals of a finished preview or clean as the new estimate.
+    fn store_estimate(&mut self) {
+        self.sweep_cache = SweepCache::from_totals(Self::now_unix(), &self.sweep.totals());
+        storage::save_sweep_cache(&self.sweep_cache);
+    }
+
+    fn back_to_vitals(&mut self) {
+        window::kill_timer(self.hwnd, TIMER_SWEEP_DONE);
+        let tokens = self.anim.current().clone();
+        self.island.open_vitals(&tokens);
+        self.dirty = true;
+    }
+
+    /// Runs what a click in the Sweep view asked for.
+    fn sweep_cmd(&mut self, cmd: SweepCmd) {
+        match cmd {
+            SweepCmd::Back => self.back_to_vitals(),
+            SweepCmd::Clean => {
+                if self.cleaning || !self.sweep.can_clean() {
+                    return;
+                }
+                let items: Vec<_> = self
+                    .sweep
+                    .selection()
+                    .into_iter()
+                    .map(|(cat, item)| (cat, item.path))
+                    .collect();
+                self.sweep.begin_clean(items.len());
+                self.cleaning = true;
+                self.sweeper.send(Job::Clean(items));
+            }
+            SweepCmd::FlushDns => {
+                self.sweep.status = Some("flushing dns…".into());
+                self.sweeper.send(Job::FlushDns);
+            }
+            SweepCmd::EmptyBin => {
+                self.sweep.status = Some("emptying the bin…".into());
+                self.sweeper.send(Job::EmptyBin);
+            }
+            SweepCmd::Reveal(path) => self.sweeper.send(Job::Reveal(path)),
+            SweepCmd::Recycle(path) => {
+                if self.cleaning {
+                    return;
+                }
+                self.cleaning = true;
+                self.sweep.status = Some("recycling…".into());
+                self.sweeper.send(Job::Recycle(path));
+            }
+        }
+    }
+
+    /// Previewed bytes of the `gone` items whose category goes to the Recycle Bin.
+    fn recycled_bytes(&self, gone: &[PathBuf]) -> u64 {
+        self.sweep
+            .cats
+            .iter()
+            .filter(|c| c.cat.removal() == Removal::Recycle)
+            .flat_map(|c| c.items.iter())
+            .filter(|i| gone.contains(&i.path))
+            .map(|i| i.bytes)
+            .fold(0, u64::saturating_add)
+    }
+
+    /// Applies the sweep worker's results.
+    fn drain_sweep(&mut self) {
+        let msgs: Vec<Msg> = self.sweeper.drain().collect();
+        for msg in msgs {
+            match msg {
+                Msg::Category {
+                    id,
+                    cat,
+                    items,
+                    note,
+                } => {
+                    if self.preview_scan == Some(id) {
+                        self.sweep.set_category(cat, items, note);
+                    }
+                }
+                Msg::ScanDone {
+                    id,
+                    estimate,
+                    totals,
+                } => {
+                    if estimate && self.estimate_scan == Some(id) {
+                        self.estimate_scan = None;
+                        if let Some(totals) = totals {
+                            self.sweep_cache = SweepCache::from_totals(Self::now_unix(), &totals);
+                            storage::save_sweep_cache(&self.sweep_cache);
+                        }
+                    } else if !estimate && self.preview_scan == Some(id) {
+                        self.preview_scan = None;
+                        if totals.is_some() {
+                            self.sweep.finish_scan();
+                            self.store_estimate();
+                        }
+                    }
+                }
+                Msg::Progress { done, total } => self.sweep.clean_progress(done, total),
+                Msg::Cleaned {
+                    freed,
+                    failed,
+                    gone,
+                } => {
+                    self.cleaning = false;
+                    // Recycled bytes still sit on the disk (in the bin), so "Freed" only
+                    // counts permanent removals and the bin share is named separately.
+                    let recycled = self.recycled_bytes(&gone).min(freed);
+                    self.sweep.finish_clean(freed - recycled, failed, &gone);
+                    if recycled > 0 {
+                        let mut line = format!(
+                            "Freed {} · {} to bin",
+                            format_bytes(freed - recycled),
+                            format_bytes(recycled)
+                        );
+                        if failed > 0 {
+                            line.push_str(&format!(" · {failed} failed"));
+                        }
+                        self.sweep.status = Some(line);
+                    }
+                    self.store_estimate();
+                    // The disk ring and the score move at once.
+                    self.worker.sample_now();
+                    if self.island.state() == IslandState::Sweep {
+                        window::set_timer(self.hwnd, TIMER_SWEEP_DONE, SWEEP_DONE_MS);
+                    }
+                }
+                Msg::Recycled { path, ok } => {
+                    self.cleaning = false;
+                    if ok {
+                        self.sweep.forget(&path);
+                        self.sweep.status = Some("moved to the recycle bin".into());
+                        self.worker.sample_now();
+                    } else {
+                        self.sweep.status = Some("could not recycle that file".into());
+                    }
+                }
+                Msg::Status(text) => self.sweep.status = Some(text),
+            }
+        }
+        if matches!(
+            self.island.state(),
+            IslandState::Vitals | IslandState::Sweep
+        ) {
             self.dirty = true;
         }
     }
@@ -585,6 +832,13 @@ impl Handler for App {
                     ClickOutcome::Open(i) if FEATURES[i].id == "vitals" => {
                         self.island.open_vitals(&tokens);
                     }
+                    // A clean that is still running keeps its view; otherwise preview afresh.
+                    ClickOutcome::OpenSweep if !self.cleaning => self.start_preview(),
+                    ClickOutcome::Sweep { x, y } => {
+                        if let Some(cmd) = self.sweep.click(x, y) {
+                            self.sweep_cmd(cmd);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -648,6 +902,13 @@ impl Handler for App {
             }
             Event::Timer(TIMER_VU) => self.dirty = true,
             Event::Timer(vitals::TIMER) => self.worker.tick(),
+            Event::Timer(TIMER_SWEEP_DONE) => {
+                window::kill_timer(self.hwnd, TIMER_SWEEP_DONE);
+                let done = matches!(self.sweep.phase, Phase::Done { .. });
+                if done && self.island.state() == IslandState::Sweep {
+                    self.back_to_vitals();
+                }
+            }
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => self.drain_art(),
@@ -657,9 +918,11 @@ impl Handler for App {
                 }
             }
             Event::VitalsReady => self.drain_vitals(),
+            Event::SweepReady => self.drain_sweep(),
         }
         self.sync_vu_timer();
         self.sync_vitals();
+        self.sync_sweep();
     }
 
     fn wants_frame(&self) -> bool {
@@ -705,6 +968,7 @@ impl Handler for App {
             accent,
             pos,
         };
+        let estimate = self.estimate();
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
             return;
@@ -719,6 +983,8 @@ impl Handler for App {
             music,
             vitals: &self.vitals,
             health_lamp: self.config.vitals.health_lamp,
+            sweep: &self.sweep,
+            estimate,
         };
         match renderer.render(&frame) {
             Ok(()) => {}

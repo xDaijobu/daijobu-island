@@ -117,6 +117,29 @@ pub fn system_drive_root(system_drive: Option<&str>) -> String {
     }
 }
 
+/// One process's share of the whole machine over `secs`: CPU time used (100 ns units)
+/// divided by the wall time times the logical CPU count, as a percentage clamped to
+/// 0..=100. A bad interval or a zero CPU count gives 0.
+pub fn proc_cpu_pct(delta_100ns: u64, secs: f64, ncpu: usize) -> f32 {
+    if !secs.is_finite() || secs <= 0.0 || ncpu == 0 {
+        return 0.0;
+    }
+    let busy_secs = delta_100ns as f64 / 10_000_000.0;
+    clamp_pct(busy_secs / (secs * ncpu as f64) * 100.0)
+}
+
+/// A process image name for display: up to the first NUL, without a trailing `.exe`.
+pub fn display_name(raw: &[u16]) -> String {
+    let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+    let name = String::from_utf16_lossy(&raw[..end]);
+    match name.len().checked_sub(4) {
+        Some(cut) if name.is_char_boundary(cut) && name[cut..].eq_ignore_ascii_case(".exe") => {
+            name[..cut].to_string()
+        }
+        _ => name,
+    }
+}
+
 /// UTF-16 encoding with a trailing NUL, ready for a `PCWSTR`.
 pub fn to_wide_nul(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -323,6 +346,36 @@ mod tests {
         assert_eq!(system_drive_root(None), "C:\\");
         assert_eq!(system_drive_root(Some("")), "C:\\");
         assert_eq!(system_drive_root(Some("   ")), "C:\\");
+    }
+
+    #[test]
+    fn proc_cpu_share_of_the_machine() {
+        // 0.5 s of CPU over 1 s on 4 logical CPUs is 12.5 % of the machine.
+        assert_eq!(proc_cpu_pct(5_000_000, 1.0, 4), 12.5);
+        // A process using all 8 CPUs for 2 s is 100 %.
+        assert_eq!(proc_cpu_pct(160_000_000, 2.0, 8), 100.0);
+        // Rounding noise above 100 is clamped.
+        assert_eq!(proc_cpu_pct(20_000_000, 1.0, 1), 100.0);
+    }
+
+    #[test]
+    fn proc_cpu_bad_inputs_give_zero() {
+        assert_eq!(proc_cpu_pct(1_000, 0.0, 4), 0.0);
+        assert_eq!(proc_cpu_pct(1_000, -1.0, 4), 0.0);
+        assert_eq!(proc_cpu_pct(1_000, f64::NAN, 4), 0.0);
+        assert_eq!(proc_cpu_pct(1_000, 1.0, 0), 0.0);
+    }
+
+    #[test]
+    fn display_name_strips_exe_and_nul_padding() {
+        let mut raw: Vec<u16> = "Chrome.EXE".encode_utf16().collect();
+        raw.extend([0, b'x' as u16, 0]);
+        assert_eq!(display_name(&raw), "Chrome");
+        let plain: Vec<u16> = "Memory Compression".encode_utf16().collect();
+        assert_eq!(display_name(&plain), "Memory Compression");
+        let short: Vec<u16> = "exe".encode_utf16().collect();
+        assert_eq!(display_name(&short), "exe");
+        assert_eq!(display_name(&[0]), "");
     }
 
     #[test]

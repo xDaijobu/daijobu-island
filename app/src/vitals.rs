@@ -3,9 +3,10 @@
 //! reading and wakes the UI with `WM_VITALS`.
 //!
 //! Cadence: 1 Hz while the Vitals panel is open, every 30 s while the health lamp needs
-//! it, and not at all while the island is hidden or the lamp is off.
+//! it, and not at all while the island is hidden or the lamp is off. The top processes
+//! are only sampled at the panel cadence.
 
-use dj_core::vitals::Reading;
+use dj_core::vitals::{Reading, TopProcs};
 use dj_vitals::Sampler;
 use dj_win::window::{self, post_to, WM_VITALS};
 use dj_win::HWND;
@@ -58,17 +59,24 @@ impl Cadence {
     }
 }
 
-/// One pending sample request. Requests made while one is pending coalesce.
+/// One sampler pass: the reading, plus the top processes when the panel asked for them.
+pub struct Sample {
+    pub reading: Reading,
+    pub top: Option<TopProcs>,
+}
+
+/// One pending sample request (`Some(with_top)`). Requests made while one is pending
+/// coalesce, and the top-process flag is kept if any of them asked for it.
 #[derive(Default)]
 struct Shared {
-    pending: Mutex<bool>,
+    pending: Mutex<Option<bool>>,
     changed: Condvar,
 }
 
 pub struct Worker {
     hwnd: HWND,
     shared: Arc<Shared>,
-    readings: mpsc::Receiver<Reading>,
+    readings: mpsc::Receiver<Sample>,
     cadence: Cadence,
     /// When the last sample was requested. None before the first one.
     last: Option<Instant>,
@@ -121,14 +129,23 @@ impl Worker {
         }
     }
 
+    /// Samples once now, whatever the cadence (for example right after a clean, so
+    /// the disk ring and the score move at once).
+    pub fn sample_now(&mut self) {
+        self.request();
+    }
+
     fn request(&mut self) {
         self.last = Some(Instant::now());
-        *lock(&self.shared.pending) = true;
+        let top = self.cadence == Cadence::Panel;
+        let mut pending = lock(&self.shared.pending);
+        *pending = Some(pending.unwrap_or(false) || top);
+        drop(pending);
         self.shared.changed.notify_one();
     }
 
-    /// Readings queued since the last call, oldest first.
-    pub fn drain(&self) -> impl Iterator<Item = Reading> + '_ {
+    /// Samples queued since the last call, oldest first.
+    pub fn drain(&self) -> impl Iterator<Item = Sample> + '_ {
         self.readings.try_iter()
     }
 }
@@ -138,26 +155,32 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn run(shared: &Shared, hwnd: isize, tx: &mpsc::Sender<Reading>) {
+fn run(shared: &Shared, hwnd: isize, tx: &mpsc::Sender<Sample>) {
     let mut sampler = Sampler::new();
     let baseline = Instant::now();
     let mut first = true;
     loop {
-        {
+        let with_top = {
             let mut pending = lock(&shared.pending);
-            while !*pending {
+            loop {
+                if let Some(top) = pending.take() {
+                    break top;
+                }
                 pending = shared
                     .changed
                     .wait(pending)
                     .unwrap_or_else(|e| e.into_inner());
             }
-            *pending = false;
-        }
+        };
         if first {
             first = false;
             thread::sleep(MIN_FIRST_GAP.saturating_sub(baseline.elapsed()));
         }
-        if tx.send(sampler.sample()).is_err() {
+        let sample = Sample {
+            reading: sampler.sample(),
+            top: with_top.then(|| sampler.top()),
+        };
+        if tx.send(sample).is_err() {
             return; // the app has gone
         }
         post_to(hwnd, WM_VITALS);
