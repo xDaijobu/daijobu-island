@@ -1,4 +1,5 @@
-//! The island state machine: Idle pill, Home grid, the Music views and the OSD overlay,
+//! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel and
+//! the OSD overlay,
 //! driven by springs. Time only enters through `step(dt)`, so everything here is
 //! deterministic.
 
@@ -20,6 +21,8 @@ pub enum IslandState {
     Home,
     MusicCompact,
     MusicExpanded,
+    /// The Vitals panel, opened from the Home tile. An empty click collapses it.
+    Vitals,
 }
 
 impl IslandState {
@@ -30,6 +33,7 @@ impl IslandState {
             IslandState::Home => 1,
             IslandState::MusicCompact => 2,
             IslandState::MusicExpanded => 3,
+            IslandState::Vitals => 4,
         }
     }
 }
@@ -83,6 +87,7 @@ pub struct Layers {
     pub home: f32,
     pub compact: f32,
     pub expanded: f32,
+    pub vitals: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -106,7 +111,7 @@ pub struct Island {
     h: Spring,
     r: Spring,
     /// One opacity spring per content layer, indexed by `IslandState::layer`.
-    layers: [Spring; 4],
+    layers: [Spring; 5],
     tiles: Vec<Rect>,
     hover: Option<usize>,
     shake: Option<(usize, f32)>,
@@ -128,7 +133,13 @@ impl Island {
             w: Spring::new(layout::IDLE_W, spec, 0.02),
             h: Spring::new(layout::IDLE_H, spec, 0.02),
             r: Spring::new(layout::IDLE_R * tokens.radius_scale, spec, 0.02),
-            layers: [fade(true), fade(false), fade(false), fade(false)],
+            layers: [
+                fade(true),
+                fade(false),
+                fade(false),
+                fade(false),
+                fade(false),
+            ],
             tiles: layout::home_tiles(),
             hover: None,
             shake: None,
@@ -162,6 +173,7 @@ impl Island {
                 layout::MUSIC_EXP_H,
                 layout::MUSIC_EXP_R,
             ),
+            IslandState::Vitals => (layout::VITALS_W, layout::VITALS_H, layout::VITALS_R),
         }
     }
 
@@ -254,6 +266,14 @@ impl Island {
         }
     }
 
+    /// Opens the Vitals panel (from the Home tile). The app samples at 1 Hz while
+    /// `state()` is Vitals.
+    pub fn open_vitals(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::Vitals {
+            self.set_state(IslandState::Vitals, tokens);
+        }
+    }
+
     /// Collapses to the rest state: compact when a track is loaded, otherwise Idle.
     pub fn collapse(&mut self, tokens: &ResolvedTokens) {
         let rest = self.rest_state();
@@ -328,6 +348,11 @@ impl Island {
                 ClickOutcome::Expanded
             }
             IslandState::MusicExpanded => self.music_click(x, y, tokens),
+            // The panel has no controls: like an empty click in the other views, it collapses.
+            IslandState::Vitals => {
+                self.collapse(tokens);
+                ClickOutcome::Collapsed
+            }
             IslandState::Home => match self.tile_at(x, y) {
                 Some(i) if FEATURES[i].availability == Availability::Locked => {
                     self.shake = Some((i, 0.0));
@@ -447,6 +472,7 @@ impl Island {
                 home: v(1),
                 compact: v(2),
                 expanded: v(3),
+                vitals: v(4),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -762,9 +788,85 @@ mod tests {
         settle(&mut i, &t);
         let l = i.view().layers;
         assert_eq!(
-            (l.idle, l.home, l.compact, l.expanded),
-            (0.0, 0.0, 0.0, 1.0)
+            (l.idle, l.home, l.compact, l.expanded, l.vitals),
+            (0.0, 0.0, 0.0, 1.0, 0.0)
         );
+    }
+
+    fn vitals_index() -> usize {
+        FEATURES.iter().position(|f| f.id == "vitals").unwrap()
+    }
+
+    #[test]
+    fn vitals_tile_opens_the_panel_and_an_empty_click_collapses() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        settle(&mut i, &t);
+        let tile = layout::home_tiles()[vitals_index()];
+        let out = i.click(
+            i.pill_rect().x + tile.x + 5.0,
+            i.pill_rect().y + tile.y + 5.0,
+            &t,
+        );
+        assert_eq!(out, ClickOutcome::Open(vitals_index()));
+        i.open_vitals(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::VITALS_W, layout::VITALS_H));
+        let l = i.view().layers;
+        assert_eq!((l.idle, l.home, l.vitals), (0.0, 0.0, 1.0));
+        // No tiles or hover in the panel.
+        let (x, y) = center(&i);
+        assert!(!i.hover(x, y));
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Idle);
+        assert_eq!(i.view().layers.vitals, 0.0);
+    }
+
+    #[test]
+    fn vitals_empty_click_with_a_track_returns_to_compact() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.expand(&t);
+        i.open_vitals(&t);
+        settle(&mut i, &t);
+        // A track change does not pull the island out of the panel.
+        i.set_music(MusicUi::default(), &t);
+        i.set_music(with_track(), &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let (x, y) = center(&i);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+    }
+
+    #[test]
+    fn osd_over_vitals_returns_to_vitals() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        i.open_vitals(&t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.3), &t);
+        settle_pinned(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::OSD_W, layout::OSD_H));
+        // While the OSD is up, a click off its bar does not close the panel.
+        let (x, _) = center(&i);
+        let r = layout::osd_rect();
+        assert_eq!(i.click(x, r.y + r.h + 20.0, &t), ClickOutcome::Ignored);
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        let r = i.pill_rect();
+        assert_eq!((r.w, r.h), (layout::VITALS_W, layout::VITALS_H));
+        assert_eq!(i.view().layers.vitals, 1.0);
+        assert_eq!(i.view().osd.alpha, 0.0);
     }
 
     #[test]

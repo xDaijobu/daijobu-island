@@ -109,3 +109,23 @@ impl Fonts {
         f
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Vitals panel draws these glyphs with the embedded faces. A missing glyph
+    /// would show as a box, so check the cmap directly.
+    #[test]
+    fn vitals_glyphs_are_in_the_embedded_fonts() {
+        let mut fonts = Fonts::new().expect("embedded fonts load");
+        let label = fonts.typeface("Geist Mono", Weight::Medium);
+        for c in "…↓↑·+%".chars() {
+            assert_ne!(label.unichar_to_glyph(c as i32), 0, "Geist Mono lacks {c}");
+        }
+        let digits = fonts.typeface("Doto", Weight::Regular);
+        for c in "0123456789".chars() {
+            assert_ne!(digits.unichar_to_glyph(c as i32), 0, "Doto lacks {c}");
+        }
+    }
+}

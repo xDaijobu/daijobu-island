@@ -31,6 +31,8 @@ pub const WM_VOLUME_KEY: u32 = WM_APP + 5;
 /// Posted from another thread to wake the loop (see [`wake`]). Ids 3..=5 belong to the
 /// volume work above, so this one takes the next free slot.
 pub const WM_WAKE: u32 = WM_APP + 6;
+/// Posted by the vitals worker thread: a new reading is queued.
+pub const WM_VITALS: u32 = WM_APP + 7;
 /// Not exported by the windows crate.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const TIMER_THEMES_DEBOUNCE: usize = 0xD001;
@@ -76,6 +78,8 @@ pub enum Event {
     Music,
     /// Another thread has results ready (see [`wake`]).
     Wake,
+    /// The vitals worker queued a new reading.
+    VitalsReady,
 }
 
 pub trait Handler {
@@ -108,16 +112,7 @@ pub fn push_event(ev: Event) {
 
 /// Wakes the UI loop from any thread so a `Wake` event is delivered.
 pub fn wake(hwnd: isize) {
-    // SAFETY: PostMessageW is the thread-safe way to reach the window's thread; a
-    // stale handle just makes it fail.
-    unsafe {
-        let _ = PostMessageW(
-            Some(HWND(hwnd as *mut core::ffi::c_void)),
-            WM_WAKE,
-            WPARAM(0),
-            LPARAM(0),
-        );
-    }
+    post_to(hwnd, WM_WAKE);
 }
 
 /// Geometry of the primary monitor in device pixels.
@@ -230,10 +225,27 @@ pub fn dpi_for_window(hwnd: HWND) -> u32 {
     unsafe { GetDpiForWindow(hwnd).max(96) }
 }
 
+/// Posts `msg` to the overlay window from any thread. `hwnd` is the handle's raw value.
+pub fn post_to(hwnd: isize, msg: u32) {
+    // SAFETY: PostMessageW is thread-safe; a stale handle just makes the post fail.
+    unsafe {
+        let _ = PostMessageW(Some(HWND(hwnd as *mut _)), msg, WPARAM(0), LPARAM(0));
+    }
+}
+
 pub fn set_timer(hwnd: HWND, id: usize, ms: u32) {
     // SAFETY: valid window handle; timer ids below 0xD000 are reserved for the app.
     unsafe {
         SetTimer(Some(hwnd), id, ms, None);
+    }
+}
+
+/// Like [`set_timer`], but Windows may delay each tick by up to `tolerance_ms` so it
+/// can fire together with other timers and let the CPU sleep longer.
+pub fn set_coalescable_timer(hwnd: HWND, id: usize, ms: u32, tolerance_ms: u32) {
+    // SAFETY: valid window handle; timer ids below 0xD000 are reserved for the app.
+    unsafe {
+        SetCoalescableTimer(Some(hwnd), id, ms, None, tolerance_ms);
     }
 }
 
@@ -397,6 +409,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         WM_VOLUME_KEY => {
             push(Event::VolumeKey(wp.0 as u32));
+            return LRESULT(0);
+        }
+        WM_VITALS => {
+            push(Event::VitalsReady);
             return LRESULT(0);
         }
         WM_TIMER => {

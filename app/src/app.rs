@@ -2,6 +2,7 @@
 //! Win32 events.
 
 use crate::storage;
+use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
 use dj_core::config::Config;
 use dj_core::features::FEATURES;
@@ -10,6 +11,7 @@ use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
+use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{Frame, MusicFrame, RenderError, Renderer};
@@ -68,6 +70,9 @@ pub struct App {
     art_tx: Sender<ArtResult>,
     art_rx: Receiver<ArtResult>,
     vu_armed: bool,
+    /// Health samples and their history for the Vitals panel and the idle lamp.
+    vitals: Vitals,
+    worker: Worker,
 }
 
 impl App {
@@ -89,6 +94,7 @@ impl App {
             signed_in: config.music.signed_in,
             ..Session::default()
         };
+        let worker = Worker::start(hwnd);
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -115,6 +121,8 @@ impl App {
             art_tx,
             art_rx,
             vu_armed: false,
+            vitals: Vitals::new(),
+            worker,
         };
         app.relayout();
         app.install_shell_integration();
@@ -122,6 +130,7 @@ impl App {
             // Signed in before: the engine runs hidden from the start.
             app.ensure_engine(false);
         }
+        app.sync_vitals();
         app
     }
 
@@ -181,6 +190,32 @@ impl App {
             m.set_level(level);
         }
         self.show_volume();
+    }
+
+    /// Sets the sampler's cadence from what is on screen (see `Cadence::for_view`).
+    fn sync_vitals(&mut self) {
+        let cadence = Cadence::for_view(
+            self.visible,
+            self.island.state() == IslandState::Vitals,
+            self.config.vitals.health_lamp,
+        );
+        self.worker.set_cadence(cadence);
+    }
+
+    /// True when the idle lamp should show the warn colour.
+    fn lamp_warn(&self) -> bool {
+        self.config.vitals.health_lamp && self.vitals.health().is_some_and(|h| h.band.is_warn())
+    }
+
+    /// Queues the worker's readings. Redraws when the panel is open or the lamp colour changed.
+    fn drain_vitals(&mut self) {
+        let lamp_before = self.lamp_warn();
+        for reading in self.worker.drain() {
+            self.vitals.push(reading);
+        }
+        if self.island.state() == IslandState::Vitals || self.lamp_warn() != lamp_before {
+            self.dirty = true;
+        }
     }
 
     /// Fires at the next minute boundary so the clock never needs polling.
@@ -538,19 +573,18 @@ impl Handler for App {
                 let (lx, ly) = (x as f32 / self.scale, y as f32 / self.scale);
                 let tokens = self.anim.current().clone();
                 let outcome = self.island.click(lx, ly, &tokens);
-                match outcome {
-                    ClickOutcome::Ignored => {}
-                    ClickOutcome::Open(i) if FEATURES[i].id == "music" => self.open_music_tile(),
-                    ClickOutcome::Music(action) => self.music_action(action),
-                    _ => {}
-                }
                 if outcome != ClickOutcome::Ignored {
                     self.dirty = true;
                 }
                 match outcome {
+                    ClickOutcome::Open(i) if FEATURES[i].id == "music" => self.open_music_tile(),
+                    ClickOutcome::Music(action) => self.music_action(action),
                     ClickOutcome::SetVolume(level) => self.set_level(level),
                     // The OSD tile is a manual peek at the current volume.
                     ClickOutcome::Open(i) if FEATURES[i].id == "osd" => self.show_volume(),
+                    ClickOutcome::Open(i) if FEATURES[i].id == "vitals" => {
+                        self.island.open_vitals(&tokens);
+                    }
                     _ => {}
                 }
             }
@@ -613,6 +647,7 @@ impl Handler for App {
                 self.dirty = true;
             }
             Event::Timer(TIMER_VU) => self.dirty = true,
+            Event::Timer(vitals::TIMER) => self.worker.tick(),
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => self.drain_art(),
@@ -621,8 +656,10 @@ impl Handler for App {
                     tray::add(self.hwnd, icon, "Daijobu Island");
                 }
             }
+            Event::VitalsReady => self.drain_vitals(),
         }
         self.sync_vu_timer();
+        self.sync_vitals();
     }
 
     fn wants_frame(&self) -> bool {
@@ -680,6 +717,8 @@ impl Handler for App {
             time: self.started.elapsed().as_secs_f32(),
             notice: notice.as_deref(),
             music,
+            vitals: &self.vitals,
+            health_lamp: self.config.vitals.health_lamp,
         };
         match renderer.render(&frame) {
             Ok(()) => {}

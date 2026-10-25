@@ -4,7 +4,7 @@ How we work: **one stage at a time.** Each stage runs in its own Orca worktree, 
 
 Spec and design: [`docs/plan.html`](../docs/plan.html) · README: [`README.md`](../README.md) · Repo: https://github.com/xDaijobu/daijobu-island
 
-Legend: ⬜ todo · 🟡 in progress · ✅ done · 🔒 locked (coming soon in the app)
+Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked (coming soon in the app)
 
 ---
 
@@ -14,10 +14,10 @@ Legend: ⬜ todo · 🟡 in progress · ✅ done · 🔒 locked (coming soon in 
 |---|---|---|---|---|
 | 0 | Toolchain setup (Rust, Windows SDK, LLVM) | ✅ | (main checkout) | Rust 1.99.1, SDK 26100, LLVM 23.1.4, Ninja 1.13.2 |
 | 1 | **App shell**: window, island, themes, tray, all features locked | ✅ | PR #1 (merged) | brief: [`stage-1-brief.md`](stage-1-brief.md) |
-| 2 | **Music = YouTube Music**: one-time sign-in, headless WebView2, island = player | ⏸ code done, waiting for the user's sign-in test | `xDaijobu/stage-2-music` | Haiku 5.5 via Orca · brief: [`stage-2-brief.md`](stage-2-brief.md) |
+| 2 | **Music = YouTube Music**: one-time sign-in, headless WebView2, island = player | ✅ merged (PR #2), live test pending | `xDaijobu/stage-2-music` | Haiku 5.5 via Orca · brief: [`stage-2-brief.md`](stage-2-brief.md) |
 | 2b | **Music Library**: search, library (liked/playlists/listen again), queue, all inside the island (native Skia; data via the hidden YT Music engine) | 🔒 | — | after Stage 2 sign-in is confirmed; mockup in plan.html first |
-| 3 | **OSD volume** | ⏸ code done, user to test | `stage-3-osd` | done ahead of Stage 2's PR · Haiku 5.5 + subagents · brief: [`stage-3-brief.md`](stage-3-brief.md) |
-| 4 | **Vitals (compact)** | 🟡 | `stage-4-vitals` (stacked on stage 3) | headless · Haiku 5.5 + subagents · brief: [`stage-4-brief.md`](stage-4-brief.md) |
+| 3 | **OSD volume** | ✅ merged (PR #3), live test pending | `stage-3-osd` | done ahead of Stage 2's PR · Haiku 5.5 + subagents · brief: [`stage-3-brief.md`](stage-3-brief.md) |
+| 4 | **Vitals (compact)** | 🔵 PR #4, live test pending | `stage-4-vitals` (stacked on stage 3) | headless · Haiku 5.5 + subagents · brief: [`stage-4-brief.md`](stage-4-brief.md) |
 | 5 | Timer / Pomodoro | 🔒 | — | |
 | 6 | Snap + Snap stack | 🔒 | — | |
 | 7 | Clipboard history | 🔒 | — | |
@@ -182,10 +182,12 @@ Open Home → Vitals: the rings and net show live values once per second, and th
 
 ### Log
 - 2026-10-25: stage defined. Starts from the `stage-3-osd` branch (stacked) once Stage 3 is done.
+- 2026-10-25: Haiku was stopped part-way and Opus 5.5 finished the stage. It merged Stage 3 (OSD + Music); Music, OSD and Vitals are all Available. 12 commits; clippy is clean; tests pass. The coordinator checked `build --release` (2m45s, exe 9.8 MB). Live checks (values, lamp, panel visuals, idle CPU) are user to test. Report: `task/stage-4-report.md`.
 
 ---
 
 ## Changelog
+- 2026-10-25: PRs #2 (Music) and #3 (OSD) merged at the user's request before live testing ("fixes can come later"). Their worktrees and branches were removed. Focus is on Stage 4.
 - 2026-10-25: Stage 2 held (code done). Stage 3 (OSD volume) started.
 - 2026-10-25: Stage 2 redefined: Music = YouTube Music (headless WebView2).
 - 2026-10-25: Stage 1 (app shell) done.

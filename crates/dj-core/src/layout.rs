@@ -30,6 +30,10 @@ pub const IDLE_R: f32 = 16.0;
 pub const HOME_W: f32 = 520.0;
 pub const HOME_H: f32 = 340.0;
 pub const HOME_R: f32 = 32.0;
+/// Expanded Vitals panel (plan.html: 400 x 150, radius 32).
+pub const VITALS_W: f32 = 400.0;
+pub const VITALS_H: f32 = 150.0;
+pub const VITALS_R: f32 = 32.0;
 
 /// Music compact: art, title and a 5-column VU.
 pub const MUSIC_COMPACT_W: f32 = 224.0;
