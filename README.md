@@ -25,13 +25,16 @@
 
 ## Status
 
-Early development. The app itself runs: the window, rendering, animation, themes, tray and hotkeys work. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
+Early development. The app shell, Music (YouTube Music), the volume OSD and Vitals are in. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
 
 | Stage | | |
 |---|---|---|
 | 1 | App shell: window, Skia renderer, spring motion, themes, tray | ✅ done |
-| 2 | Media: now playing, controls, audio visualizer | locked |
-| 3–5 | Volume OSD, vitals, timer | locked |
+| 2 | Music: YouTube Music playing headless, the island as the player | ✅ merged, testing |
+| 2b | Music library: search, playlists, queue inside the island | locked |
+| 3 | Volume OSD replacing the Windows flyout | ✅ merged, testing |
+| 4 | Vitals: health score, CPU/RAM/disk/net rings | 🔵 in review |
+| 5 | Timer / pomodoro | locked |
 | 6–7 | Screenshots with a floating preview stack, clipboard history | locked |
 | 8–10 | Notifications, lyrics, `dj` CLI | locked |
 | 11 | Window tiling, scenes, restore-after-reboot | locked |
