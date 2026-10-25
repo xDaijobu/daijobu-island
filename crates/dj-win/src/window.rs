@@ -33,6 +33,8 @@ pub const WM_VOLUME_KEY: u32 = WM_APP + 5;
 pub const WM_WAKE: u32 = WM_APP + 6;
 /// Posted by the vitals worker thread: a new reading is queued.
 pub const WM_VITALS: u32 = WM_APP + 7;
+/// Posted by the sweep worker thread: scan, clean or quick-action results are queued.
+pub const WM_SWEEP: u32 = WM_APP + 8;
 /// Not exported by the windows crate.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const TIMER_THEMES_DEBOUNCE: usize = 0xD001;
@@ -80,6 +82,8 @@ pub enum Event {
     Wake,
     /// The vitals worker queued a new reading.
     VitalsReady,
+    /// The sweep worker queued results.
+    SweepReady,
 }
 
 pub trait Handler {
@@ -413,6 +417,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         WM_VITALS => {
             push(Event::VitalsReady);
+            return LRESULT(0);
+        }
+        WM_SWEEP => {
+            push(Event::SweepReady);
             return LRESULT(0);
         }
         WM_TIMER => {

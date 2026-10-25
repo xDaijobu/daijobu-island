@@ -1,6 +1,7 @@
 //! `~/.daijobu/config.toml`. Parsing only; the app does the file IO.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -54,6 +55,27 @@ impl Default for SweepConfig {
                 .map(String::from)
                 .collect(),
         }
+    }
+}
+
+impl SweepConfig {
+    /// The roots as paths: `~` and a leading `~/` or `~\` become `profile`. Blank entries
+    /// are dropped. Pure; nothing is checked on disk.
+    pub fn roots(&self, profile: &Path) -> Vec<PathBuf> {
+        self.project_roots
+            .iter()
+            .map(|r| r.trim())
+            .filter(|r| !r.is_empty())
+            .map(|r| {
+                if r == "~" {
+                    profile.to_path_buf()
+                } else if let Some(rest) = r.strip_prefix("~/").or_else(|| r.strip_prefix("~\\")) {
+                    profile.join(rest)
+                } else {
+                    PathBuf::from(r)
+                }
+            })
+            .collect()
     }
 }
 
@@ -137,6 +159,29 @@ mod tests {
         assert_eq!(d[0], "~/Documents");
         let c = Config::parse("[sweep]\nproject_roots = [\"~/src\"]\n");
         assert_eq!(c.sweep.project_roots, ["~/src"]);
+    }
+
+    #[test]
+    fn sweep_roots_expand_the_profile() {
+        let c = SweepConfig {
+            project_roots: vec![
+                "~/Projects".into(),
+                r"~\Code".into(),
+                "~".into(),
+                "  ".into(),
+                "D:/work".into(),
+            ],
+        };
+        let p = Path::new("C:/Users/me");
+        assert_eq!(
+            c.roots(p),
+            vec![
+                p.join("Projects"),
+                p.join("Code"),
+                p.to_path_buf(),
+                PathBuf::from("D:/work")
+            ]
+        );
     }
 
     #[test]
