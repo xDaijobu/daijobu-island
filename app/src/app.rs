@@ -2,7 +2,7 @@
 //! Win32 events.
 
 use crate::storage;
-use crate::vitals::{Cadence, Worker};
+use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
 use dj_core::config::Config;
 use dj_core::features::FEATURES;
@@ -94,7 +94,7 @@ impl App {
             signed_in: config.music.signed_in,
             ..Session::default()
         };
-        let worker = Worker::start(hwnd.0 as isize);
+        let worker = Worker::start(hwnd);
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -192,18 +192,13 @@ impl App {
         self.show_volume();
     }
 
-    /// Sets the sampler's cadence from what is on screen: 1 Hz with the Vitals panel open,
-    /// every 30 s for the lamp, and nothing while hidden or with the lamp off.
+    /// Sets the sampler's cadence from what is on screen (see `Cadence::for_view`).
     fn sync_vitals(&mut self) {
-        let cadence = if !self.visible {
-            Cadence::Off
-        } else if self.island.state() == IslandState::Vitals {
-            Cadence::Panel
-        } else if self.config.vitals.health_lamp {
-            Cadence::Lamp
-        } else {
-            Cadence::Off
-        };
+        let cadence = Cadence::for_view(
+            self.visible,
+            self.island.state() == IslandState::Vitals,
+            self.config.vitals.health_lamp,
+        );
         self.worker.set_cadence(cadence);
     }
 
@@ -652,6 +647,7 @@ impl Handler for App {
                 self.dirty = true;
             }
             Event::Timer(TIMER_VU) => self.dirty = true,
+            Event::Timer(vitals::TIMER) => self.worker.tick(),
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => self.drain_art(),
