@@ -409,8 +409,11 @@ pub(crate) fn run(env: &ScanEnv, cat: Category, budget: &Budget) -> CategoryScan
     let paths = candidates(env, &guard, cat, budget, &mut notes);
     let mut items = Vec::new();
     let mut skipped = 0usize;
+    // Big-file checks only read metadata, so they still run when the walk used up the
+    // budget; otherwise a large profile would always list nothing.
+    let cheap = cat == Category::BigFiles;
     for p in paths {
-        if budget.over() {
+        if budget.cancelled() || (budget.over() && !cheap) {
             break;
         }
         match check(env, &guard, cat, &p, budget) {
