@@ -11,7 +11,7 @@ use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction};
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
-use dj_core::sweep::{format_bytes, Estimate, Phase, Removal, SweepCache, SweepCmd, SweepView};
+use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
@@ -369,18 +369,6 @@ impl App {
         }
     }
 
-    /// Previewed bytes of the `gone` items whose category goes to the Recycle Bin.
-    fn recycled_bytes(&self, gone: &[PathBuf]) -> u64 {
-        self.sweep
-            .cats
-            .iter()
-            .filter(|c| c.cat.removal() == Removal::Recycle)
-            .flat_map(|c| c.items.iter())
-            .filter(|i| gone.contains(&i.path))
-            .map(|i| i.bytes)
-            .fold(0, u64::saturating_add)
-    }
-
     /// Applies the sweep worker's results.
     fn drain_sweep(&mut self) {
         let msgs: Vec<Msg> = self.sweeper.drain().collect();
@@ -415,21 +403,38 @@ impl App {
                         }
                     }
                 }
+                Msg::ScanFailed { id, estimate, why } => {
+                    if estimate && self.estimate_scan == Some(id) {
+                        // `estimate_started` stays set, so it is retried after a while.
+                        self.estimate_scan = None;
+                    } else if !estimate && self.preview_scan == Some(id) {
+                        // An empty, finished preview: nothing to clean, and no rescan loop.
+                        self.preview_scan = None;
+                        for cat in Category::ALL {
+                            self.sweep.set_category(cat, Vec::new(), None);
+                        }
+                        self.sweep.finish_scan();
+                        self.sweep.status = Some(why);
+                    }
+                }
                 Msg::Progress { done, total } => self.sweep.clean_progress(done, total),
                 Msg::Cleaned {
                     freed,
+                    recycled,
                     failed,
                     gone,
+                    note,
                 } => {
                     self.cleaning = false;
                     // Recycled bytes still sit on the disk (in the bin), so "Freed" only
                     // counts permanent removals and the bin share is named separately.
-                    let recycled = self.recycled_bytes(&gone).min(freed);
-                    self.sweep.finish_clean(freed - recycled, failed, &gone);
-                    if recycled > 0 {
+                    self.sweep.finish_clean(freed, failed, &gone);
+                    if let Some(note) = note {
+                        self.sweep.status = Some(note);
+                    } else if recycled > 0 {
                         let mut line = format!(
                             "Freed {} · {} to bin",
-                            format_bytes(freed - recycled),
+                            format_bytes(freed),
                             format_bytes(recycled)
                         );
                         if failed > 0 {
@@ -444,11 +449,18 @@ impl App {
                         window::set_timer(self.hwnd, TIMER_SWEEP_DONE, SWEEP_DONE_MS);
                     }
                 }
-                Msg::Recycled { path, ok } => {
+                Msg::Recycled { path, ok, in_bin } => {
                     self.cleaning = false;
                     if ok {
                         self.sweep.forget(&path);
-                        self.sweep.status = Some("moved to the recycle bin".into());
+                        self.sweep.status = Some(
+                            if in_bin {
+                                "moved to the recycle bin"
+                            } else {
+                                "not recycled: deleted for good"
+                            }
+                            .into(),
+                        );
                         self.worker.sample_now();
                     } else {
                         self.sweep.status = Some("could not recycle that file".into());

@@ -67,18 +67,36 @@ impl std::fmt::Debug for ScanEnv {
 impl ScanEnv {
     /// Reads the real locations from the environment. An empty `project_roots` means
     /// the defaults (see [`default_project_roots`]). Paths are resolved to their final
-    /// long form, so short (8.3) names in `%TEMP%` do not trip the re-verify.
-    pub fn from_system(project_roots: Vec<PathBuf>) -> Self {
-        let var = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    /// long form, so short (8.3) names in `%TEMP%` do not trip the re-verify. Fails
+    /// when `USERPROFILE` is missing or not an absolute path, because every rule is
+    /// anchored to it.
+    pub fn from_system(project_roots: Vec<PathBuf>) -> Result<Self, String> {
+        Self::from_vars(
+            |k| std::env::var_os(k).map(PathBuf::from),
+            std::env::temp_dir(),
+            project_roots,
+        )
+    }
+
+    /// [`from_system`](Self::from_system) with the environment passed in, for tests.
+    pub fn from_vars(
+        var: impl Fn(&str) -> Option<PathBuf>,
+        temp: PathBuf,
+        project_roots: Vec<PathBuf>,
+    ) -> Result<Self, String> {
         let profile = var("USERPROFILE")
-            .map(fs::final_or_same)
-            .unwrap_or_default();
+            .filter(|p| p.is_absolute() && rules::path_depth(p) >= 2)
+            .ok_or("USERPROFILE is not set to a user folder")?;
+        let profile = fs::final_or_same(profile);
+        let abs = |p: Option<PathBuf>| p.filter(|p| p.is_absolute());
         let local_appdata = fs::final_or_same(
-            var("LOCALAPPDATA").unwrap_or_else(|| profile.join(r"AppData\Local")),
+            abs(var("LOCALAPPDATA")).unwrap_or_else(|| profile.join(r"AppData\Local")),
         );
-        let roaming_appdata =
-            fs::final_or_same(var("APPDATA").unwrap_or_else(|| profile.join(r"AppData\Roaming")));
-        let temp = fs::final_or_same(std::env::temp_dir());
+        let roaming_appdata = fs::final_or_same(
+            abs(var("APPDATA")).unwrap_or_else(|| profile.join(r"AppData\Roaming")),
+        );
+        // Checked against %LOCALAPPDATA%\Temp before the Temp category uses it.
+        let temp = fs::final_or_same(temp);
         let mut system_dirs: Vec<PathBuf> = [
             "SystemRoot",
             "windir",
@@ -105,8 +123,12 @@ impl ScanEnv {
         } else {
             project_roots
         };
-        Self {
-            project_roots: roots.into_iter().map(fs::final_or_same).collect(),
+        Ok(Self {
+            project_roots: roots
+                .into_iter()
+                .filter(|r| r.is_absolute())
+                .map(fs::final_or_same)
+                .collect(),
             profile,
             local_appdata,
             roaming_appdata,
@@ -114,12 +136,13 @@ impl ScanEnv {
             now: SystemTime::now(),
             budget: Duration::from_secs(15),
             system_dirs,
+            // Fails closed: when the process list cannot be read, every app counts
+            // as running and its cache is left alone.
             running: Arc::new(|exe: &str| {
                 ops::running_processes()
-                    .iter()
-                    .any(|p| p.eq_ignore_ascii_case(exe))
+                    .is_none_or(|ps| ps.iter().any(|p| p.eq_ignore_ascii_case(exe)))
             }),
-        }
+        })
     }
 }
 
@@ -148,13 +171,24 @@ pub fn scan(env: &ScanEnv, cat: Category, cancel: &AtomicBool) -> CategoryScan {
     scan::run(env, cat, &budget)
 }
 
+/// Where a recycled item ended up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recycled {
+    /// In the Recycle Bin, so the user can restore it.
+    InBin,
+    /// Deleted for good instead (Windows asked first, for example because the item
+    /// was too big for the bin). Logged as REMOVED, never as RECYCLED.
+    DeletedForGood,
+}
+
 /// The side effects. `WinOps` is the real one; tests use a fake.
 pub trait Ops: Send + Sync {
     /// Deletes a file or a folder tree for good, never following reparse points.
     /// Returns the bytes freed. An error means something was left behind.
     fn remove_permanent(&self, p: &Path) -> io::Result<u64>;
-    /// Moves a file or folder to the Recycle Bin.
-    fn recycle(&self, p: &Path) -> io::Result<()>;
+    /// Moves a file or folder to the Recycle Bin. Fails, touching nothing, when the
+    /// drive has no Recycle Bin.
+    fn recycle(&self, p: &Path) -> io::Result<Recycled>;
     fn flush_dns(&self) -> io::Result<()>;
     fn empty_recycle_bin(&self) -> io::Result<()>;
     /// Opens Explorer with the file selected.
@@ -183,28 +217,32 @@ impl OpLog {
         Self { path }
     }
 
-    /// Appends one line. Logging never fails the operation it describes.
-    pub fn record(&self, run: &str, action: Action, path: &Path, detail: &str) {
+    /// Appends one line. A logging error never undoes or stops the operation it
+    /// describes, but the caller learns about it.
+    pub fn record(&self, run: &str, action: Action, path: &Path, detail: &str) -> io::Result<()> {
         let line = rules::log_line(SystemTime::now(), run, action, path, detail);
         if let Some(dir) = self.path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            std::fs::create_dir_all(dir)?;
         }
-        if let Ok(mut f) = std::fs::OpenOptions::new()
+        std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)
-        {
-            let _ = f.write_all(format!("{line}\r\n").as_bytes());
-        }
+            .open(&self.path)?
+            .write_all(format!("{line}\r\n").as_bytes())
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CleanOutcome {
+    /// Bytes gone from the disk for good.
     pub freed: u64,
+    /// Bytes moved to the Recycle Bin (still on the disk until it is emptied).
+    pub recycled: u64,
     pub failed: usize,
     /// Items that are completely gone.
     pub gone: Vec<PathBuf>,
+    /// True when at least one line could not be written to the operations log.
+    pub log_failed: bool,
 }
 
 /// Removes previewed items. Every item is re-checked against the guard, its category's
@@ -225,14 +263,15 @@ pub fn clean(
     for (i, (cat, path)) in items.iter().enumerate() {
         let cancel = AtomicBool::new(false);
         let budget = fs::Budget::new(env.budget, &cancel);
+        let record = |out: &mut CleanOutcome, action: Action, detail: &str| {
+            let line = format!("{}, {detail}", cat.key());
+            if log.record(run_id, action, path, &line).is_err() {
+                out.log_failed = true;
+            }
+        };
         let fail = |out: &mut CleanOutcome, why: &str| {
             out.failed += 1;
-            log.record(
-                run_id,
-                Action::Failed,
-                path,
-                &format!("{}, {why}", cat.key()),
-            );
+            record(out, Action::Failed, why);
         };
         let item = match scan::check(env, &guard, *cat, path, &budget)
             .and_then(|it| fs::verify_final(path).map(|_| it))
@@ -250,16 +289,19 @@ pub fn clean(
                 Ok(n) if !exists(path) => {
                     out.freed = out.freed.saturating_add(n);
                     out.gone.push(path.clone());
-                    log.record(
-                        run_id,
-                        Action::Removed,
-                        path,
-                        &format!("{}, {}", cat.key(), format_bytes(n)),
-                    );
+                    record(&mut out, Action::Removed, &format_bytes(n));
                 }
                 res => {
-                    let left = fs::measure(path, &budget).bytes;
-                    let part = item.bytes.saturating_sub(left);
+                    // The check above may have used up the budget, so what is left
+                    // is measured with a fresh one.
+                    let again = AtomicBool::new(false);
+                    let fresh = fs::Budget::new(env.budget, &again);
+                    let left = fs::measure(path, &fresh);
+                    let part = if left.complete {
+                        item.bytes.saturating_sub(left.bytes)
+                    } else {
+                        0
+                    };
                     out.freed = out.freed.saturating_add(part);
                     let why = match res {
                         Err(e) => e.to_string(),
@@ -269,17 +311,18 @@ pub fn clean(
                 }
             },
             Removal::Recycle => match ops.recycle(path) {
-                Ok(()) if !exists(path) => {
+                Ok(_) if exists(path) => fail(&mut out, "still there after recycling"),
+                Ok(Recycled::InBin) => {
+                    out.recycled = out.recycled.saturating_add(item.bytes);
+                    out.gone.push(path.clone());
+                    record(&mut out, Action::Recycled, &size);
+                }
+                Ok(Recycled::DeletedForGood) => {
                     out.freed = out.freed.saturating_add(item.bytes);
                     out.gone.push(path.clone());
-                    log.record(
-                        run_id,
-                        Action::Recycled,
-                        path,
-                        &format!("{}, {size}", cat.key()),
-                    );
+                    let detail = format!("{size}, not recycled: deleted for good");
+                    record(&mut out, Action::Removed, &detail);
                 }
-                Ok(()) => fail(&mut out, "still there after recycling"),
                 Err(e) => fail(&mut out, &e.to_string()),
             },
         }

@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 /// Clean progress is posted at most this often (plus once at the end).
 const PROGRESS_EVERY: Duration = Duration::from_millis(50);
 
+/// Status line when `operations.log` could not be written.
+const LOG_FAILED: &str = "could not write operations.log";
+
 /// Tells the results of one scan apart from an earlier, cancelled one.
 pub type ScanId = u64;
 
@@ -54,14 +57,27 @@ pub enum Msg {
         done: usize,
         total: usize,
     },
+    /// The scan could not start (for example, USERPROFILE is unusable).
+    ScanFailed {
+        id: ScanId,
+        estimate: bool,
+        why: String,
+    },
     Cleaned {
+        /// Bytes gone for good.
         freed: u64,
+        /// Bytes moved to the Recycle Bin.
+        recycled: u64,
         failed: usize,
         gone: Vec<PathBuf>,
+        /// Shown instead of the usual result line, e.g. when the log could not be written.
+        note: Option<String>,
     },
     Recycled {
         path: PathBuf,
         ok: bool,
+        /// False when Windows deleted the file for good instead (it asked first).
+        in_bin: bool,
     },
     /// A one-line status for the Sweep view.
     Status(String),
@@ -135,10 +151,14 @@ impl Sweeper {
 fn run(job: Job, roots: &[PathBuf], log: &OpLog, post: &dyn Fn(Msg)) {
     let ops = WinOps;
     let estimate = matches!(job, Job::Estimate(..));
+    let env = || ScanEnv::from_system(roots.to_vec());
     match job {
         Job::Estimate(id, cancel) | Job::Preview(id, cancel) => {
             let cancel = &*cancel;
-            let env = ScanEnv::from_system(roots.to_vec());
+            let env = match env() {
+                Ok(env) => env,
+                Err(why) => return post(Msg::ScanFailed { id, estimate, why }),
+            };
             let mut totals = Vec::new();
             for cat in Category::ALL {
                 if estimate && !cat.in_clean() {
@@ -174,7 +194,18 @@ fn run(job: Job, roots: &[PathBuf], log: &OpLog, post: &dyn Fn(Msg)) {
             });
         }
         Job::Clean(items) => {
-            let env = ScanEnv::from_system(roots.to_vec());
+            let env = match env() {
+                Ok(env) => env,
+                Err(why) => {
+                    return post(Msg::Cleaned {
+                        freed: 0,
+                        recycled: 0,
+                        failed: items.len(),
+                        gone: Vec::new(),
+                        note: Some(why),
+                    })
+                }
+            };
             let run_id = dj_sweep::new_run_id();
             let mut last = Instant::now();
             let mut progress = |done: usize, total: usize| {
@@ -186,17 +217,29 @@ fn run(job: Job, roots: &[PathBuf], log: &OpLog, post: &dyn Fn(Msg)) {
             let out = dj_sweep::clean(&env, &items, &ops, log, &run_id, &mut progress);
             post(Msg::Cleaned {
                 freed: out.freed,
+                recycled: out.recycled,
                 failed: out.failed,
                 gone: out.gone,
+                note: out.log_failed.then(|| LOG_FAILED.to_string()),
             });
         }
         Job::Recycle(path) => {
-            let env = ScanEnv::from_system(roots.to_vec());
+            let env = match env() {
+                Ok(env) => env,
+                Err(why) => return post(Msg::Status(why)),
+            };
             let run_id = dj_sweep::new_run_id();
             let items = [(Category::BigFiles, path.clone())];
             let out = dj_sweep::clean(&env, &items, &ops, log, &run_id, &mut |_, _| {});
             let ok = out.failed == 0 && out.gone.contains(&path);
-            post(Msg::Recycled { path, ok });
+            post(Msg::Recycled {
+                path,
+                ok,
+                in_bin: out.recycled > 0,
+            });
+            if out.log_failed {
+                post(Msg::Status(LOG_FAILED.into()));
+            }
         }
         Job::Reveal(path) => {
             if ops.reveal(&path).is_err() {
@@ -206,32 +249,36 @@ fn run(job: Job, roots: &[PathBuf], log: &OpLog, post: &dyn Fn(Msg)) {
         Job::FlushDns => {
             let run_id = dj_sweep::new_run_id();
             let target = PathBuf::from("DNS resolver cache");
-            let text = match ops.flush_dns() {
-                Ok(()) => {
-                    log.record(&run_id, Action::Removed, &target, "flushed");
-                    "dns cache flushed"
-                }
-                Err(e) => {
-                    log.record(&run_id, Action::Failed, &target, &e.to_string());
-                    "dns flush failed"
-                }
+            let (res, text) = match ops.flush_dns() {
+                Ok(()) => (
+                    log.record(&run_id, Action::Removed, &target, "flushed"),
+                    "dns cache flushed",
+                ),
+                Err(e) => (
+                    log.record(&run_id, Action::Failed, &target, &e.to_string()),
+                    "dns flush failed",
+                ),
             };
-            post(Msg::Status(text.into()));
+            post(Msg::Status(
+                if res.is_ok() { text } else { LOG_FAILED }.into(),
+            ));
         }
         Job::EmptyBin => {
             let run_id = dj_sweep::new_run_id();
             let target = PathBuf::from("Recycle Bin");
-            let text = match ops.empty_recycle_bin() {
-                Ok(()) => {
-                    log.record(&run_id, Action::Removed, &target, "emptied");
-                    "recycle bin emptied"
-                }
-                Err(e) => {
-                    log.record(&run_id, Action::Failed, &target, &e.to_string());
-                    "could not empty the bin"
-                }
+            let (res, text) = match ops.empty_recycle_bin() {
+                Ok(()) => (
+                    log.record(&run_id, Action::Removed, &target, "emptied"),
+                    "recycle bin emptied",
+                ),
+                Err(e) => (
+                    log.record(&run_id, Action::Failed, &target, &e.to_string()),
+                    "could not empty the bin",
+                ),
             };
-            post(Msg::Status(text.into()));
+            post(Msg::Status(
+                if res.is_ok() { text } else { LOG_FAILED }.into(),
+            ));
         }
     }
 }

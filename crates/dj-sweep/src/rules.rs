@@ -69,7 +69,10 @@ const PROTECTED_NAMES: &[&str] = &[
     "sessions",
     "web data",
     "local state",
+    "cookies-journal",
     "cookies.sqlite",
+    "cookies.sqlite-wal",
+    "cookies.sqlite-shm",
     "logins.json",
     "key4.db",
 ];
@@ -80,7 +83,12 @@ const PROFILE_SECRETS: &[&str] = &[
 ];
 
 /// Under `%LOCALAPPDATA%`.
-const LOCAL_PROTECTED: &[&str] = &["Packages", "Microsoft\\Credentials", "Microsoft\\Vault"];
+const LOCAL_PROTECTED: &[&str] = &[
+    "Packages",
+    "Microsoft\\Credentials",
+    "Microsoft\\Vault",
+    "Microsoft\\Crypto",
+];
 
 /// Under `%APPDATA%`.
 const ROAMING_PROTECTED: &[&str] = &[
@@ -152,10 +160,55 @@ impl Guard {
         n.split('\\').any(|c| {
             PROTECTED_NAMES.contains(&c)
                 || c.starts_with("login data")
+                || c.starts_with("sessionstore")
                 || c.starts_with("ntuser.")
                 || c == "usrclass.dat"
         })
     }
+}
+
+/// Is `temp` safe to treat as the user's temp folder, whose old entries are deleted
+/// for good? Windows falls back to the profile (or the Windows folder) when TMP and
+/// TEMP are unset, so `%TEMP%` is trusted only when it is exactly
+/// `%LOCALAPPDATA%\Temp`, with `%LOCALAPPDATA%` inside the profile. `Err` says why not.
+pub fn check_temp_dir(
+    temp: &Path,
+    local_appdata: &Path,
+    profile: &Path,
+    project_roots: &[PathBuf],
+) -> Result<(), String> {
+    let n = norm(temp);
+    let leaf_ok = temp
+        .file_name()
+        .is_some_and(|f| f.eq_ignore_ascii_case("temp") || f.eq_ignore_ascii_case("tmp"));
+    if !temp.is_absolute() || depth(&n) < 2 || !leaf_ok {
+        return Err(format!("unusual temp folder {}", temp.display()));
+    }
+    if !profile.is_absolute()
+        || depth(&norm(profile)) < 2
+        || !is_under(local_appdata, profile)
+        || same_path(local_appdata, profile)
+    {
+        return Err("unusual profile or local app data folder".into());
+    }
+    if !same_path(temp, &local_appdata.join("Temp")) {
+        return Err(format!(
+            "temp folder {} is not the usual one",
+            temp.display()
+        ));
+    }
+    // Implied by the checks above; kept so a change to them cannot open a hole.
+    let appdata = local_appdata.parent().unwrap_or(local_appdata);
+    let key = [profile, local_appdata, appdata];
+    if key.iter().any(|k| is_under(k, temp)) || project_roots.iter().any(|r| is_under(r, temp)) {
+        return Err(format!("temp folder {} holds key folders", temp.display()));
+    }
+    Ok(())
+}
+
+/// Folders below the drive or share root, e.g. `C:\a\b` is 2.
+pub fn path_depth(p: &Path) -> usize {
+    depth(&norm(p))
 }
 
 /// Folders below the drive or share root, e.g. `c:\a\b` is 2.
@@ -598,6 +651,11 @@ mod tests {
             r"C:\Users\ann\AppData\Local\Google\Chrome\User Data\Default\Local Storage\leveldb",
             r"C:\Users\ann\AppData\Local\Google\Chrome\User Data\Default\IndexedDB",
             r"C:\Users\ann\AppData\Local\Google\Chrome\User Data\Default\Sessions",
+            r"C:\Users\ann\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies-journal",
+            r"C:\Users\ann\AppData\Roaming\Mozilla\Firefox\Profiles\x.default\cookies.sqlite-wal",
+            r"C:\Users\ann\AppData\Roaming\Mozilla\Firefox\Profiles\x.default\sessionstore.jsonlz4",
+            r"C:\Users\ann\AppData\Roaming\Mozilla\Firefox\Profiles\x.default\sessionstore-backups",
+            r"C:\Users\ann\AppData\Local\Microsoft\Crypto\Keys",
             r"C:\Users\ann\Projects",
             r"C:\stuff",
             r"C:\Users\ann\NTUSER.DAT",
@@ -623,6 +681,47 @@ mod tests {
         ] {
             assert!(!g.is_protected(Path::new(p)), "{p} must be allowed");
         }
+    }
+
+    #[test]
+    fn temp_dir_is_trusted_only_in_local_appdata() {
+        let profile = Path::new(r"C:\Users\ann");
+        let local = profile.join(r"AppData\Local");
+        let roots = [profile.join("Projects")];
+        let check = |temp: &str| check_temp_dir(Path::new(temp), &local, profile, &roots);
+        assert_eq!(check(r"C:\Users\ann\AppData\Local\Temp"), Ok(()));
+        assert_eq!(check(r"c:\users\ANN\appdata\local\temp\"), Ok(()));
+        for bad in [
+            // TMP and TEMP unset: Windows falls back to the profile or the Windows folder.
+            r"C:\Users\ann",
+            r"C:\Windows",
+            r"C:\Windows\Temp",
+            r"C:\Users\ann\AppData",
+            r"C:\Users\ann\AppData\Local",
+            r"C:\Users\ann\Projects",
+            r"C:\Users\ann\Temp",
+            r"C:\Users\ann\AppData\Local\Temp\sub\Temp",
+            r"C:\Temp",
+            r"D:\Temp",
+            r"C:\",
+            r"Temp",
+            "",
+        ] {
+            assert!(check(bad).is_err(), "{bad} must be refused");
+        }
+        let temp = local.join("Temp");
+        // %LOCALAPPDATA% itself must be a real folder inside the profile.
+        for (l, p) in [
+            (Path::new(r"C:\Users\ann"), profile),
+            (Path::new(r"D:\Local"), profile),
+            (Path::new(r"C:\Users\AppData\Local"), Path::new(r"C:\Users")),
+            (local.as_path(), Path::new("")),
+        ] {
+            assert!(check_temp_dir(&l.join("Temp"), l, p, &roots).is_err());
+        }
+        // A project root inside the temp folder is never wiped with it.
+        let in_temp = [temp.join("work")];
+        assert!(check_temp_dir(&temp, &local, profile, &in_temp).is_err());
     }
 
     #[test]
