@@ -240,6 +240,15 @@ pub fn set_timer(hwnd: HWND, id: usize, ms: u32) {
     }
 }
 
+/// Like [`set_timer`], but Windows may delay each tick by up to `tolerance_ms` so it
+/// can fire together with other timers and let the CPU sleep longer.
+pub fn set_coalescable_timer(hwnd: HWND, id: usize, ms: u32, tolerance_ms: u32) {
+    // SAFETY: valid window handle; timer ids below 0xD000 are reserved for the app.
+    unsafe {
+        SetCoalescableTimer(Some(hwnd), id, ms, None, tolerance_ms);
+    }
+}
+
 pub fn kill_timer(hwnd: HWND, id: usize) {
     // SAFETY: valid window handle.
     unsafe {
