@@ -6,4 +6,12 @@ license.workspace = true
 
 [dependencies]
 dj-core = { path = "../dj-core" }
-windows = { workspace = true, features = [] }
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Power",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+] }
