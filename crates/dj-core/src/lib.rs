@@ -7,5 +7,6 @@ pub mod config;
 pub mod features;
 pub mod island;
 pub mod layout;
+pub mod music;
 pub mod spring;
 pub mod theme;
