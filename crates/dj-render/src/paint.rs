@@ -4,7 +4,7 @@
 
 use crate::fonts::{Fonts, Weight};
 use crate::fx::Effects;
-use crate::icons::{draw_icon, draw_lock};
+use crate::icons::{draw_icon, draw_lock, draw_volume_icon};
 use dj_core::color::Rgb;
 use dj_core::features::FEATURES;
 use dj_core::island::IslandView;
@@ -133,8 +133,10 @@ impl Painter {
             }
         }
 
-        let idle_op = 1.0 - smoothstep(0.0, 0.45, v.fade);
-        let home_op = smoothstep(0.35, 1.0, v.fade);
+        // The OSD takes over the pill, so idle and home fade out while it is up.
+        let osd_a = v.osd.alpha;
+        let idle_op = (1.0 - smoothstep(0.0, 0.45, v.fade)) * (1.0 - osd_a);
+        let home_op = smoothstep(0.35, 1.0, v.fade) * (1.0 - osd_a);
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -144,6 +146,11 @@ impl Painter {
         if home_op > 0.01 {
             begin_layer(canvas, &rect, home_op, center, s);
             self.home(canvas, f, &rect);
+            canvas.restore();
+        }
+        if osd_a > 0.01 {
+            begin_layer(canvas, &rect, osd_a, center, s);
+            self.osd(canvas, f, &rect);
             canvas.restore();
         }
 
@@ -324,6 +331,53 @@ impl Painter {
                 &fill_paint(col(t.accent, a)),
             );
         }
+    }
+
+    /// Volume OSD: icon, level bar and percent, centred on the pill.
+    fn osd(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
+        let (s, t, o) = (f.scale, f.tokens, f.view.osd);
+        let ox = rect.center_x() - layout::OSD_W * s / 2.0;
+        let oy = rect.center_y() - layout::OSD_H * s / 2.0;
+        let mid_y = oy + layout::OSD_H * s / 2.0;
+        let at = |r: LRect| Rect::from_xywh(ox + r.x * s, oy + r.y * s, r.w * s, r.h * s);
+        let ink = if o.muted { t.text_dim } else { t.text };
+
+        draw_volume_icon(
+            canvas,
+            o.icon,
+            ox + layout::OSD_ICON_CX * s,
+            mid_y,
+            layout::OSD_ICON_SIZE * s,
+            &stroke_paint(col(ink, 1.0), 1.6 * s),
+        );
+
+        let bar = at(layout::OSD_BAR);
+        let bar_r = bar.height() / 2.0;
+        canvas.draw_rrect(
+            RRect::new_rect_xy(bar, bar_r, bar_r),
+            &fill_paint(col(t.surface2, 1.0)),
+        );
+        let fill_w = o.level.clamp(0.0, 1.0) * layout::OSD_BAR.w * s;
+        if fill_w >= 0.5 * s {
+            let fill = Rect::from_xywh(bar.left, bar.top, fill_w, bar.height());
+            canvas.draw_rrect(
+                RRect::new_rect_xy(fill, 2.0 * s, 2.0 * s),
+                &fill_paint(col(ink, 1.0)),
+            );
+        }
+
+        let font = self.fonts.font(&t.font_digits, Weight::Medium, 12.0 * s);
+        let txt = o.percent.to_string();
+        let tw = text_width(&font, &txt, 0.0);
+        draw_text(
+            canvas,
+            &font,
+            &txt,
+            ox + layout::OSD_VALUE_RIGHT * s - tw,
+            mid_y + 0.35 * 12.0 * s,
+            0.0,
+            &fill_paint(col(ink, 1.0)),
+        );
     }
 }
 

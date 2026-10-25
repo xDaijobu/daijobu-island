@@ -1,6 +1,7 @@
 //! Tiny stroke icons for the feature tiles, drawn in a +-10 unit box.
 
 use dj_core::features::Icon;
+use dj_core::osd::VolumeIcon;
 use skia_safe::{Canvas, Paint, Path, PathBuilder, Point, RRect, Rect};
 
 fn poly(pts: &[(f32, f32)], close: bool) -> Path {
@@ -168,6 +169,62 @@ pub fn draw_icon(canvas: &Canvas, icon: Icon, cx: f32, cy: f32, size: f32, paint
                 b.quad_to((6.5, y - 3.5), (9.5, y));
                 canvas.draw_path(&b.detach(), paint);
             }
+        }
+    }
+    canvas.restore();
+}
+
+/// Speaker with sound arcs (or an X when muted), same box and scaling as `draw_icon`.
+pub fn draw_volume_icon(
+    canvas: &Canvas,
+    icon: VolumeIcon,
+    cx: f32,
+    cy: f32,
+    size: f32,
+    paint: &Paint,
+) {
+    canvas.save();
+    canvas.translate((cx, cy));
+    let k = size / 22.0;
+    canvas.scale((k, k));
+    canvas.draw_path(
+        &poly(
+            &[
+                (-9.0, -3.0),
+                (-5.0, -3.0),
+                (0.0, -7.5),
+                (0.0, 7.5),
+                (-5.0, 3.0),
+                (-9.0, 3.0),
+            ],
+            true,
+        ),
+        paint,
+    );
+    // Concentric arc centred just past the cone, spanning +-45 degrees.
+    let arc = |r: f32| {
+        canvas.draw_arc(
+            Rect::from_xywh(0.5 - r, -r, 2.0 * r, 2.0 * r),
+            -45.0,
+            90.0,
+            false,
+            paint,
+        );
+    };
+    match icon {
+        VolumeIcon::Muted => {
+            line(canvas, (3.5, -3.0), (9.5, 3.0), paint);
+            line(canvas, (9.5, -3.0), (3.5, 3.0), paint);
+        }
+        VolumeIcon::Low => arc(4.0),
+        VolumeIcon::Mid => {
+            arc(4.0);
+            arc(7.5);
+        }
+        VolumeIcon::High => {
+            arc(3.5);
+            arc(6.5);
+            arc(9.5);
         }
     }
     canvas.restore();
