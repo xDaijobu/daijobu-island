@@ -42,8 +42,17 @@ const fn locked(id: &'static str, name: &'static str, icon: Icon) -> Feature {
     }
 }
 
+const fn available(id: &'static str, name: &'static str, icon: Icon) -> Feature {
+    Feature {
+        id,
+        name,
+        icon,
+        availability: Availability::Available,
+    }
+}
+
 pub const FEATURES: [Feature; 13] = [
-    locked("media", "Media", Icon::Media),
+    available("music", "Music", Icon::Media),
     locked("osd", "OSD", Icon::Osd),
     locked("vitals", "Vitals", Icon::Vitals),
     locked("timer", "Timer", Icon::Timer),
@@ -64,11 +73,16 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ids_unique_and_all_locked_in_stage_1() {
+    fn ids_unique_and_only_music_is_available() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
-        assert!(FEATURES
+        assert_eq!(FEATURES.len(), 13);
+        let open: Vec<_> = FEATURES
             .iter()
-            .all(|f| f.availability == Availability::Locked));
+            .filter(|f| f.availability == Availability::Available)
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(open, ["music"]);
+        assert_eq!(FEATURES[0].name, "Music");
     }
 }

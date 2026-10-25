@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dj-core", "crates/dj-render", "crates/dj-win", "app"]
+members = ["crates/dj-core", "crates/dj-render", "crates/dj-win", "crates/dj-music", "app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ skia-safe = { version = "=0.153.3", features = ["d3d", "textlayout", "binary-cac
 windows = "0.62"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+serde_json = "1"
 
 [profile.release]
 opt-level = 3

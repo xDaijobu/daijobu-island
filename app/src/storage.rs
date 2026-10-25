@@ -2,15 +2,10 @@
 
 use dj_core::config::Config;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
 pub fn data_dir() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".daijobu")
+    dj_win::system::data_dir()
 }
 
 pub fn themes_dir() -> PathBuf {
@@ -61,11 +56,5 @@ pub fn read_user_themes() -> Vec<(String, String)> {
 }
 
 pub fn log(msg: &str) {
-    if let Ok(mut f) = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(data_dir().join("daijobu.log"))
-    {
-        let _ = writeln!(f, "{msg}");
-    }
+    dj_win::system::log(msg);
 }

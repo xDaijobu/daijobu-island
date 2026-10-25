@@ -186,6 +186,15 @@ impl Renderer {
         (self.width, self.height)
     }
 
+    /// Decodes cover art for the Music views. Returns the cover's average colour.
+    pub fn set_art(&mut self, encoded: &[u8]) -> Option<dj_core::color::Rgb> {
+        self.painter.set_art(encoded)
+    }
+
+    pub fn clear_art(&mut self) {
+        self.painter.clear_art();
+    }
+
     /// Draws one frame and presents it (`Present(1)` paces animation to vsync).
     pub fn render(&mut self, frame: &Frame) -> Result<(), RenderError> {
         // SAFETY: the swap chain is alive for `self`'s lifetime.
