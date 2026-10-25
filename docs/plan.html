@@ -1,0 +1,1057 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daijobu Island — plan v0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Doto:wght@500;700;900&family=VT323&family=Silkscreen&family=Space+Grotesk:wght@500;600&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0c0b0a; --pill:#14110F; --s1:#1E1A17; --s2:#2B2520;
+    --t1:#EDE3D2; --t2:#A39785; --acc:#E0A458; --warn:#D65C4A; --hi:#F2D9A8;
+    --sans:"Geist",Inter,system-ui,sans-serif; --mono:"Geist Mono",ui-monospace,Consolas,monospace; --dot:"Doto","Geist Mono",monospace;
+  }
+  @property --bg{syntax:"<color>";inherits:true;initial-value:#0c0b0a}
+  @property --pill{syntax:"<color>";inherits:true;initial-value:#14110F}
+  @property --s1{syntax:"<color>";inherits:true;initial-value:#1E1A17}
+  @property --s2{syntax:"<color>";inherits:true;initial-value:#2B2520}
+  @property --t1{syntax:"<color>";inherits:true;initial-value:#EDE3D2}
+  @property --t2{syntax:"<color>";inherits:true;initial-value:#A39785}
+  @property --acc{syntax:"<color>";inherits:true;initial-value:#E0A458}
+  @property --warn{syntax:"<color>";inherits:true;initial-value:#D65C4A}
+  @property --hi{syntax:"<color>";inherits:true;initial-value:#F2D9A8}
+  body{transition:--bg .45s,--pill .45s,--s1 .45s,--s2 .45s,--t1 .45s,--t2 .45s,--acc .45s,--warn .45s,--hi .45s}
+  /* visualizer variants (per theme) */
+  body[data-vu="bar"] .vu .col{gap:0} body[data-vu="bar"] .vu .seg{width:4px;height:2px}
+  body[data-vu="dot"] .vu .seg{width:3px;height:3px;border-radius:50%} body[data-vu="dot"] .vu{gap:3px} body[data-vu="dot"] .vu .col{gap:2px}
+  body[data-vu="block"] .vu .seg{width:4px;height:3px;border-radius:0} body[data-vu="block"] .vu .col{gap:1px}
+  /* fake desktop windows + overlays (Tile & Snap) */
+  .fw{position:absolute;border-radius:10px;background:color-mix(in srgb,var(--s1) 92%,#fff 2%);border:1px solid var(--s2);box-shadow:0 14px 30px -14px rgba(0,0,0,.6);overflow:hidden;z-index:1;
+      transition:left .5s cubic-bezier(.3,1.3,.5,1),top .5s cubic-bezier(.3,1.3,.5,1),width .5s cubic-bezier(.3,1.3,.5,1),height .5s cubic-bezier(.3,1.3,.5,1)}
+  .fw .tb{height:20px;background:var(--s2);display:flex;align-items:center;gap:5px;padding:0 8px;font:500 9px var(--mono);color:var(--t2);letter-spacing:.08em}
+  .fw .tb i{width:6px;height:6px;border-radius:50%;background:var(--t2);opacity:.5}
+  .fw .ln{height:5px;border-radius:3px;background:var(--t2);opacity:.18;margin:7px 10px 0}
+  .zones{position:absolute;left:10px;right:10px;top:58px;bottom:52px;display:grid;gap:8px;z-index:2;pointer-events:none;opacity:0;transition:opacity .25s}
+  .zones.show{opacity:1}
+  .zones div{border:1.5px dashed color-mix(in srgb,var(--acc) 70%,transparent);border-radius:12px;background:color-mix(in srgb,var(--acc) 7%,transparent);display:grid;place-items:center;font:500 11px var(--mono);color:var(--acc);letter-spacing:.1em}
+  .zones div.hot{background:color-mix(in srgb,var(--acc) 22%,transparent);border-style:solid}
+  .snapov{position:absolute;inset:0;z-index:4;pointer-events:none;opacity:0;transition:opacity .2s}
+  .snapov.show{opacity:1}
+  .snapov .sel{position:absolute;left:30%;top:24%;width:38%;height:40%;box-shadow:0 0 0 9999px rgba(0,0,0,.55);outline:1.5px dashed var(--hi);border-radius:2px}
+  .snapov .sz{position:absolute;left:0;top:-22px;font:500 10px var(--mono);color:var(--hi);background:var(--pill);padding:2px 6px;border-radius:5px}
+  .snapov .loupe{position:absolute;right:-70px;bottom:-70px;width:84px;height:84px;border-radius:50%;border:2px solid var(--hi);background:repeating-conic-gradient(var(--s2) 0 25%,var(--s1) 0 50%) 0 0/12px 12px;box-shadow:0 8px 24px rgba(0,0,0,.6)}
+  .snapov .loupe::after{content:"#E0A458 · 812,344";position:absolute;left:50%;bottom:-20px;transform:translateX(-50%);white-space:nowrap;font:500 9px var(--mono);color:var(--t1);background:var(--pill);padding:2px 6px;border-radius:5px}
+  .snapov .tools{position:absolute;left:0;bottom:-44px;display:flex;gap:4px;background:var(--pill);border:1px solid var(--s2);border-radius:12px;padding:5px}
+  .snapov .tools span{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font:600 12px var(--mono);color:var(--t1)}
+  .snapov .tools span.on{background:var(--acc);color:var(--pill)}
+  @keyframes blink{50%{opacity:.25}}
+  .lay{display:grid;gap:2px;width:52px;height:34px;padding:3px;border-radius:7px;border:1px solid var(--s2);background:var(--s1)}
+  .lay i{background:var(--t2);opacity:.35;border-radius:3px}
+  .lay.on{border-color:var(--acc)} .lay.on i{background:var(--acc);opacity:.85}
+  .fader{width:8px;height:62px;border-radius:4px;background:var(--s2);position:relative;margin:0 auto}
+  .fader b{position:absolute;left:0;right:0;bottom:0;border-radius:4px;background:var(--acc)}
+  .fader u{position:absolute;left:-5px;width:18px;height:8px;border-radius:3px;background:var(--t1)}
+  .file{width:58px;height:62px;border-radius:12px;background:var(--s1);border:1px solid var(--s2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px}
+  .file em{font:600 10px var(--mono);font-style:normal;color:var(--pill);background:var(--acc);padding:2px 5px;border-radius:4px}
+  /* snap stack (floating previews) */
+  .shots{position:absolute;top:96px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:6;align-items:flex-start}
+  .shot{position:relative;width:124px;height:80px;border-radius:12px;background-size:cover;image-rendering:pixelated;border:1px solid color-mix(in srgb,var(--t1) 14%,transparent);
+        box-shadow:0 16px 30px -10px rgba(0,0,0,.75);cursor:grab;transition:transform .3s cubic-bezier(.3,1.4,.5,1),opacity .3s,outline-color .2s;animation:pop .5s cubic-bezier(.3,1.5,.5,1);outline:2px solid transparent;outline-offset:2px}
+  .shot:hover{transform:translateY(-3px) scale(1.03)}
+  .shot.sel{outline-color:var(--acc)}
+  .shot.out{opacity:0;transform:translateY(-16px) scale(.85)}
+  .shot.drag{opacity:.45}
+  @keyframes pop{from{transform:translateY(-30px) scale(.6);opacity:0}}
+  .shot .ck{position:absolute;left:6px;top:6px;width:18px;height:18px;border-radius:6px;background:rgba(0,0,0,.45);border:1.5px solid var(--t1);opacity:0;transition:opacity .15s;display:grid;place-items:center}
+  .shot:hover .ck,.shot.sel .ck,.shots.multi .ck{opacity:1}
+  .shot.sel .ck{background:var(--acc);border-color:var(--acc)}
+  .shot.sel .ck::after{content:"";width:7px;height:3.5px;border-left:2px solid var(--pill);border-bottom:2px solid var(--pill);transform:rotate(-45deg) translate(0,-1px)}
+  .shot .cd{position:absolute;right:5px;top:5px}
+  .shot .act{position:absolute;left:5px;right:5px;bottom:5px;display:flex;gap:3px;opacity:0;transition:opacity .15s}
+  .shot:hover .act{opacity:1}
+  .shot .act span{flex:1;text-align:center;font:500 9px var(--mono);letter-spacing:.04em;background:rgba(10,9,8,.78);color:#eee;border-radius:6px;padding:3px 0;cursor:pointer}
+  .shot .pin{position:absolute;right:7px;top:6px;font-size:11px}
+  .shotbar{position:absolute;left:50%;top:186px;transform:translateX(-50%);z-index:6;display:flex;gap:6px;align-items:center;opacity:0;transition:opacity .2s;pointer-events:none}
+  .shotbar.show{opacity:1;pointer-events:auto}
+  .shotbar span{font:500 10px var(--mono);letter-spacing:.06em;background:var(--pill);color:var(--t1);border:1px solid var(--s2);border-radius:8px;padding:5px 9px;cursor:pointer}
+  .shotbar span.a{background:var(--acc);color:var(--pill);border-color:var(--acc)}
+  .dragghost{position:fixed;left:-999px;top:-999px;width:110px;height:72px;border-radius:12px;background-size:cover;border:1px solid #fff3;box-shadow:6px 6px 0 -1px var(--s2),12px 12px 0 -2px var(--s1)}
+  .dragghost b{position:absolute;right:-8px;top:-8px;min-width:22px;height:22px;border-radius:11px;background:var(--acc);color:var(--pill);font:700 12px var(--mono);display:grid;place-items:center;padding:0 5px}
+  .fw.dropok{outline:2px dashed var(--acc);outline-offset:-4px}
+  .toast{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);font:500 11px var(--mono);background:var(--acc);color:var(--pill);padding:6px 10px;border-radius:8px;white-space:nowrap;animation:pop .4s cubic-bezier(.3,1.5,.5,1)}
+  .clipitem{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:9px;font-size:12px}
+  .clipitem.on{background:var(--s2)}
+  .clipitem .ty{width:26px;height:26px;border-radius:7px;background:var(--s1);display:grid;place-items:center;font:600 10px var(--mono);color:var(--acc);flex:none;background-size:cover}
+  .clipitem .tx{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* capture mode (render gambar README) */
+  body.cap header{padding:0} body.cap .wrap{max-width:none;padding:0}
+  body.cap .topbar,body.cap h1,body.cap .lead,body.cap header p,body.cap .themegrid,body.cap section,body.cap footer,body.cap .ctrls,body.cap .hint{display:none!important}
+  body.cap .stage{margin:0;border-radius:0;height:100vh;border:0}
+  body.cap-themes header{padding:24px 0} body.cap-themes .topbar,body.cap-themes h1,body.cap-themes .lead,body.cap-themes header p,body.cap-themes .stage,body.cap-themes section,body.cap-themes footer{display:none!important}
+  body.cap-themes .themegrid{margin-top:0}
+  .themegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-top:18px}
+  .tcard{position:relative;border-radius:16px;padding:14px;cursor:pointer;border:1px solid rgba(255,255,255,.07);overflow:hidden;text-align:left;font:inherit;color:inherit}
+  .tcard.on{outline:2px solid var(--acc);outline-offset:2px}
+  .tcard .mini{height:26px;border-radius:13px;display:flex;align-items:center;gap:6px;padding:0 6px;margin:4px auto 12px;width:150px}
+  .tcard .mini i{display:block;width:16px;height:16px;border-radius:4px}
+  .tcard .mini b{flex:1;height:4px;border-radius:2px;opacity:.5}
+  .tcard .mini s{display:flex;gap:2px;align-items:flex-end;height:12px}
+  .tcard .mini s u{display:block;width:3px}
+  .tcard .nm{font:600 13px var(--sans)} .tcard .ds{font:400 11px var(--mono);opacity:.65;margin-top:3px;letter-spacing:.04em}
+  .tcard .dots{display:flex;gap:4px;margin-top:10px} .tcard .dots span{width:12px;height:12px;border-radius:50%;border:1px solid rgba(255,255,255,.12)}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--t1);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:var(--acc)}
+  .label{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--t2)}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 28px}
+  section{padding:72px 0;border-top:1px solid color-mix(in srgb,var(--t1) 8%,transparent)}
+  h1{font-size:clamp(40px,6vw,76px);line-height:.95;letter-spacing:-.035em;margin:14px 0 18px;font-weight:600}
+  h2{font-size:32px;letter-spacing:-.02em;margin:10px 0 22px;font-weight:600}
+  h3{font-size:17px;margin:0 0 8px;font-weight:600}
+  p{color:var(--t2);line-height:1.6;max-width:70ch}
+  code{font-family:var(--mono);font-size:.88em;background:var(--s1);padding:1px 6px;border-radius:5px;color:var(--hi)}
+  .grain::after{content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;opacity:var(--gr,.09);mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.95' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1.4 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    animation:grain .6s steps(6) infinite}
+  @keyframes grain{0%{background-position:0 0}20%{background-position:-37px 21px}40%{background-position:53px -14px}60%{background-position:-11px -48px}80%{background-position:29px 61px}100%{background-position:0 0}}
+  body.nograin .grain::after{display:none}
+  .scan::before{content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;z-index:3;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);display:none}
+  body.scanlines .scan::before{display:block}
+
+  /* hero */
+  header{position:relative;overflow:hidden;padding:56px 0 40px}
+  .topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--s2);color:var(--t2);padding:6px 10px;border-radius:999px;background:transparent;cursor:pointer}
+  .chip.on,.chip:hover{color:var(--t1);border-color:var(--acc)}
+  .lead{font-size:19px;max-width:60ch}
+
+  /* stage */
+  .stage{position:relative;margin-top:34px;height:440px;border-radius:24px;overflow:hidden;border:1px solid var(--s2);
+    background:radial-gradient(120% 90% at 20% 110%,color-mix(in srgb,var(--acc) 22%,transparent),transparent 60%),
+               radial-gradient(90% 70% at 90% 0%,color-mix(in srgb,var(--hi) 10%,transparent),transparent 60%),
+               linear-gradient(180deg,color-mix(in srgb,var(--s1) 70%,var(--bg)),var(--bg))}
+  .stage .wall{position:absolute;inset:0;opacity:.5}
+  .taskbar{position:absolute;left:0;right:0;bottom:0;height:42px;background:rgba(20,18,16,.75);backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;gap:10px}
+  .taskbar i{width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.08);display:block}
+  .island{position:absolute;z-index:5;top:12px;left:50%;transform:translateX(-50%);background:var(--pill);color:var(--t1);overflow:hidden;cursor:pointer;
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--t1) 9%,transparent),inset 0 1px 0 color-mix(in srgb,var(--hi) 14%,transparent),0 18px 40px -12px rgba(0,0,0,.7)}
+  .island .content{position:absolute;inset:0;transition:opacity .22s,filter .22s,transform .22s}
+  .island .content.out{opacity:0;filter:blur(8px);transform:scale(.94)}
+  .ctrls{position:absolute;left:0;right:0;bottom:56px;display:flex;justify-content:center;gap:8px;flex-wrap:wrap;padding:0 16px;z-index:5}
+  .hint{position:absolute;top:16px;right:18px;z-index:5}
+
+  /* island content atoms */
+  .row{display:flex;align-items:center}
+  .art{border-radius:6px;image-rendering:pixelated;flex:none;background-size:cover}
+  .vu{display:flex;gap:2px;align-items:flex-end;height:16px}
+  .vu .col{display:flex;flex-direction:column-reverse;gap:1px}
+  .vu .seg{width:3px;height:2px;background:var(--acc);opacity:.15}
+  .vu .seg.on{opacity:1}
+  .vu .seg.pk{background:var(--hi)}
+  .tiny{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--t2)}
+  .lamp{width:6px;height:6px;border-radius:50%;background:var(--acc);box-shadow:0 0 10px var(--acc)}
+  .lamp.rec{background:var(--warn);box-shadow:0 0 10px var(--warn)}
+  .bar{height:4px;border-radius:2px;background:var(--s2);overflow:hidden}
+  .bar > b{display:block;height:100%;background:var(--acc);border-radius:2px}
+  .btn{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:var(--t1)}
+  .btn.main{background:var(--t1);color:var(--pill)}
+  .reel{width:22px;height:22px;border-radius:50%;border:2px solid var(--t2);position:relative;animation:spin 2.4s linear infinite}
+  .reel::before,.reel::after{content:"";position:absolute;left:50%;top:50%;width:2px;height:7px;background:var(--t2);transform:translate(-50%,-50%)}
+  .reel{box-shadow:inset 0 0 0 4px var(--pill),inset 0 0 0 6px var(--t2)}
+  .reel::after{transform:translate(-50%,-50%) rotate(90deg)}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .ring{transform:rotate(-90deg)}
+  .dotnum{font-family:var(--dot);font-weight:700;letter-spacing:.02em}
+  .check{width:14px;height:14px;border-radius:4px;border:1.5px solid var(--t2);display:inline-grid;place-items:center;flex:none}
+  .check.on{background:var(--acc);border-color:var(--acc)}
+  .check.on::after{content:"";width:6px;height:3px;border-left:1.5px solid var(--pill);border-bottom:1.5px solid var(--pill);transform:rotate(-45deg) translate(0,-1px)}
+
+  /* doc blocks */
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
+  @media (max-width:860px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{position:relative;background:var(--s1);border:1px solid var(--s2);border-radius:18px;padding:20px;overflow:hidden}
+  .card p{margin:6px 0 0;font-size:14px}
+  .card ul{margin:8px 0 0;padding-left:18px;color:var(--t2);font-size:14px;line-height:1.65}
+  .tag{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:3px 7px;border-radius:6px;border:1px solid var(--s2);color:var(--t2);margin-right:4px}
+  .tag.a{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 50%,transparent)}
+  .tag.w{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 50%,transparent)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--s2);vertical-align:top}
+  th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--t2);font-weight:500}
+  td{color:var(--t1)} td.m{font-family:var(--mono);font-size:12.5px;color:var(--hi)}
+  .tbl{background:var(--s1);border:1px solid var(--s2);border-radius:18px;overflow:auto}
+  .sw{height:64px;border-radius:12px;border:1px solid rgba(255,255,255,.06)}
+  .swl{font-family:var(--mono);font-size:11px;color:var(--t2);margin-top:6px}
+  pre{background:var(--pill);border:1px solid var(--s2);border-radius:14px;padding:16px 18px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--t1);margin:0}
+  pre .c{color:var(--t2)} pre .k{color:var(--acc)}
+  .phase{position:relative;padding-left:28px;border-left:1px dashed var(--s2);margin-left:8px;padding-bottom:26px}
+  .phase::before{content:"";position:absolute;left:-7px;top:4px;width:12px;height:12px;border-radius:50%;background:var(--pill);border:2px solid var(--acc)}
+  .phase.later::before{border-color:var(--t2)}
+  .phase h3 span{font-family:var(--mono);font-size:11px;color:var(--acc);letter-spacing:.1em;margin-right:8px}
+  .phase ul{margin:6px 0 0;padding-left:18px;color:var(--t2);line-height:1.7;font-size:14.5px}
+  .done{font-family:var(--mono);font-size:12px;color:var(--hi);margin-top:6px}
+  .springbox{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  canvas.plot{width:100%;height:140px;background:var(--pill);border:1px solid var(--s2);border-radius:14px}
+  footer{padding:48px 0 80px;color:var(--t2);font-size:13px}
+  .kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--s2);border-bottom-width:2px;padding:1px 6px;border-radius:5px;color:var(--t1)}
+</style>
+</head>
+<body data-pal="a">
+
+<header>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="label">Daijobu Island · plan v0 · 2026-10-25</div>
+      <div class="chips">
+        <button class="chip on" id="tgTheme">theme: <span id="themeName">Tobacco Tape</span> ⟳</button>
+        <button class="chip on" id="tgGrain">grain</button>
+        <button class="chip" id="tgScan">scanlines</button>
+      </div>
+    </div>
+    <h1>Daijobu Island<span style="color:var(--acc)">.</span><br><span style="color:var(--t2);font-weight:500">dynamic island buat Windows 11, rasa kaset.</span></h1>
+    <p class="lead">Overlay pill di atas layar yang nampilin musik, OSD volume, timer, notif, vitals sistem, dan tools bersih-bersih ala Mole.
+      Dibikin full <b style="color:var(--t1)">Rust</b>, render pakai <b style="color:var(--t1)">Skia (D3D12)</b>, dan langsung ke <b style="color:var(--t1)">Win32 native</b>, tanpa winit atau webview.
+      Bentuknya modern (morph pakai spring, crisp), tapi teksturnya lofi (grain, dither, VU meter, angka dot-matrix).</p>
+
+    <div class="stage grain" id="stage">
+      <canvas class="wall" id="wall"></canvas>
+      <div class="fw" id="fw1" style="left:7%;top:86px;width:300px;height:190px"><div class="tb"><i></i><i></i><i></i>&nbsp;code — daijobu-island</div><div class="ln" style="width:60%"></div><div class="ln" style="width:80%"></div><div class="ln" style="width:45%"></div><div class="ln" style="width:70%"></div><div class="ln" style="width:55%"></div></div>
+      <div class="fw" id="fw2" style="left:52%;top:120px;width:330px;height:200px"><div class="tb"><i></i><i></i><i></i>&nbsp;browser — docs.rs/skia-safe</div><div class="ln" style="width:40%;height:9px;opacity:.3"></div><div class="ln" style="width:85%"></div><div class="ln" style="width:75%"></div><div class="ln" style="width:65%"></div></div>
+      <div class="fw" id="fw3" style="left:36%;top:230px;width:220px;height:120px"><div class="tb"><i></i><i></i><i></i>&nbsp;terminal</div><div class="ln" style="width:50%"></div><div class="ln" style="width:30%"></div></div>
+      <div class="shots" id="shots"></div>
+      <div class="shotbar" id="shotbar"><span id="selinfo">0 dipilih</span><span id="selall">pilih semua</span><span id="selcopy">copy</span><span class="a" id="selsave">save</span><span id="selclear">✕</span></div>
+      <div class="dragghost" id="dragghost"><b id="dragn">1</b></div>
+      <div class="zones" id="zones" style="grid-template-columns:1.2fr 1fr;grid-template-rows:1fr 1fr"><div style="grid-row:1/3">1</div><div class="hot">2</div><div>3</div></div>
+      <div class="snapov" id="snapov"><div class="sel"><span class="sz">612 × 388</span><div class="loupe"></div>
+        <div class="tools"><span class="on">↗</span><span>▢</span><span>✎</span><span>▬</span><span>T</span><span>▦</span><span>①</span><span style="width:auto;padding:0 8px;color:var(--t2)">|</span><span>⧉</span><span>⤓</span><span>📌</span><span>OCR</span></div></div></div>
+      <div class="hint tiny">klik island = expand / collapse · <span class="kbd">T</span> = ganti theme · <span class="kbd">S</span> = ambil SS · <span class="kbd">V</span> = clipboard</div>
+      <div class="island grain scan" id="island"><div class="content" id="content"></div></div>
+      <div class="ctrls" id="ctrls"></div>
+      <div class="taskbar"><i></i><i></i><i></i><i style="background:var(--acc);opacity:.6"></i><i></i><i></i></div>
+    </div>
+    <p class="tiny" style="margin-top:12px">mockup ini HTML/CSS. Versi aslinya digambar Skia, dan grain/dither-nya dari shader SkSL.</p>
+    <div class="themegrid" id="themegrid"></div>
+    <p class="tiny" style="margin-top:10px">Klik kartu buat ganti theme. Selain warna, theme juga ngatur font, tekstur, bentuk, gaya visualizer, dan spring.</p>
+  </div>
+</header>
+
+<!-- ===================== VISION ===================== -->
+<section><div class="wrap">
+  <div class="label">01 · arah</div>
+  <h2>Prinsip</h2>
+  <div class="grid g4">
+    <div class="card grain"><h3>Native beneran</h3><p>Window Win32 mentah dan DirectComposition. Idle ≈ 0% CPU karena nunggu di <code>GetMessage</code>. Gak ada runtime web.</p></div>
+    <div class="card grain"><h3>Modern = motion</h3><p>Lebar, tinggi, dan radius morph pakai spring yang bisa di-interrupt. Konten crossfade dengan blur dan scale 0.94 → 1.</p></div>
+    <div class="card grain"><h3>Lofi = tekstur</h3><p>Lofi-nya dari tekstur, bukan dari layout yang rame: grain 4–6% (re-seed 18 fps), dither Bayer di gradient, label mono kapital, VU bersegmen.</p></div>
+    <div class="card grain"><h3>Fungsional</h3><p>Bukan pajangan. Setiap state harus ngejawab sesuatu: lagi muter apa, volume berapa, PC sehat gak, disk bisa dikosongin berapa.</p></div>
+  </div>
+</div></section>
+
+<!-- ===================== FEATURES ===================== -->
+<section><div class="wrap">
+  <div class="label">02 · fitur</div>
+  <h2>Fitur dan sumber idenya</h2>
+  <div class="grid g3">
+    <div class="card">
+      <span class="tag a">dari WinIsland</span>
+      <h3 style="margin-top:10px">Media dan live activity</h3>
+      <ul>
+        <li>Media lewat SMTC: cover, judul, kontrol, seek, plus allowlist app biar tab browser gak ngerebut island</li>
+        <li>Visualizer WASAPI loopback per-proses dan FFT, digambar sebagai VU bersegmen</li>
+        <li>Lirik sinkron (LRCLIB aja, yang resmi)</li>
+        <li>OSD volume (key di-hook, flyout bawaan ilang) dan brightness (WMI, khusus laptop)</li>
+        <li>Notifikasi Windows (butuh sparse MSIX)</li>
+        <li>Timer/pomodoro, indikator kamera/mic, prompt "buka link?" waktu copy URL</li>
+        <li>Auto-hide saat fullscreen, hotkey <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">H</span>, multi-monitor/DPI</li>
+      </ul>
+    </div>
+    <div class="card">
+      <span class="tag a">dari Mole (konsep)</span>
+      <h3 style="margin-top:10px">Vitals dan Sweep</h3>
+      <ul>
+        <li><b>Vitals:</b> health score 0–100, CPU, RAM, disk, net ↑↓, battery, top proses</li>
+        <li><b>Quick Clean:</b> temp, WER, cache browser/app/dev. Preview dulu, baru eksekusi</li>
+        <li><b>Dev Purge:</b> <code>node_modules</code>, <code>target</code>, <code>dist</code>, <code>.venv</code>, dan lain-lain, pakai aturan konteks yang aman</li>
+        <li><b>Big files:</b> top 20 file terbesar, ada tombol reveal dan recycle</li>
+        <li><b>Quick actions:</b> flush DNS/ARP, kosongin Recycle Bin, laporan startup apps</li>
+        <li><b>History:</b> operations log yang bisa dibaca</li>
+      </ul>
+    </div>
+    <div class="card">
+      <span class="tag">ide orisinal</span>
+      <h3 style="margin-top:10px">Bumbu daijobu</h3>
+      <ul>
+        <li>"Daijobu?" check: island sesekali ngasih tau kalau PC lagi gak sehat (CPU panas, disk hampir penuh)</li>
+        <li>Pomodoro dan lofi focus mode: timer plus ambient grain yang makin tebal waktu fokus</li>
+        <li>Cassette reel yang muter sesuai status play, dan angka timer pakai font dot-matrix</li>
+        <li>Split bubble ala iOS: dua activity sekaligus (misalnya musik dan timer)</li>
+        <li>Accent warna diambil dari cover album, di-clamp biar tetap kalem</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="tbl" style="margin-top:18px">
+  <table>
+    <tr><th>Fitur</th><th>Windows API</th><th>Susah</th><th>Butuh package?</th><th>Fase</th></tr>
+    <tr><td>Media</td><td class="m">GlobalSystemMediaTransportControlsSessionManager + per-session events</td><td>sedang</td><td>tidak</td><td>1</td></tr>
+    <tr><td>Visualizer</td><td class="m">WASAPI process loopback (crate wasapi) → realfft</td><td>sedang</td><td>tidak</td><td>1</td></tr>
+    <tr><td>Volume</td><td class="m">WH_KEYBOARD_LL + IAudioEndpointVolume (+ RegisterControlChangeNotify)</td><td>sedang</td><td>tidak</td><td>1</td></tr>
+    <tr><td>Brightness</td><td class="m">WMI WmiMonitorBrightness(+Event) · DDC/CI nanti</td><td>sedang/susah</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Fullscreen auto-hide</td><td class="m">SHQueryUserNotificationState + rect vs monitor</td><td>mudah</td><td>tidak</td><td>1</td></tr>
+    <tr><td>Hotkey · tray · autostart · single instance</td><td class="m">RegisterHotKey · Shell_NotifyIcon · HKCU\…\Run · named mutex</td><td>mudah</td><td>tidak</td><td>0</td></tr>
+    <tr><td>Notifikasi</td><td class="m">UserNotificationListener + sinyal toast</td><td>susah</td><td><b style="color:var(--warn)">ya</b> (sparse MSIX dan signing)</td><td>2</td></tr>
+    <tr><td>Kamera/mic</td><td class="m">MFCreateSensorActivityMonitor · IAudioSessionManager2 (capture)</td><td>sedang</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Clipboard link</td><td class="m">AddClipboardFormatListener / WM_CLIPBOARDUPDATE</td><td>mudah</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Lirik</td><td class="m">HTTP LRCLIB /api/get → /api/search</td><td>sedang</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Battery</td><td class="m">GetSystemPowerStatus + RegisterPowerSettingNotification</td><td>mudah</td><td>tidak</td><td>1</td></tr>
+    <tr><td>Vitals</td><td class="m">GetSystemTimes · GlobalMemoryStatusEx · GetDiskFreeSpaceExW · GetIfTable2 · NtQuerySystemInformation</td><td>sedang</td><td>tidak</td><td>1→3</td></tr>
+    <tr><td>Sweep</td><td class="m">walk paralel (jwalk/rayon) · IFileOperation (recycle) · GetFinalPathNameByHandleW</td><td>sedang</td><td>tidak</td><td>3</td></tr>
+    <tr><td>Snap (screenshot)</td><td class="m">Windows.Graphics.Capture · DXGI Duplication · Windows.Media.Ocr · CF_DIB/PNG</td><td>sedang</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Snap stack (drag-out)</td><td class="m">OLE DoDragDrop · IDataObject (CF_HDROP + PNG + CF_DIB) · IDragSourceHelper</td><td>sedang</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Clipboard history</td><td class="m">AddClipboardFormatListener · SQLite + DPAPI · SendInput · WH_KEYBOARD_LL (opsi Win+V)</td><td>sedang</td><td>tidak</td><td>2</td></tr>
+    <tr><td>dj CLI</td><td class="m">named pipe (ACL khusus user) + exe kecil</td><td>mudah</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Tile dan Scenes</td><td class="m">SetWinEventHook(MOVESIZE*) · SetWindowPos · DWMWA_EXTENDED_FRAME_BOUNDS · EnumDisplayMonitors</td><td>sedang</td><td>tidak</td><td>3</td></tr>
+    <tr><td>Boot Scene + admin</td><td class="m">ITaskService (RunLevel Highest) · CreateProcess · IApplicationActivationManager · WM_QUERYENDSESSION</td><td>sedang</td><td>tidak (UAC sekali)</td><td>3</td></tr>
+    <tr><td>Bluetooth connect (pop-up ala AirPods)</td><td class="m">DeviceWatcher + BluetoothDevice.ConnectionStatusChanged</td><td>sedang</td><td>tidak</td><td>4</td></tr>
+  </table>
+  </div>
+</div></section>
+
+<!-- ===================== BIG FEATURES ===================== -->
+<section><div class="wrap">
+  <div class="label">02b · fitur besar baru</div>
+  <h2>Snap · Tile & Scenes · Boot Scene · dj CLI</h2>
+  <p>Coba di mockup atas: tombol <b style="color:var(--t1)">boot scene</b>, <b style="color:var(--t1)">tile</b>, <b style="color:var(--t1)">snap</b>, <b style="color:var(--t1)">dj cli</b>, <b style="color:var(--t1)">shelf</b>, dan <b style="color:var(--t1)">ambient</b>. Window palsu di "desktop" mockup bakal ke-tile, dan overlay Snap muncul di atasnya.</p>
+
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card"><span class="tag a">F2</span><h3 style="margin-top:10px">📸 Snap: screenshot ala Lightshot</h3><ul>
+      <li><code>PrtSc</code> atau hotkey: layar di-freeze, terus muncul overlay Skia fullscreen (render stack-nya sama)</li>
+      <li>Seleksi area dengan snap ke window, loupe (pembesar) yang nampilin koordinat dan hex warna, plus label ukuran</li>
+      <li>Anotasi: panah, kotak, pen, highlighter, teks, blur/pixelate, nomor step, undo</li>
+      <li>Aksi: copy (PNG + <code>CF_DIB</code>), save, <b>pin</b> (window kecil ngambang), <b>OCR</b> (<code>Windows.Media.Ocr</code>, offline)</li>
+      <li><b>Snap stack</b>: habis capture, preview <b>ngambang di bawah island</b> selama 10 detik (bisa diatur). Ring countdown-nya berhenti waktu di-hover atau dipilih, dan bisa di-pin biar gak ilang</li>
+      <li>SS yang banyak bakal numpuk dan nge-kipas. Klik buat <b>select</b> (bisa beberapa), ada "pilih semua", terus <b>drag & drop sekaligus</b> ke Discord, Explorer, browser, Figma, dan lain-lain</li>
+      <li>Upload opsional (Imgur atau server sendiri). Default-nya <b>lokal</b></li>
+      <li>Capture: <code>Windows.Graphics.Capture</code> (aman di HDR dan multi-monitor), fallback ke DXGI Duplication lalu GDI</li>
+    </ul></div>
+    <div class="card"><span class="tag a">F3</span><h3 style="margin-top:10px">🪟 Tile: split window dan Scenes</h3><ul>
+      <li>Drag window ke island, island melebar jadi picker layout, terus drop. Atau <span class="kbd">Shift</span>+drag buat munculin zona di layar</li>
+      <li>Layout: 2 (50/50, 60/40, 70/30, atas-bawah), 3 (3 kolom, 1+2, tengah lebar buat ultrawide), 4 (2×2, 1+3), custom per monitor</li>
+      <li>Hotkey <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">←→↑↓</span> / <span class="kbd">1‥9</span></li>
+      <li><b>Scenes</b>: simpan susunan app (coding, focus, meeting, game), restore dengan satu klik. App yang belum jalan otomatis dibuka</li>
+      <li>Scene bisa sekalian ganti theme, nyalain pomodoro, dan ambient (contoh: Focus = Matcha Café + timer + hujan)</li>
+      <li>Teknis: <code>SetWinEventHook(MOVESIZESTART/END)</code>, <code>SetWindowPos</code> ke <code>rcWork</code>, dikoreksi border tak terlihat (<code>DWMWA_EXTENDED_FRAME_BOUNDS</code>)</li>
+    </ul></div>
+  </div>
+
+  <div class="card" style="margin-top:16px"><span class="tag a">F3</span> <span class="tag w">admin</span>
+    <h3 style="margin-top:10px">🌅 Boot Scene: abis restart, semua kebuka lagi di posisinya</h3>
+    <div class="grid g2" style="margin-top:8px">
+      <div><ul>
+        <li>Login, island nyala, terus scene "boot" jalan. Island nampilin progress (おはよう · 3/5) seperti di mockup</li>
+        <li>Per app: exe/AUMID, argumen, folder kerja, <b>delay atau urutan</b> (misalnya nunggu Docker dulu), dan opsi "tunggu internet"</li>
+        <li><b>Penempatan</b>: monitor, lalu zona atau rect persis, lalu state (normal/max/min). Kalau monitornya gak ada, pindah ke primary dengan skala relatif</li>
+        <li>Window dicocokin pakai exe + class/title regex. Splash screen di-skip, dan posisi diulang selama ±10 detik kalau app-nya "melawan" (misalnya Chrome yang restore posisinya sendiri)</li>
+        <li><b>"Simpan susunan sekarang"</b>: snapshot semua window sekali klik, langsung jadi scene</li>
+        <li>Opsi <b>auto-snapshot waktu shutdown</b> (<code>WM_QUERYENDSESSION</code>), jadi kondisi terakhir yang di-restore</li>
+        <li>App UWP/Store dijalanin lewat <code>IApplicationActivationManager</code> (AUMID)</li>
+      </ul></div>
+      <div>
+        <h3 style="font-size:14px">App admin tanpa prompt UAC tiap boot</h3>
+        <p style="font-size:13.5px">UAC gak bisa (dan gak boleh) di-bypass diam-diam. Tapi Windows punya jalur resmi yang dipakai banyak app: <b style="color:var(--t1)">Task Scheduler dengan "Run with highest privileges"</b>.</p>
+        <ul>
+          <li>Waktu lo centang "admin" di sebuah app, UAC muncul <b>sekali</b>, terus island bikin task di folder <code>\daijobu\</code> lewat COM <code>ITaskService</code></li>
+          <li>Tiap boot, island cukup <i>run</i> task itu, dan app-nya kebuka sebagai admin <b>tanpa prompt</b></li>
+          <li>Island sendiri gak bisa mindahin window admin (Windows memblokir app biasa ngatur window admin, namanya UIPI). Jadi task-nya ngejalanin <code>dj-elevated.exe</code>, helper kecil yang launch app, naruh window-nya, lalu langsung exit</li>
+          <li>Keamanan: path exe di-pin, dan cuma diizinkan buat exe di folder yang hanya bisa ditulis admin (Program Files). Kalau exe-nya di folder user, ada peringatan, karena siapa pun yang bisa ganti file itu bakal dapat akses admin</li>
+          <li>Semua task bisa dilihat dan dihapus dari settings, dan otomatis dibersihin waktu uninstall</li>
+        </ul>
+      </div>
+    </div>
+<pre style="margin-top:12px"><span class="c"># ~/.daijobu/scenes/coding.toml</span>
+[scene]  name = "coding"   on_boot = true   theme = "midnight"   wait_network = false
+[[app]]  exe = "C:/Users/chris/AppData/Local/Programs/Microsoft VS Code/Code.exe"   place = { monitor = "DELL U2723QE", zone = 1 }
+[[app]]  exe = "chrome.exe"   args = ["--profile-directory=Default"]   place = { monitor = "DELL U2723QE", zone = 2 }
+[[app]]  exe = "wt.exe"   <span class="k">admin = true</span>   place = { monitor = "DELL U2723QE", zone = 3 }
+[[app]]  exe = "C:/Program Files/Docker/Docker/Docker Desktop.exe"   <span class="k">admin = true</span>   after = "wt.exe"   delay_ms = 3000   state = "minimized"
+[[app]]  aumid = "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"   place = { monitor = 2, rect = [0.6, 0.0, 0.4, 0.5] }</pre>
+  </div>
+
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card"><span class="tag a">F2</span><h3 style="margin-top:10px">📋 Clipboard history (ala Win+V)</h3><ul>
+      <li>Tekan <span class="kbd">V</span> di mockup buat coba. Isinya teks, link, warna, file, dan <b>gambar</b></li>
+      <li><b>Gambar dari mana aja</b>: copy image di browser, Figma, Paint, Photoshop, Snipping Tool, atau hasil Snap. Semua disimpan sebagai PNG, lengkap dengan thumbnail, ukuran, dan asal app-nya. Hover buat liat preview besar, dan gambar bisa di-<b>paste sebagai gambar</b> atau di-<b>drag keluar sebagai file</b></li>
+      <li>Ada pencarian dan filter tipe. <span class="kbd">1‥9</span> buat paste cepat, ada pin, dan <span class="kbd">⇧</span>+<span class="kbd">↵</span> buat paste sebagai plain text</li>
+      <li>Hotkey default <span class="kbd">Ctrl</span>+<span class="kbd">⇧</span>+<span class="kbd">V</span>. Ada <b>opsi ambil alih</b> <span class="kbd">Win</span>+<span class="kbd">V</span> lewat keyboard hook, dan clipboard history bawaan Windows tetap jalan</li>
+      <li>Paste: isi clipboard di-set, fokus dibalikin ke window sebelumnya, lalu <code>SendInput(Ctrl+V)</code></li>
+      <li>Format: <code>CF_UNICODETEXT</code>, <code>CF_HTML</code>, RTF, PNG/<code>CF_DIB</code>, <code>CF_HDROP</code></li>
+      <li><b>Privasi</b>: item yang ditandai <code>ExcludeClipboardContentFromMonitorProcessing</code> atau <code>CanIncludeInClipboardHistory=0</code> (password manager) di-skip. Data disimpan di SQLite + DPAPI, dengan batas 500 item / 30 hari. Item yang di-pin gak kena batas</li>
+    </ul></div>
+    <div class="card"><span class="tag a">F2</span><h3 style="margin-top:10px">🫳 Drag-out: bikin ini nyata di Windows</h3><ul>
+      <li>Card preview digambar di window DComp kecil terpisah di bawah island (render stack-nya sama), dengan hit-test seukuran card-nya</li>
+      <li>Drag pakai OLE <code>DoDragDrop</code> dengan <code>IDataObject</code> + <code>IDropSource</code> sendiri (<code>#[implement]</code> di windows-rs)</li>
+      <li>Data yang dikirim: <code>CF_HDROP</code> (file PNG asli di <code>Pictures/daijobu/</code>, beberapa file sekaligus kalau multi-select), plus PNG + <code>CF_DIB</code> buat app yang cuma nerima gambar</li>
+      <li>Selama drag, tumpukan thumbnail + badge jumlah ditampilin lewat <code>IDragSourceHelper</code></li>
+      <li>Setelah di-drop, card otomatis hilang. Riwayat SS tetap bisa dibuka lagi dari clipboard history</li>
+    </ul></div>
+  </div>
+
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card"><span class="tag a">F2</span><h3 style="margin-top:10px">⌨ dj CLI / API lokal</h3><ul>
+      <li>Script apa aja bisa nampilin live activity lewat named pipe</li>
+      <li><code>dj progress 40 "deploy"</code>, <code>cargo build && dj done "build ok"</code>, <code>dj notify</code></li>
+      <li><code>dj scene coding</code>, <code>dj theme crt</code>, <code>dj snap --region</code></li>
+      <li>Hook buat terminal yang lama selesai, CI GitHub (<code>gh</code>), dan agent coding yang butuh input</li>
+    </ul></div>
+    <div class="card"><span class="tag">F4</span><h3 style="margin-top:10px">🗂 Shelf dan Scratchpad</h3><ul>
+      <li><b>File Shelf</b>: drag file ke island buat dititipin, terus drag lagi ke tujuan. Engine drag-nya sama dengan Snap stack</li>
+      <li>Scratchpad, dan color picker (pakai ulang loupe dari Snap)</li>
+    </ul></div>
+    <div class="card"><span class="tag">F4</span><h3 style="margin-top:10px">🌧 Ambient dan glance</h3><ul>
+      <li><b>Ambient mixer</b>: hujan, kafe, api, noise, plus lofi radio stream</li>
+      <li>Pengingat istirahat "daijobu?" (20-20-20, minum)</li>
+      <li>Mute mic global, ganti output audio, mixer per-app</li>
+      <li>Caps/Num Lock, layout keyboard, WiFi/VPN, USB, Bluetooth + baterai, meeting berikutnya (ICS), cuaca</li>
+    </ul></div>
+  </div>
+</div></section>
+
+<!-- ===================== DESIGN ===================== -->
+<section><div class="wrap">
+  <div class="label">03 · design system</div>
+  <h2>Lofi modern: token</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Palet (palet aktif, bisa diganti di atas)</h3>
+      <div class="grid g4" style="gap:10px;margin-top:12px">
+        <div><div class="sw" style="background:var(--pill)"></div><div class="swl">pill</div></div>
+        <div><div class="sw" style="background:var(--s1)"></div><div class="swl">surface 1</div></div>
+        <div><div class="sw" style="background:var(--s2)"></div><div class="swl">surface 2</div></div>
+        <div><div class="sw" style="background:var(--t1)"></div><div class="swl">text 1</div></div>
+        <div><div class="sw" style="background:var(--t2)"></div><div class="swl">text 2</div></div>
+        <div><div class="sw" style="background:var(--acc)"></div><div class="swl">accent</div></div>
+        <div><div class="sw" style="background:var(--warn)"></div><div class="swl">rec / warn</div></div>
+        <div><div class="sw" style="background:var(--hi)"></div><div class="swl">highlight</div></div>
+      </div>
+      <p>Gak pernah pakai #000 atau #FFF murni. Accent dinamis = warna dominan cover, di-clamp ke S 45–65% dan L 62–72%, lalu <code>mix(cover, static, .25)</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Tipografi (semua OFL, aman di-embed)</h3>
+      <div style="margin-top:12px;display:grid;gap:14px">
+        <div><div style="font:600 22px var(--sans);letter-spacing:-.01em">Geist: judul lagu & UI</div><div class="swl">primary sans</div></div>
+        <div><div style="font:500 13px var(--mono);letter-spacing:.14em;text-transform:uppercase">NOW PLAYING · CPU 34% · 03:21</div><div class="swl">Geist Mono / Departure Mono: label & metadata</div></div>
+        <div><div class="dotnum" style="font-size:40px;color:var(--acc)">24:59</div><div class="swl">Doto: angka timer & jam besar</div></div>
+      </div>
+      <p>Font pixel cuma buat label dan angka, jangan buat body. Subpixel positioning dimatiin biar tetap tajam.</p>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card">
+      <h3>Motion: spring</h3>
+      <p>Dari preset SwiftUI dan bentuk Dynamic Island: expand underdamped, collapse hampir critically damped. Mass = 1, <code>ω = 2π/response</code>, <code>k = ω²</code>, <code>c = 2ζω</code>, integrasi semi-implicit Euler dengan substep 1/240 s. Kalau di-retarget di tengah jalan, kecepatannya dipertahankan.</p>
+      <div class="tbl" style="margin-top:12px"><table>
+        <tr><th>transisi</th><th>response</th><th>ζ</th><th>k / c</th></tr>
+        <tr><td>expand</td><td class="m">0.45 s</td><td class="m">0.75</td><td class="m">195 / 21</td></tr>
+        <tr><td>collapse</td><td class="m">0.35 s</td><td class="m">0.95</td><td class="m">322 / 34</td></tr>
+        <tr><td>content fade</td><td class="m">0.25 s</td><td class="m">1.0</td><td class="m">632 / 50</td></tr>
+      </table></div>
+    </div>
+    <div class="card">
+      <h3>Kurva spring (live)</h3>
+      <canvas class="plot" id="plot" width="1000" height="280"></canvas>
+      <div class="springbox" style="margin-top:10px">
+        <label class="tiny">response <input type="range" id="resp" min="0.2" max="0.9" step="0.01" value="0.45"> <span id="respv">0.45</span></label>
+        <label class="tiny">ζ <input type="range" id="zeta" min="0.4" max="1.2" step="0.01" value="0.75"> <span id="zetav">0.75</span></label>
+      </div>
+      <p style="font-size:12px">Slider ini juga ngubah spring di mockup island atas, jadi bisa langsung dirasain.</p>
+    </div>
+  </div>
+
+  <div class="tbl" style="margin-top:16px"><table>
+    <tr><th>State</th><th>Ukuran @100% DPI</th><th>Radius</th><th>Isi</th></tr>
+    <tr><td>Idle</td><td class="m">128 × 32</td><td class="m">16</td><td>jam mono dan lamp status</td></tr>
+    <tr><td>Media compact</td><td class="m">224 × 36</td><td class="m">18</td><td>art 24 (r6) di kiri, VU 5 kolom di kanan</td></tr>
+    <tr><td>Media expanded</td><td class="m">400 × 184</td><td class="m">32</td><td>art 88, judul 15 / artis 12, scrubber 4, tombol 34</td></tr>
+    <tr><td>OSD volume</td><td class="m">220 × 40</td><td class="m">20</td><td>ikon, track 4 px, angka mono. Hilang 1.5 s setelah perubahan terakhir</td></tr>
+    <tr><td>Notifikasi</td><td class="m">360 × 72</td><td class="m">28</td><td>ikon 40, judul 13, body 12 (maks 2 baris), 4 s</td></tr>
+    <tr><td>Timer compact</td><td class="m">172 × 36</td><td class="m">18</td><td>ring 18 dan angka Doto 18</td></tr>
+    <tr><td>Vitals expanded</td><td class="m">400 × 150</td><td class="m">32</td><td>3 ring 56 dan sparkline net</td></tr>
+    <tr><td>Sweep expanded</td><td class="m">400 × 200</td><td class="m">32</td><td>checklist kategori dan ukurannya, tombol preview</td></tr>
+  </table></div>
+  <p style="font-size:13px">Semua ukuran dikali DPI scale. Tepi pill di-snap ke device pixel biar pola dither dan scanline gak goyang. Grain selalu 1 device-px.</p>
+</div></section>
+
+<!-- ===================== THEME ENGINE ===================== -->
+<section><div class="wrap">
+  <div class="label">03b · theme engine</div>
+  <h2>Theme banyak, bisa switch kapan aja</h2>
+  <p>Theme itu <b style="color:var(--t1)">data, bukan kode</b>: satu file <code>.toml</code> berisi token. Theme bawaan di-embed ke binary. Theme user ditaruh di <code>~/.daijobu/themes/</code> dan ke-reload otomatis begitu file-nya disimpan. Pas ganti theme, semua token di-interpolasi (warna di OKLab, angka secara linear) selama ±450 ms, jadi gak ada kedip.</p>
+  <div class="grid g2" style="margin-top:16px">
+<pre><span class="c"># ~/.daijobu/themes/matcha-cafe.toml</span>
+[meta]
+name    = "Matcha Café"
+author  = "you"
+base    = "tobacco-tape"   <span class="c"># inherit, override sebagian</span>
+mode    = "dark"           <span class="c"># dark | light</span>
+
+[color]
+pill = "#121510"  surface1 = "#1B2019"  surface2 = "#283024"
+text = "#E6E8D6"  text_dim = "#99A28A"
+accent = "#A8C686"  warn = "#D9845F"  highlight = "#E8F0C8"
+accent_from_cover = 0.35    <span class="c"># 0 = statis, 1 = full warna cover</span>
+
+[texture]
+grain = 0.06    grain_fps = 18
+dither_levels = 8   dither_cell = 2
+scanlines = 0.0
+
+[type]
+title = "Geist"   label = "Geist Mono"   digits = "Doto"
+
+[shape]
+radius_scale = 1.0   hairline = 0.09   inner_glow = 0.14
+
+[motion]
+expand   = { response = 0.45, damping = 0.75 }
+collapse = { response = 0.35, damping = 0.95 }
+
+[visualizer]
+style = "segment"   <span class="c"># segment | bar | dot | block | reel</span></pre>
+    <div class="grid" style="gap:16px">
+      <div class="card"><h3>Cara switch</h3><ul>
+        <li>Hotkey <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">T</span> buat cycle theme favorit, plus submenu di tray</li>
+        <li>Theme picker di settings, lengkap dengan preview live island beneran</li>
+        <li>Scroll di island sambil tahan <span class="kbd">Alt</span> buat ganti cepat</li>
+        <li>Import/export: drag file <code>.toml</code> ke island buat install</li>
+      </ul></div>
+      <div class="card"><h3>Auto-switch (aturan)</h3><ul>
+        <li><b>Waktu:</b> pagi pakai Paper Zine, malam Midnight Cassette, ikut sunrise/sunset</li>
+        <li><b>Per-app:</b> Spotify → Sunset Poolside, game fullscreen → Amber CRT</li>
+        <li><b>Mode:</b> pomodoro jalan → Matcha Café (grain naik pelan-pelan)</li>
+        <li><b>Ikut Windows:</b> light/dark sistem dan accent color</li>
+        <li>Aturan dievaluasi dari atas ke bawah. Pilihan manual selalu menang sampai di-reset</li>
+      </ul></div>
+      <div class="card"><h3>Di Rust</h3><ul>
+        <li><code>dj-core::theme</code>: <code>Theme</code> (serde), <code>ThemeRegistry</code>, inherit dari <code>base</code>, validasi</li>
+        <li>Validasi kontras: text vs pill minimal 4.5:1. Kalau gagal, theme ditolak dan ditandai di UI</li>
+        <li>Hot reload via <code>ReadDirectoryChangesW</code> (debounce 200 ms)</li>
+        <li>Renderer cuma baca <code>ResolvedTokens</code>, dan parameter tekstur langsung jadi uniform SkSL</li>
+        <li>Font di-resolve lewat Skia FontMgr. Kalau gak ada, fallback ke Geist yang di-embed</li>
+      </ul></div>
+    </div>
+  </div>
+  <div class="tbl" style="margin-top:16px"><table id="themetable">
+    <tr><th>Theme</th><th>Mode</th><th>Font label</th><th>Tekstur</th><th>Visualizer</th><th>Vibe</th></tr>
+  </table></div>
+</div></section>
+
+<!-- ===================== ARCH ===================== -->
+<section><div class="wrap">
+  <div class="label">04 · arsitektur</div>
+  <h2>Stack: Rust · Skia · Win32</h2>
+  <div class="grid g2">
+<pre><span class="c"># Cargo.toml (workspace)</span>
+<span class="k">skia-safe</span> = { version = "0.153", default-features = false,
+              features = ["d3d", "textlayout", "binary-cache"] }
+<span class="k">windows</span>   = "0.62"   <span class="c"># samain dgn yg dipakai skia-safe</span>
+<span class="k">wasapi</span>    = "0.24"   <span class="c"># loopback per-proses</span>
+<span class="k">realfft</span>   = "3"
+<span class="k">jwalk</span> / <span class="k">rayon</span>      <span class="c"># scan disk paralel</span>
+<span class="k">serde</span> + <span class="k">toml</span>       <span class="c"># config ~/.daijobu/config.toml</span>
+<span class="k">ureq</span> / <span class="k">reqwest</span>    <span class="c"># LRCLIB</span>
+<span class="c"># TANPA: winit, tokio (thread + channel cukup), webview</span></pre>
+<pre><span class="c">daijobu-island/</span>
+├─ crates/
+│  ├─ <span class="k">dj-core</span>     <span class="c">state machine, spring, config, i18n · no unsafe</span>
+│  ├─ <span class="k">dj-render</span>   <span class="c">Skia Ganesh D3D12 + DComp, painter, *.sksl</span>
+│  ├─ <span class="k">dj-win</span>      <span class="c">window, msg loop, hooks, tray, hotkey, DPI</span>
+│  ├─ <span class="k">dj-media</span>    <span class="c">SMTC sessions, thumbnail, lyrics</span>
+│  ├─ <span class="k">dj-audio</span>    <span class="c">loopback, FFT→bands, endpoint volume</span>
+│  ├─ <span class="k">dj-vitals</span>   <span class="c">cpu/mem/disk/net/battery/proc, health score</span>
+│  ├─ <span class="k">dj-sweep</span>    <span class="c">clean, purge, bigfiles, guard, recycle, oplog</span>
+│  ├─ <span class="k">dj-notify</span>   <span class="c">listener (fase 2, butuh sparse pkg)</span>
+│  ├─ <span class="k">dj-capture</span>  <span class="c">WGC capture, overlay snap, anotasi, OCR</span>
+│  ├─ <span class="k">dj-clip</span>     <span class="c">clipboard history (SQLite+DPAPI), OLE drag-out</span>
+│  ├─ <span class="k">dj-tile</span>     <span class="c">zona, layout, scenes, boot scene, task scheduler</span>
+│  └─ <span class="k">dj-ipc</span>      <span class="c">named pipe API + binary `dj` CLI</span>
+├─ helper/       <span class="c">dj-elevated.exe (launch + place app admin)</span>
+└─ app/          <span class="c">binary: views, activity scheduler, settings</span></pre>
+  </div>
+
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card"><h3>Window</h3><ul>
+      <li><code>WS_POPUP</code> + <code>WS_EX_NOREDIRECTIONBITMAP | TOOLWINDOW | TOPMOST | NOACTIVATE</code></li>
+      <li>Return <code>MA_NOACTIVATE</code>, manifest PerMonitorV2, handle <code>WM_DPICHANGED</code></li>
+      <li>Topmost di-assert ulang lewat <code>SetWinEventHook(EVENT_SYSTEM_FOREGROUND)</code></li>
+      <li>Click-through: rect window di-set pas seukuran pill. <code>HTTRANSPARENT</code> gak bisa lintas proses</li>
+    </ul></div>
+    <div class="card"><h3>Render</h3><ul>
+      <li>D3D12 device dan queue → <code>direct_contexts::make_d3d</code></li>
+      <li><code>CreateSwapChainForComposition</code>: 2 buffer, FLIP_SEQUENTIAL, <b>PREMULTIPLIED</b></li>
+      <li>Swap chain dibuat fixed seukuran expanded maksimum. Pill dianimasikan di dalamnya, jadi gak ada <code>ResizeBuffers</code> tiap frame</li>
+      <li>Tiap frame <code>clear(TRANSPARENT)</code> → draw → flush(Present) → <code>Present(1)</code></li>
+      <li>Kalau device hilang, rebuild context</li>
+    </ul></div>
+    <div class="card"><h3>Thread dan pacing</h3><ul>
+      <li>UI thread: message loop dan render. Kalau gak ada animasi, nunggu di <code>GetMessage</code> (0% CPU)</li>
+      <li>Worker: media (event), audio (event), vitals (1 Hz, hanya kalau kelihatan), sweep (on demand)</li>
+      <li>Worker kirim hasil lewat channel + <code>PostMessage(WM_APP)</code> buat bangunin UI</li>
+      <li>Selama animasi di-pace sama <code>Present(1)</code>. Begitu spring diam, render stop</li>
+    </ul></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Activity scheduler (inti UX)</h3>
+    <p>Semua sumber (media, timer, OSD, notif, vitals alert, sweep) mendorong <b style="color:var(--t1)">Activity</b> dengan prioritas. Island nampilin 1 activity, atau 2 dalam mode split bubble. Activity sementara (OSD, notif) nimpa sebentar, lalu balik ke activity sebelumnya.</p>
+<pre style="margin-top:12px">priority:  OSD(volume/bright) <span class="k">&gt;</span> snap thumb <span class="k">&gt;</span> notif <span class="k">&gt;</span> timer selesai <span class="k">&gt;</span> camera/mic <span class="k">&gt;</span> boot scene <span class="k">&gt;</span> dj progress <span class="k">&gt;</span> media <span class="k">&gt;</span> timer jalan <span class="k">&gt;</span> vitals alert <span class="k">&gt;</span> idle
+fullscreen: semua di-hide kecuali OSD (reveal sementara), tanpa ubah z-order selama game exclusive</pre>
+  </div>
+
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card"><h3>Shader lofi (SkSL via <code>RuntimeEffect</code>)</h3>
+<pre style="margin-top:10px"><span class="c">// grain: dipasang di atas pill, di-clip rrect</span>
+uniform shader src; uniform float time, strength;
+float hash(float2 p){ p=fract(p*float2(123.34,456.21));
+  p+=dot(p,p+45.32); return fract(p.x*p.y); }
+half4 main(float2 xy){ half4 c=src.eval(xy);
+  float n=hash(floor(xy)+time*37.0)-0.5;
+  c.rgb += half(n*strength)*c.a; return c; }</pre>
+      <p>Time di-quantize ke 18 fps biar kerasa kayak film. Ada juga Bayer 4×4 buat gradient dan art backdrop, dan scanline opsional. Semua effect di-compile sekali waktu startup.</p></div>
+    <div class="card"><h3>Backdrop?</h3>
+      <p>v1 pakai <b style="color:var(--t1)">solid warm-black</b>. Island asli juga hitam, dan grain plus dither lebih cocok di permukaan solid. Nanti bisa ditambah host backdrop brush (Windows.UI.Composition, window pendamping di belakang, di-clip rounded geometry) sebagai style "frosted".</p>
+      <p>Fallback: CPU raster Skia + <code>UpdateLayeredWindow</code> di balik trait yang sama, buat RDP/VM atau kalau D3D12 gagal.</p></div>
+  </div>
+</div></section>
+
+<!-- ===================== SWEEP ===================== -->
+<section><div class="wrap">
+  <div class="label">05 · vitals & sweep</div>
+  <h2>Port konsep Mole: aman dulu, baru hemat</h2>
+  <div class="grid g2">
+    <div class="card"><h3>Health score (ide dari Mole, bobot versi kita)</h3>
+<pre style="margin-top:10px">score = 100
+  − cpu   (≤50: 0 · 50–85: ≤15 · &gt;85: ≤30)
+  − ram   (≤70: 0 · 70–88: ≤12 · &gt;88: ≤25)
+  − disk  (sys drive ≤80: 0 · 80–93: ≤10 · &gt;93: ≤20)
+  − io    (&gt;50 MB/s linear, max 10)
+  − batt  (wear &gt;20%: 2 · &gt;40%: 5)
+  − uptime(&gt;7d: 1 · &gt;14d: 3)
+band: 85+ <span class="k">daijobu</span> · 65+ ok · 45+ hmm · &lt;45 <span style="color:var(--warn)">dame</span></pre>
+      <p>Hasilnya muncul di compact sebagai dot berwarna. Di expanded, keluar ring dan tag penyebabnya ("CPU tinggi", "restart dulu").</p></div>
+    <div class="card"><h3>Aturan safety (wajib dari hari pertama)</h3><ul>
+      <li>Selalu mulai dari <b>preview / dry-run</b>. Tombol hapus baru aktif setelah preview</li>
+      <li>Default ke <b>Recycle Bin</b> lewat <code>IFileOperation</code>. Hapus permanen cuma buat temp/cache</li>
+      <li>Path terlindungi: <code>C:\Windows</code>, Program Files, profile root, <code>.ssh</code>, <code>.aws</code>, Credentials, Cookies, Login Data, dan lain-lain</li>
+      <li>Reparse point gak pernah diikuti. Path di-resolve final, lalu dicek ulang tepat sebelum dihapus</li>
+      <li>Skip cache browser kalau prosesnya lagi jalan</li>
+      <li>Purge: <code>target</code> cuma dianggap artifact kalau ada <code>Cargo.toml</code>/<code>pom.xml</code>, <code>bin/obj</code> kalau ada <code>.csproj</code>, dan wajib gak ada file yang di-track git</li>
+      <li>Semua aksi dicatat di <code>~/.daijobu/operations.log</code>, dan bisa dilihat di tab History</li>
+    </ul></div>
+  </div>
+</div></section>
+
+<!-- ===================== ROADMAP ===================== -->
+<section><div class="wrap">
+  <div class="label">06 · roadmap</div>
+  <h2>Fase</h2>
+  <div class="phase"><h3><span>F0</span>Fondasi: pill yang bisa napas</h3><ul>
+    <li>Workspace dan CI (<code>cargo clippy -D warnings</code>), versi skia-safe di-pin, cache binary</li>
+    <li>Window Win32 transparan, DComp, Skia D3D12, render spring morph idle ↔ expanded</li>
+    <li>Shader grain/dither, font embed, DPI, tray, hotkey, autostart, single instance, config TOML</li>
+    <li><b>Theme engine</b>: schema TOML, registry, inherit, transisi token, hot reload, dan 4 theme bawaan</li></ul>
+    <div class="done">✓ selesai kalau: pill nongol di atas taskbar, klik expand dengan halus di 144 Hz, idle CPU ≈ 0%, gak muncul di Alt-Tab</div></div>
+  <div class="phase"><h3><span>F1</span>MVP harian</h3><ul>
+    <li>Media SMTC (event-driven), cover, kontrol, seek, allowlist app</li>
+    <li>VU visualizer loopback, OSD volume (flyout bawaan diganti)</li>
+    <li>Vitals ringkas (CPU/RAM/net/battery), fullscreen auto-hide, activity scheduler</li></ul>
+    <div class="done">✓ selesai kalau: dipakai seharian buat Spotify dan YouTube tanpa crash, aman pas main game fullscreen</div></div>
+  <div class="phase"><h3><span>F2</span>Live activities</h3><ul>
+    <li>Timer/pomodoro, lirik LRCLIB, indikator kamera/mic, prompt link dari clipboard, OSD brightness</li>
+    <li>Sparse MSIX dan signing, lalu notifikasi Windows</li>
+    <li>Window settings (digambar Skia juga), split bubble</li>
+    <li>Semua theme bawaan, theme picker, auto-switch rules, import/export <code>.toml</code></li>
+    <li><b>Snap</b>: capture, overlay seleksi, anotasi, copy/save/pin, OCR</li>
+    <li><b>Snap stack</b>: preview ngambang, countdown, multi-select, drag & drop OLE (banyak file sekaligus)</li>
+    <li><b>Clipboard history</b>: ala Win+V, dengan pencarian, pin, dan privasi</li>
+    <li><b>dj CLI</b> / API named pipe</li></ul></div>
+  <div class="phase"><h3><span>F3</span>Vitals, Sweep, Tile</h3><ul>
+    <li><b>Tile</b>: zona, layout picker di island, hotkey, editor custom</li>
+    <li><b>Scenes</b> dan <b>Boot Scene</b>: snapshot, restore, urutan dan delay, Task Scheduler + <code>dj-elevated</code> buat app admin</li>
+    <li>Dashboard vitals lengkap, health score, top proses, sparkline</li>
+    <li>Quick Clean, Dev Purge, Big files, Quick actions, History. Semua lewat preview + recycle + oplog</li></ul></div>
+  <div class="phase"><h3><span>F4</span>Extras</h3><ul>
+    <li>File Shelf, Ambient mixer + lofi radio</li>
+    <li>Mute mic global, ganti output audio, glance indicators, pengingat istirahat</li></ul></div>
+  <div class="phase later"><h3><span style="color:var(--t2)">F5</span>Nanti</h3><ul>
+    <li>Style frosted (host backdrop), DDC/CI buat monitor eksternal, pop-up Bluetooth</li>
+    <li>Uninstaller, sistem plugin, touch, installer dan auto-update</li></ul></div>
+</div></section>
+
+<!-- ===================== RISKS ===================== -->
+<section><div class="wrap">
+  <div class="label">07 · risiko & keputusan</div>
+  <h2>Yang perlu diwaspadai</h2>
+  <div class="grid g2">
+    <div class="card"><h3>Risiko teknis</h3><ul>
+      <li><span class="tag w">build</span> Skia mungkin harus build dari source (LLVM, Ninja, VS Build Tools, puluhan menit). Mitigasi: pin versi dan cache</li>
+      <li><span class="tag w">topmost</span> Rebutan z-order sama taskbar. Game exclusive-fullscreen bisa ke-minimize kalau kita utak-atik z-order pas display switch</li>
+      <li><span class="tag w">resize</span> <code>ResizeBuffers</code> butuh sync GPU penuh, jadi swap chain harus fixed</li>
+      <li><span class="tag w">notif</span> Butuh package identity dan cert. Toast bawaan tetap muncul juga</li>
+      <li><span class="tag w">undocumented</span> IPolicyConfig (ganti output device) dan WNF (Focus Assist) bisa rusak pas update Windows. Harus dipasang di balik probe</li>
+      <li><span class="tag w">admin</span> UIPI: island gak bisa ngatur window admin, jadi butuh helper elevated lewat Task Scheduler. Path exe harus aman biar gak jadi celah privilege escalation</li>
+      <li><span class="tag w">PrtSc</span> Ngambil alih tombol PrtSc dari Snipping Tool butuh izin user (registry), jangan diam-diam</li>
+      <li><span class="tag w">tile</span> Border tak terlihat, app UWP, app dengan ukuran minimum, dan app yang restore posisinya sendiri (perlu retry)</li>
+      <li><span class="tag w">brightness</span> Tombol brightness laptop sering gak lewat hook, jadi flyout bawaan bisa tetap muncul</li>
+    </ul></div>
+    <div class="card"><h3>Lisensi</h3><ul>
+      <li>WinIsland: <b>GPL-3.0</b>. Mole branch windows: <b>GPL-3.0</b>, plus trademark "Mole"</li>
+      <li>Kita <b>port konsep saja</b>: struktur, pilihan API, dan ide. Kode ditulis ulang, daftar path disusun sendiri</li>
+      <li>Jangan pakai nama atau logo Mole, dan jangan ngaku-ngaku afiliasi</li>
+      <li>Lisensi kita bebas (rekomendasi MIT/Apache-2.0) selama gak ada kode yang di-copy</li>
+    </ul></div>
+  </div>
+  <div class="card" style="margin-top:16px"><h3>Keputusan terbuka (perlu jawaban lo)</h3>
+    <div class="tbl" style="margin-top:10px"><table>
+      <tr><th>#</th><th>Pertanyaan</th><th>Rekomendasi gw</th></tr>
+      <tr><td>1</td><td>Theme default dan berapa theme bawaan di v1</td><td>Tobacco Tape. Di F0 cukup 4 theme dulu biar engine-nya keuji, sisanya nyusul di F2</td></tr>
+      <tr><td>2</td><td>Lisensi app</td><td>MIT / Apache-2.0</td></tr>
+      <tr><td>3</td><td>Minimum OS</td><td>Windows 11 22H2+ aja</td></tr>
+      <tr><td>4</td><td>Sparse MSIX buat notif dari F2, atau ditunda?</td><td>Di F2, setelah MVP stabil</td></tr>
+      <tr><td>5</td><td>Seberapa dalam Mole: perlu uninstaller?</td><td>Jangan dulu, cukup clean, purge, big files, dan vitals</td></tr>
+      <tr><td>6</td><td>Bahasa UI</td><td>English dulu, label kecil pakai kana buat vibe (だいじょうぶ)</td></tr>
+    </table></div>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <div class="label" style="margin-bottom:10px">sumber riset</div>
+  <a href="https://github.com/WinIslandProject/WinIsland">WinIslandProject/WinIsland</a> (ARCHITECTURE.md, Changelog, render/backdrop/platform crates) ·
+  <a href="https://github.com/tw93/Mole/tree/windows">tw93/Mole @ windows</a> (lib/clean, cmd/status, cmd/analyze) ·
+  <a href="https://lrclib.net">LRCLIB</a> · Microsoft Learn: notification listener & loopback recording.<br>
+  Riset dikerjain 4 subagent Sonnet. Plan dan desainnya disusun Opus. Beberapa angka (spring Apple, shader) masih inferensi, jadi harus diverifikasi waktu F0.
+</div></footer>
+
+<script>
+/* ---------- themes (= file .toml di app aslinya) ---------- */
+const THEMES=[
+ {id:'tobacco',name:'Tobacco Tape',mode:'dark',vibe:'amber hangat, default',c:{bg:'#0c0b0a',pill:'#14110F',s1:'#1E1A17',s2:'#2B2520',t1:'#EDE3D2',t2:'#A39785',acc:'#E0A458',warn:'#D65C4A',hi:'#F2D9A8'},grain:.09,scan:0,label:'Geist Mono',title:'Geist',digits:'Doto',round:1,vu:'seg',levels:6,spring:{resp:.45,z:.75}},
+ {id:'midnight',name:'Midnight Cassette',mode:'dark',vibe:'teal dingin, jam 2 pagi',c:{bg:'#090b0c',pill:'#0F1214',s1:'#171C1F',s2:'#232A2E',t1:'#DDE6E3',t2:'#8A9A98',acc:'#7FB5A8',warn:'#D9795F',hi:'#BFE3DA'},grain:.08,scan:0,label:'Geist Mono',title:'Geist',digits:'Doto',round:1,vu:'bar',levels:6,spring:{resp:.5,z:.8}},
+ {id:'sunset',name:'Sunset Poolside',mode:'dark',vibe:'coral, vibe ala Poolsuite',c:{bg:'#0d0908',pill:'#16100F',s1:'#241817',s2:'#33211F',t1:'#F4E4D4',t2:'#B79A8C',acc:'#F08A6B',warn:'#E6566B',hi:'#FFC9A0'},grain:.1,scan:0,label:'Space Grotesk',title:'Space Grotesk',digits:'Doto',round:1,vu:'seg',levels:5,spring:{resp:.48,z:.7}},
+ {id:'matcha',name:'Matcha Café',mode:'dark',vibe:'sage, mode fokus',c:{bg:'#0a0c09',pill:'#121510',s1:'#1B2019',s2:'#283024',t1:'#E6E8D6',t2:'#99A28A',acc:'#A8C686',warn:'#D9845F',hi:'#E8F0C8'},grain:.08,scan:0,label:'Geist Mono',title:'Fraunces',digits:'Doto',round:1.1,vu:'dot',levels:6,spring:{resp:.55,z:.85}},
+ {id:'paper',name:'Paper Zine',mode:'light',vibe:'kertas fotokopi, light mode',c:{bg:'#d9d1c1',pill:'#EFE8DA',s1:'#E4DCCB',s2:'#CFC5B1',t1:'#1E1B17',t2:'#6E6555',acc:'#C2452D',warn:'#C2452D',hi:'#1E1B17'},grain:.16,scan:0,label:'Geist Mono',title:'Fraunces',digits:'Doto',round:.85,vu:'block',levels:3,spring:{resp:.42,z:.8}},
+ {id:'vapor',name:'Vaporwave Dusk',mode:'dark',vibe:'ungu-pink, scanline',c:{bg:'#0c0814',pill:'#140F1F',s1:'#1E1730',s2:'#2E2344',t1:'#F1E6FF',t2:'#A493C2',acc:'#FF7AC6',warn:'#FF5E7E',hi:'#7DF9FF'},grain:.07,scan:1,label:'VT323',title:'Space Grotesk',digits:'VT323',round:1,vu:'bar',levels:5,spring:{resp:.45,z:.7}},
+ {id:'dmg',name:'Pocket DMG',mode:'dark',vibe:'4 warna ala Game Boy',c:{bg:'#0f1a0f',pill:'#1F2E1A',s1:'#2C4026',s2:'#3E5A33',t1:'#C9DE8C',t2:'#8BAC5A',acc:'#C9DE8C',warn:'#8BAC5A',hi:'#E3F2B0'},grain:.05,scan:.5,label:'Silkscreen',title:'Silkscreen',digits:'Silkscreen',round:.35,vu:'block',levels:4,spring:{resp:.3,z:1}},
+ {id:'mono',name:'Dot Mono',mode:'dark',vibe:'monokrom dot-matrix + merah',c:{bg:'#060606',pill:'#0D0D0D',s1:'#171717',s2:'#262626',t1:'#F2F2F2',t2:'#8C8C8C',acc:'#F2F2F2',warn:'#E8352E',hi:'#E8352E'},grain:.05,scan:0,label:'Doto',title:'Geist',digits:'Doto',round:1,vu:'dot',levels:2,spring:{resp:.4,z:.85}},
+ {id:'sakura',name:'Sakura Night',mode:'dark',vibe:'pink lembut di navy',c:{bg:'#080a12',pill:'#0F1220',s1:'#181C2E',s2:'#252A42',t1:'#F3E9F0',t2:'#9C97B5',acc:'#F2A7C3',warn:'#F07178',hi:'#FFE1EC'},grain:.08,scan:0,label:'Geist Mono',title:'Geist',digits:'Doto',round:1.1,vu:'dot',levels:6,spring:{resp:.5,z:.72}},
+ {id:'crt',name:'Amber CRT',mode:'dark',vibe:'fosfor terminal jadul',c:{bg:'#0a0602',pill:'#120A03',s1:'#1D1206',s2:'#2E1D0A',t1:'#FFB347',t2:'#B37A2E',acc:'#FFB347',warn:'#FF6A3D',hi:'#FFD9A0'},grain:.1,scan:1,label:'VT323',title:'VT323',digits:'VT323',round:.6,vu:'block',levels:4,spring:{resp:.35,z:.9}},
+ {id:'rain',name:'Rainy Window',mode:'dark',vibe:'biru abu, hujan sore',c:{bg:'#0a0d10',pill:'#11161B',s1:'#1A2128',s2:'#273039',t1:'#DCE3EA',t2:'#8593A1',acc:'#8FB3D9',warn:'#D98F8F',hi:'#C9DCF0'},grain:.12,scan:0,label:'Geist Mono',title:'Geist',digits:'Doto',round:1,vu:'bar',levels:7,spring:{resp:.55,z:.8}},
+ {id:'clean',name:'Clean',mode:'dark',vibe:'tanpa grain, minimal modern',c:{bg:'#0a0a0b',pill:'#000000',s1:'#141416',s2:'#232326',t1:'#F5F5F7',t2:'#8E8E93',acc:'#FFFFFF',warn:'#FF453A',hi:'#FFFFFF'},grain:0,scan:0,label:'Geist',title:'Geist',digits:'Geist',round:1,vu:'bar',levels:32,spring:{resp:.45,z:.78}},
+];
+let TH=THEMES[0];
+const fam=f=>`"${f}","Geist Mono",monospace`;
+function applyTheme(t,opts={}){
+  TH=t;const b=document.body,s=b.style;
+  for(const[k,v] of Object.entries(t.c))s.setProperty('--'+k,v);
+  s.setProperty('--mono',fam(t.label));s.setProperty('--sans',`"${t.title}",Geist,system-ui,sans-serif`);s.setProperty('--dot',fam(t.digits));
+  s.setProperty('--gr',t.grain);b.classList.toggle('nograin',t.grain===0);b.classList.toggle('scanlines',t.scan>0);
+  tgGrain.classList.toggle('on',t.grain>0);tgScan.classList.toggle('on',t.scan>0);
+  b.dataset.vu=t.vu;themeName.textContent=t.name;
+  params.expand={resp:t.spring.resp,z:t.spring.z};resp.value=t.spring.resp;zeta.value=t.spring.z;
+  document.querySelectorAll('.tcard').forEach(x=>x.classList.toggle('on',x.dataset.id===t.id));
+  makeArt();drawWall();plot();
+  if(!opts.quiet){spring.v.w+=380;spring.v.h-=60;}  // "bump" kecil biar kerasa switch-nya
+}
+function buildThemeUI(){
+  themegrid.innerHTML=THEMES.map(t=>`<button class="tcard" data-id="${t.id}" style="background:${t.c.s1};color:${t.c.t1};border-color:${t.c.s2}">
+     <div class="mini" style="background:${t.c.pill};border-radius:${13*t.round}px;box-shadow:0 0 0 1px ${t.c.s2}"><i style="background:linear-gradient(135deg,${t.c.warn},${t.c.acc},${t.c.hi});border-radius:${4*t.round}px"></i><b style="background:${t.c.t2}"></b><s>${[6,11,8,12,5].map(h=>`<u style="height:${h}px;background:${t.c.acc};border-radius:${t.vu==='dot'?'2px':'0'}"></u>`).join('')}</s></div>
+     <div class="nm" style="font-family:'${t.title}',Geist">${t.name}</div><div class="ds" style="font-family:'${t.label}',monospace">${t.vibe}</div>
+     <div class="dots">${['pill','t1','acc','warn','hi'].map(k=>`<span style="background:${t.c[k]}"></span>`).join('')}</div></button>`).join('');
+  themegrid.querySelectorAll('.tcard').forEach(el=>el.onclick=()=>applyTheme(THEMES.find(t=>t.id===el.dataset.id)));
+  themetable.innerHTML+=THEMES.map(t=>`<tr><td><b>${t.name}</b></td><td class="m">${t.mode}</td><td class="m">${t.label}</td><td class="m">grain ${t.grain}${t.scan?' · scan':''} · ${t.levels} lvl</td><td class="m">${t.vu}</td><td>${t.vibe}</td></tr>`).join('');
+}
+const cycle=()=>applyTheme(THEMES[(THEMES.indexOf(TH)+1)%THEMES.length]);
+tgTheme.onclick=cycle;
+addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const k=e.key.toLowerCase();if(k==='t')cycle();if(k==='s'){if(cur==='snap')desk('snap');else go('snap')}if(k==='v')go(cur==='clip'?prevCompact:'clip')});
+tgGrain.onclick=()=>{document.body.classList.toggle('nograin');tgGrain.classList.toggle('on')};
+tgScan.onclick=()=>{document.body.classList.toggle('scanlines');tgScan.classList.toggle('on')};
+const css=n=>({'--pill':TH.c.pill,'--warn':TH.c.warn,'--acc':TH.c.acc,'--hi':TH.c.hi,'--s2':TH.c.s2,'--t2':TH.c.t2,'--bg':TH.c.bg}[n]);
+const hex=h=>{h=h.replace('#','');return[0,2,4].map(i=>parseInt(h.substr(i,2),16))};
+
+/* ---------- bayer-dithered "album art" (sama kayak SkSL nanti) ---------- */
+const B4=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
+let artURL='',wallURL='';
+function dither(cv,w,h,stops,cell,levels,fn){
+  const x=cv.getContext('2d'),img=x.createImageData(w,h);
+  for(let j=0;j<h;j++)for(let i=0;i<w;i++){
+    const t=fn(i/w,j/h);
+    const seg=Math.min(stops.length-2,Math.floor(t*(stops.length-1))),lt=t*(stops.length-1)-seg;
+    const a=stops[seg],b=stops[seg+1];
+    const th=B4[(Math.floor(j/cell)%4)*4+(Math.floor(i/cell)%4)]/16-0.47;
+    const k=(i+j*w)*4;
+    for(let c=0;c<3;c++){const v=(a[c]+(b[c]-a[c])*lt)/255;img.data[k+c]=Math.max(0,Math.min(255,Math.floor(v*(levels-1)+th+.5)/(levels-1)*255))}
+    img.data[k+3]=255;
+  }
+  x.putImageData(img,0,0);
+}
+function makeArt(){
+  const cv=document.createElement('canvas');cv.width=cv.height=48;
+  dither(cv,48,48,[hex(css('--pill')),hex(css('--warn')),hex(css('--acc')),hex(css('--hi'))],1,TH.levels,(u,v)=>{
+    const d=Math.hypot(u-.7,v-.3);return Math.max(0,Math.min(1,1-d*1.25+.08*Math.sin(u*9)))});
+  artURL=cv.toDataURL(); render(true);
+}
+function drawWall(){
+  const cv=wall,w=cv.width=240,h=cv.height=110;
+  dither(cv,w,h,[hex(css('--bg')),hex(css('--s2')),hex(css('--acc'))],2,Math.min(5,TH.levels+1),(u,v)=>Math.max(0,Math.min(1,(v*.9+.25*Math.sin(u*5+v*2))-.25)));
+  cv.style.width='100%';cv.style.height='100%';cv.style.imageRendering='pixelated';wallURL=cv.toDataURL();
+}
+
+/* ---------- island states ---------- */
+const S={
+  idle:{w:128,h:32,r:16,label:'idle'},
+  media:{w:224,h:36,r:18,label:'media'},
+  mediaX:{w:400,h:184,r:32,label:'media · expanded'},
+  volume:{w:220,h:40,r:20,label:'OSD volume'},
+  notif:{w:360,h:72,r:28,label:'notifikasi'},
+  timer:{w:172,h:36,r:18,label:'timer'},
+  vitals:{w:400,h:150,r:32,label:'vitals'},
+  sweep:{w:400,h:200,r:32,label:'sweep'},
+  split:{w:300,h:36,r:18,label:'split'},
+  snap:{w:330,h:72,r:26,label:'snap'},
+  tile:{w:400,h:176,r:32,label:'tile'},
+  boot:{w:360,h:150,r:30,label:'boot scene'},
+  shelf:{w:360,h:96,r:28,label:'shelf'},
+  ambient:{w:400,h:166,r:32,label:'ambient'},
+  dev:{w:300,h:36,r:18,label:'dj cli'},
+  clip:{w:400,h:282,r:30,label:'clipboard'},
+};
+const expandOf={media:'mediaX',timer:'mediaX',idle:'vitals',split:'mediaX',dev:'vitals'};
+let cur='media',prevCompact='media';
+const icons={
+  prev:'<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg>',
+  next:'<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5l11 7-11 7z"/></svg>',
+  pause:'<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>',
+  vol:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/><path d="M16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11"/></svg>',
+};
+function vu(cols,segs){let s='<div class="vu">';for(let c=0;c<cols;c++){s+='<div class="col" data-c="'+c+'">';for(let i=0;i<segs;i++)s+='<div class="seg"></div>';s+='</div>'}return s+'</div>'}
+function ring(p,size,stroke,col){const r=(size-stroke)/2,C=2*Math.PI*r;
+  return `<svg class="ring" width="${size}" height="${size}"><circle cx="${size/2}" cy="${size/2}" r="${r}" stroke="var(--s2)" stroke-width="${stroke}" fill="none"/><circle cx="${size/2}" cy="${size/2}" r="${r}" stroke="${col||'var(--acc)'}" stroke-width="${stroke}" fill="none" stroke-linecap="round" stroke-dasharray="${C*p} ${C}"/></svg>`}
+const now=()=>{const d=new Date();return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')};
+const V={
+  idle:()=>`<div class="row" style="height:100%;justify-content:center;gap:9px"><div class="lamp"></div><span style="font:500 13px var(--mono);letter-spacing:.06em">${now()}</span></div>`,
+  media:()=>`<div class="row" style="height:100%;padding:0 10px 0 6px;justify-content:space-between"><div class="art" style="width:24px;height:24px;background-image:url(${artURL})"></div><span class="tiny" style="flex:1;padding:0 10px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">tape no.7 · nujabes-ish</span>${vu(5,8)}</div>`,
+  mediaX:()=>`<div style="padding:18px 20px">
+     <div class="row" style="gap:16px"><div class="art" style="width:88px;height:88px;border-radius:14px;background-image:url(${artURL})"></div>
+       <div style="flex:1;min-width:0"><div class="row" style="gap:8px;margin-bottom:8px"><div class="lamp"></div><span class="tiny">now playing · spotify</span><span style="flex:1"></span><div class="reel"></div><div class="reel" style="animation-duration:3.1s"></div></div>
+         <div style="font:600 15px var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Rainy Platform at 2AM</div>
+         <div style="font:400 12px var(--sans);color:var(--t2);margin-top:2px">tape no.7 — side B</div>
+         <div style="margin-top:10px">${vu(22,6)}</div></div></div>
+     <div class="row" style="gap:10px;margin-top:14px"><span class="tiny" id="tpos">1:12</span><div class="bar" style="flex:1"><b id="tbar" style="width:38%"></b></div><span class="tiny">3:08</span></div>
+     <div class="row" style="justify-content:center;gap:18px;margin-top:6px"><div class="btn">${icons.prev}</div><div class="btn main">${icons.pause}</div><div class="btn">${icons.next}</div></div></div>`,
+  volume:()=>`<div class="row" style="height:100%;padding:0 14px;gap:12px">${icons.vol}<div class="bar" style="flex:1"><b style="width:64%"></b></div><span style="font:500 11px var(--mono);width:22px;text-align:right">64</span></div>`,
+  notif:()=>`<div class="row" style="height:100%;padding:0 16px;gap:12px"><div style="width:40px;height:40px;border-radius:12px;background:var(--s2);display:grid;place-items:center;font:700 16px var(--mono);color:var(--acc)">D</div>
+     <div style="flex:1;min-width:0"><div class="row" style="justify-content:space-between"><b style="font:600 13px var(--sans)">Discord · #lofi-room</b><span class="tiny">now</span></div>
+     <div style="font:400 12px var(--sans);color:var(--t2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">kaito: build island-nya udah jalan belum? 👀</div></div></div>`,
+  timer:()=>`<div class="row" style="height:100%;padding:0 14px 0 9px;justify-content:space-between">${ring(.62,20,2.2)}<span class="tiny">focus</span><span class="dotnum" style="font-size:18px;color:var(--acc)" id="tclock">15:32</span></div>`,
+  vitals:()=>`<div style="padding:16px 20px"><div class="row" style="justify-content:space-between"><span class="tiny">daijobu? · health</span><span style="font:600 13px var(--mono);color:var(--acc)">87 · daijobu</span></div>
+     <div class="row" style="justify-content:space-between;margin-top:14px">
+       ${[['CPU',.34],['RAM',.61],['C:\\',.78]].map(([l,p])=>`<div style="text-align:center;position:relative">${ring(p,56,4)}<div style="position:absolute;top:18px;left:0;right:0;font:500 12px var(--mono)">${Math.round(p*100)}</div><div class="tiny" style="margin-top:4px">${l}</div></div>`).join('')}
+       <div style="width:120px"><div class="tiny">net ↓ 4.2 MB/s</div><svg width="120" height="40" style="margin-top:6px"><polyline id="spark" fill="none" stroke="var(--acc)" stroke-width="1.5" points=""/></svg><div class="tiny" style="margin-top:2px">↑ 180 KB/s · 🔋 82%</div></div>
+     </div></div>`,
+  sweep:()=>`<div style="padding:16px 20px"><div class="row" style="justify-content:space-between"><span class="tiny">sweep · preview</span><span style="font:600 13px var(--mono);color:var(--acc)">6.8 GB bisa dibersihin</span></div>
+     ${[['temp & error reports','412 MB',1],['browser cache (edge, chrome)','1.3 GB',1],['dev cache (npm, cargo, pip)','2.9 GB',1],['purge: 4× node_modules, 2× target','2.2 GB',0]].map(([a,b,on])=>`<div class="row" style="gap:10px;margin-top:10px;font-size:12.5px"><span class="check ${on?'on':''}"></span><span style="flex:1">${a}</span><span style="font-family:var(--mono);color:var(--t2)">${b}</span></div>`).join('')}
+     <div class="row" style="gap:8px;margin-top:14px"><span class="tiny" style="flex:1">→ recycle bin · dicatat di oplog</span><span style="font:600 12px var(--sans);background:var(--t1);color:var(--pill);padding:6px 12px;border-radius:999px">Bersihin 4.6 GB</span></div></div>`,
+  split:()=>`<div class="row" style="height:100%;padding:0 10px 0 6px;gap:8px"><div class="art" style="width:24px;height:24px;background-image:url(${artURL})"></div>${vu(4,8)}<span style="flex:1"></span><span class="tiny">focus</span><span class="dotnum" style="font-size:16px;color:var(--acc)" id="tclock">15:32</span></div>`,
+  snap:()=>`<div class="row" style="height:100%;padding:0 12px 0 10px;gap:12px"><div class="art" style="width:76px;height:48px;border-radius:8px;background-image:url(${wallURL});border:1px solid var(--s2)"></div>
+     <div style="flex:1;min-width:0"><div class="row" style="gap:6px"><span class="tiny">snap · 612×388</span><span style="flex:1"></span><span class="tiny" style="color:var(--acc)">✓ di clipboard</span></div>
+     <div class="row" style="gap:5px;margin-top:8px">${['copy','save','edit','pin','ocr'].map((a,i)=>`<span style="font:500 10px var(--mono);letter-spacing:.06em;padding:4px 7px;border-radius:7px;${i==4?'background:var(--acc);color:var(--pill)':'background:var(--s2)'}">${a}</span>`).join('')}</div></div></div>`,
+  tile:()=>{const L=[['1fr 1fr','1fr',[['1','1']]],['1.5fr 1fr','1fr',[]],['1fr 1fr 1fr','1fr',[]],['1.4fr 1fr','1fr 1fr',['1/3']],['1fr 1fr','1fr 1fr',[]],['1.6fr 1fr','1fr 1fr 1fr',['1/4']]];
+     const n=[2,2,3,3,4,4];
+     return `<div style="padding:16px 20px"><div class="row" style="justify-content:space-between"><span class="tiny">tile · drop window ke zona</span><span class="tiny">monitor 1 · 2560×1440</span></div>
+     <div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap">${L.map(([c,r,sp],i)=>`<div class="lay ${i==3?'on':''}" style="grid-template-columns:${c};grid-template-rows:${r}">${Array.from({length:n[i]}).map((_,j)=>`<i style="${j==0&&sp[0]&&typeof sp[0]=='string'?'grid-row:'+sp[0]:''}"></i>`).join('')}</div>`).join('')}</div>
+     <div class="tiny" style="margin-top:14px">scenes</div>
+     <div class="row" style="gap:6px;margin-top:7px">${[['⌨ coding',1],['☕ focus',0],['🎧 meeting',0],['🎮 game',0]].map(([s,on])=>`<span style="font:500 11px var(--mono);padding:5px 9px;border-radius:8px;${on?'background:var(--acc);color:var(--pill)':'background:var(--s2)'}">${s}</span>`).join('')}<span style="flex:1"></span><span class="tiny">ctrl+alt+1‥9</span></div></div>`},
+  boot:()=>`<div style="padding:16px 20px"><div class="row" style="justify-content:space-between"><span class="tiny">おはよう · boot scene “coding”</span><span class="tiny" id="bootn" style="color:var(--acc)">3 / 5</span></div>
+     ${[['VS Code','zona 1 · monitor 1','✓'],['Chrome','zona 2 · monitor 1','✓'],['Windows Terminal','admin · zona 3','✓'],['Docker Desktop','admin · nunggu window…','◌'],['Spotify','monitor 2 · minimized','·']].map(([a,b,s],i)=>`<div class="row" style="gap:10px;margin-top:${i?7:12}px;font-size:12px"><span style="width:14px;font-family:var(--mono);color:${s=='✓'?'var(--acc)':'var(--t2)'}">${s}</span><span style="flex:1">${a}</span><span class="tiny" style="${b.startsWith('admin')?'color:var(--warn)':''}">${b}</span></div>`).join('')}</div>`,
+  shelf:()=>`<div class="row" style="height:100%;padding:0 16px;gap:10px"><div style="display:flex;flex-direction:column;gap:4px;width:56px"><span class="tiny">shelf</span><span class="tiny" style="color:var(--acc)">3 file</span></div>
+     ${[['PNG','snap.png'],['ZIP','build.zip'],['PDF','invoice']].map(([e,n])=>`<div class="file"><em>${e}</em><span class="tiny" style="font-size:8.5px;letter-spacing:.02em">${n}</span></div>`).join('')}
+     <div class="file" style="border-style:dashed;background:transparent"><span style="font:400 18px var(--mono);color:var(--t2)">+</span><span class="tiny" style="font-size:8.5px">drop</span></div></div>`,
+  ambient:()=>`<div style="padding:16px 20px"><div class="row" style="justify-content:space-between"><span class="tiny">ambient mixer</span><span class="tiny"><span class="lamp" style="display:inline-block;margin-right:6px"></span>lofi radio · 87.7 tanuki fm</span></div>
+     <div class="row" style="justify-content:space-around;margin-top:14px">${[['rain',.7,'☂'],['café',.4,'☕'],['fire',.25,'🔥'],['noise',.15,'≋'],['radio',.55,'📻']].map(([n,v,ic])=>`<div style="text-align:center;width:54px"><div class="fader"><b style="height:${v*100}%"></b><u style="bottom:calc(${v*100}% - 4px)"></u></div><div style="margin-top:8px;font-size:12px">${ic}</div><div class="tiny" style="margin-top:2px">${n}</div></div>`).join('')}</div></div>`,
+  clip:()=>`<div style="padding:14px 16px">
+     <div class="row" style="gap:8px"><div style="flex:1;height:30px;border-radius:9px;background:var(--s1);border:1px solid var(--s2);display:flex;align-items:center;padding:0 10px;gap:8px"><span class="tiny">⌕</span><span style="font:400 12px var(--sans);color:var(--t2)">cari clipboard…</span></div>
+       ${['all','txt','img','link'].map((t,i)=>`<span style="font:500 10px var(--mono);padding:5px 7px;border-radius:7px;${i==0?'background:var(--acc);color:var(--pill)':'background:var(--s2)'}">${t}</span>`).join('')}</div>
+     <div style="margin-top:8px">${CLIP.slice(0,6).map((c,i)=>`<div class="clipitem ${i==0?'on':''}"><span class="tiny" style="width:10px">${i+1}</span><span class="ty" style="${c.img?`background-image:url(${c.img});width:52px;height:32px;border:1px solid var(--s2)`:c.color?`background:${c.color}`:''}">${c.img||c.color?'':c.t}</span><span class="tx">${c.x}${c.d?`<br><span class="tiny">${c.d}</span>`:''}</span>${c.pin?'<span style="font-size:10px">📌</span>':''}<span class="tiny">${c.ago}</span></div>`).join('')}</div>
+     <div class="row" style="margin-top:6px;gap:12px"><span class="tiny">↵ paste</span><span class="tiny">1‥9 cepat</span><span class="tiny">ctrl+p pin</span><span class="tiny">⇧↵ plain</span><span style="flex:1"></span><span class="tiny">win+v / ctrl+⇧+v</span></div></div>`,
+  dev:()=>`<div class="row" style="height:100%;padding:0 14px;gap:10px"><div class="lamp"></div><span class="tiny">deploy</span><div class="bar" style="flex:1"><b id="devbar" style="width:40%"></b></div><span style="font:500 11px var(--mono)" id="devp">40%</span></div>`,
+};
+function render(force){const c=content;c.innerHTML=V[cur]();}
+function go(name){
+  if(name===cur)return;
+  content.classList.add('out');
+  setTimeout(()=>{cur=name;render();content.classList.remove('out')},110);
+  const t=S[name]; const grow=t.w*t.h>S[cur].w*S[cur].h;
+  spring.set(t,grow?params.expand:params.collapse);
+  document.querySelectorAll('#ctrls .chip').forEach(b=>b.classList.toggle('on',b.dataset.s===name));
+  if(!['mediaX','vitals','sweep','notif','volume','tile','boot','snap','shelf','ambient','clip'].includes(name))prevCompact=name;
+  desk(name);
+}
+/* ---------- desktop demo: Tile zones & Snap overlay ---------- */
+const FW=['fw1','fw2','fw3'].map(id=>document.getElementById(id));
+const FW0=FW.map(f=>f.getAttribute('style'));
+let deskT=[];
+function desk(name){
+  deskT.forEach(clearTimeout);deskT=[];
+  snapov.classList.toggle('show',name==='snap');
+  if(name==='snap')deskT.push(setTimeout(()=>{snapov.classList.remove('show');addShot()},1500));
+  if(name==='tile'||name==='boot'){
+    zones.classList.add('show');
+    const sr=stage.getBoundingClientRect();
+    [...zones.children].forEach((z,i)=>{deskT.push(setTimeout(()=>{const r=z.getBoundingClientRect();
+      Object.assign(FW[i].style,{left:(r.left-sr.left)+'px',top:(r.top-sr.top)+'px',width:r.width+'px',height:r.height+'px'})},350+i*260))});
+    deskT.push(setTimeout(()=>zones.classList.remove('show'),1500));
+  } else {zones.classList.remove('show');FW.forEach((f,i)=>f.setAttribute('style',FW0[i]))}
+}
+island.onclick=()=>{
+  if(['mediaX','vitals','sweep','tile','boot','snap','shelf','ambient','clip'].includes(cur))go(prevCompact);
+  else go(expandOf[cur]||'mediaX');
+};
+Object.keys(S).forEach(k=>{const b=document.createElement('button');b.className='chip'+(k===cur?' on':'');b.dataset.s=k;b.textContent=S[k].label;b.onclick=e=>{e.stopPropagation();go(k)};ctrls.appendChild(b)});
+
+/* ---------- snap stack: preview ngambang, bisa multi-select & drag ---------- */
+const LIFE=10;let SHOTS=[],shotN=0;
+const CLIP=[
+ {t:'IMG',x:'gambar dari Chrome',d:'1280×720 · PNG',ago:'1m',img:shotURL(102)},
+ {t:'TXT',x:'cargo add skia-safe --features d3d',ago:'2m'},
+ {t:'IMG',x:'Figma · logo-v3',d:'512×512 · PNG',ago:'4m',img:shotURL(97),pin:1},
+ {t:'URL',x:'https://docs.rs/skia-safe/latest/skia_safe/',ago:'6m',pin:1},
+ {t:'#',x:'#E0A458 · accent tobacco',ago:'9m',color:'#E0A458'},
+ {t:'TXT',x:'meeting jam 3 pindah ke 4 ya',ago:'31m'},
+];
+function shotURL(i){const cv=document.createElement('canvas');cv.width=124;cv.height=80;
+  const c=TH.c,P=[[c.bg,c.s2,c.acc],[c.pill,c.warn,c.hi],[c.s1,c.acc,c.t1],[c.bg,c.hi,c.warn]][i%4].map(hex);
+  dither(cv,124,80,P,2,Math.max(3,Math.min(6,TH.levels)),(u,v)=>{const a=[()=>v*.8+.3*Math.sin(u*6+i),()=>1-Math.hypot(u-.3,v-.5)*1.3,()=>u*.7+v*.3+.15*Math.sin(v*9),()=>.5+.5*Math.sin(u*4+v*3+i)][i%4]();return Math.max(0,Math.min(1,a))});
+  return cv.toDataURL()}
+function addShot(){
+  const id=++shotN,url=shotURL(id);
+  const el=document.createElement('div');el.className='shot';el.draggable=true;el.style.backgroundImage=`url(${url})`;
+  el.innerHTML=`<span class="ck"></span><svg class="cd ring" width="16" height="16"><circle cx="8" cy="8" r="6" stroke="rgba(0,0,0,.45)" stroke-width="2.5" fill="none"/><circle cx="8" cy="8" r="6" stroke="var(--hi)" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>
+    <div class="act"><span data-a="copy">copy</span><span data-a="edit">edit</span><span data-a="pin">pin</span><span data-a="x">✕</span></div>`;
+  const sh={id,url,el,left:LIFE,sel:false,pin:false,hover:false};SHOTS.push(sh);shots.prepend(el);
+  CLIP.unshift({t:'IMG',x:`snap-${String(id).padStart(3,'0')}.png`,d:'612×388 · snap',ago:'now',img:url});
+  el.onmouseenter=()=>sh.hover=true;el.onmouseleave=()=>sh.hover=false;
+  el.onclick=e=>{const a=e.target.dataset.a;e.stopPropagation();
+    if(a==='x')return kill(sh);
+    if(a==='pin'){sh.pin=!sh.pin;e.target.textContent=sh.pin?'📌':'pin';return}
+    if(a==='copy')return toast(stage,'✓ di-copy ke clipboard');
+    if(a==='edit')return go('snap');
+    sh.sel=!sh.sel;syncSel()};
+  el.ondragstart=e=>{if(!sh.sel){SHOTS.forEach(s=>s.sel=false);sh.sel=true;syncSel()}
+    const sel=SHOTS.filter(s=>s.sel);sel.forEach(s=>s.el.classList.add('drag'));
+    dragghost.style.backgroundImage=`url(${sel[0].url})`;dragn.textContent=sel.length;
+    e.dataTransfer.setData('text/plain',sel.map(s=>'snap-'+s.id+'.png').join('\n'));e.dataTransfer.effectAllowed='copy';
+    e.dataTransfer.setDragImage(dragghost,55,36)};
+  el.ondragend=()=>SHOTS.forEach(s=>s.el.classList.remove('drag'));
+  if(SHOTS.length>5)kill(SHOTS.find(s=>!s.pin&&!s.sel)||SHOTS[0]);
+  layoutShots();
+}
+function kill(sh){if(!sh)return;SHOTS=SHOTS.filter(s=>s!==sh);sh.el.classList.add('out');setTimeout(()=>sh.el.remove(),300);syncSel()}
+function layoutShots(){const fan=SHOTS.length>3&&!shots.classList.contains('multi');shots.style.gap=fan?'-38px':'10px';
+  SHOTS.forEach((s,i)=>{s.el.style.zIndex=100+s.id;s.el.style.rotate=fan?((i%2?1:-1)*2)+'deg':'0deg'})}
+function syncSel(){const n=SHOTS.filter(s=>s.sel).length;SHOTS.forEach(s=>s.el.classList.toggle('sel',s.sel));
+  shots.classList.toggle('multi',n>0);shotbar.classList.toggle('show',n>0);selinfo.textContent=n+' dipilih';layoutShots()}
+function updateShots(dt){SHOTS.slice().forEach(s=>{
+  if(!s.hover&&!s.sel&&!s.pin&&!shots.classList.contains('multi'))s.left-=dt;
+  const c=s.el.querySelectorAll('circle')[1],C=2*Math.PI*6;c.setAttribute('stroke-dasharray',`${C*Math.max(0,s.left/LIFE)} ${C}`);c.style.opacity=s.pin?0:1;
+  if(s.left<=0)kill(s)})}
+function toast(host,msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;host.appendChild(t);setTimeout(()=>t.remove(),1800)}
+selall.onclick=()=>{SHOTS.forEach(s=>s.sel=true);syncSel()};
+selclear.onclick=()=>{SHOTS.forEach(s=>s.sel=false);syncSel()};
+selcopy.onclick=()=>toast(stage,'✓ '+SHOTS.filter(s=>s.sel).length+' gambar di-copy');
+selsave.onclick=()=>{const sel=SHOTS.filter(s=>s.sel);sel.forEach(kill);toast(stage,'✓ '+sel.length+' file → Pictures/daijobu')};
+[fw1,fw2,fw3].forEach(w=>{
+  w.ondragover=e=>{e.preventDefault();w.classList.add('dropok')};w.ondragleave=()=>w.classList.remove('dropok');
+  w.ondrop=e=>{e.preventDefault();w.classList.remove('dropok');const sel=SHOTS.filter(s=>s.sel);
+    toast(w,'✓ '+sel.length+' gambar di-drop');sel.forEach(kill)}});
+
+/* ---------- spring (sama dgn yg akan di dj-core) ---------- */
+const params={expand:{resp:.45,z:.75},collapse:{resp:.35,z:.95}};
+const spring={x:{w:224,h:36,r:18},v:{w:0,h:0,r:0},t:{w:224,h:36,r:18},p:params.expand,
+  set(t,p){this.t={w:t.w,h:t.h,r:t.r};this.p=p},
+  step(dt){const w=2*Math.PI/this.p.resp,k=w*w,c=2*this.p.z*w;let moving=false;
+    for(const key of['w','h','r']){let x=this.x[key],v=this.v[key];const T=this.t[key];
+      for(let s=0,n=Math.ceil(dt/(1/240));s<n;s++){const h=dt/n;v+=(-k*(x-T)-c*v)*h;x+=v*h}
+      this.x[key]=x;this.v[key]=v;if(Math.abs(x-T)>.05||Math.abs(v)>.05)moving=true}
+    return moving}};
+let last=performance.now(),tick=0;
+function frame(t){const dt=Math.min(.05,(t-last)/1000);last=t;tick+=dt;
+  spring.step(dt);updateShots(dt);
+  island.style.width=spring.x.w+'px';island.style.height=spring.x.h+'px';island.style.borderRadius=Math.max(0,spring.x.r*TH.round)+'px';
+  // VU
+  document.querySelectorAll('.vu .col').forEach(col=>{const c=+col.dataset.c,segs=col.children,n=segs.length;
+    const lvl=(.35+.65*Math.abs(Math.sin(tick*(2.1+c*.37)+c*1.7)*Math.sin(tick*.9+c)))*n;
+    for(let i=0;i<n;i++){segs[i].classList.toggle('on',i<lvl);segs[i].classList.toggle('pk',i===Math.floor(lvl))}});
+  const sp=document.getElementById('spark');if(sp){let p='';for(let i=0;i<40;i++)p+=`${i*3},${34-26*Math.abs(Math.sin(i*.35+tick*1.5)*Math.cos(i*.13+tick*.6))} `;sp.setAttribute('points',p)}
+  const tc=document.getElementById('tclock');if(tc){const s=Math.max(0,932-Math.floor(tick));tc.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
+  const db=document.getElementById('devbar');if(db){const p=Math.min(100,Math.floor(40+((tick*18)%60)));db.style.width=p+'%';devp.textContent=p+'%'}
+  const tb=document.getElementById('tbar');if(tb){const p=(72+tick)%188;tb.style.width=(p/188*100)+'%';document.getElementById('tpos').textContent=Math.floor(p/60)+':'+String(Math.floor(p%60)).padStart(2,'0')}
+  requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+
+/* ---------- spring plot ---------- */
+function plot(){const cv=document.getElementById('plot'),x=cv.getContext('2d'),W=cv.width,H=cv.height;
+  x.clearRect(0,0,W,H);const r=+resp.value,z=+zeta.value;respv.textContent=r.toFixed(2);zetav.textContent=z.toFixed(2);
+  params.expand={resp:r,z:z};
+  x.strokeStyle=css('--s2');x.lineWidth=1;x.setLineDash([6,6]);x.beginPath();x.moveTo(0,H*.28);x.lineTo(W,H*.28);x.stroke();x.setLineDash([]);
+  const w=2*Math.PI/r,k=w*w,c=2*z*w;let p=0,v=0;x.strokeStyle=css('--acc');x.lineWidth=3;x.beginPath();
+  for(let i=0;i<=W;i++){const T=1.2*i/W;for(let s=0;s<4;s++){const h=1.2/W/4;v+=(-k*(p-1)-c*v)*h;p+=v*h}x.lineTo(i,H-(p*H*.72)-8)}
+  x.stroke();x.fillStyle=css('--t2');x.font='22px Geist Mono';x.fillText('0 → 1.2 s',W-130,H-14);x.fillText('target',8,H*.28-8);}
+resp.oninput=zeta.oninput=plot;
+
+buildThemeUI();applyTheme(THEMES[0],{quiet:true});
+// auto tour sekali di awal
+const tour=['media','mediaX','media','volume','notif','boot','tile','snap','media','snap','clip','dev','shelf','ambient','split','timer','vitals','sweep','media'];let ti=0;
+const tourT=setInterval(()=>{if(ti>=tour.length){clearInterval(tourT);return}go(tour[ti++])},1900);
+stage.addEventListener('pointerdown',()=>clearInterval(tourT),{once:true});
+
+/* ---------- capture mode: plan.html?cap=<state>&theme=<id>&shots=N&sel=N&ov=1&zones=1 (buat bikin gambar README) ---------- */
+const Q=new URLSearchParams(location.search);
+if(Q.has('cap')){
+  clearInterval(tourT);
+  const mode=Q.get('cap');
+  document.body.classList.add(mode==='themes'?'cap-themes':'cap');
+  if(Q.get('theme'))applyTheme(THEMES.find(t=>t.id===Q.get('theme'))||THEMES[0],{quiet:true});
+  if(mode!=='themes'){
+    const st=S[mode]?mode:'media';
+    if(st!=='snap')desk(st);
+    cur=st;render();spring.x={...S[st]};spring.t={...S[st]};spring.v={w:0,h:0,r:0};
+    for(let i=0;i<(+Q.get('shots')||0);i++)addShot();
+    const ns=+Q.get('sel')||0;if(ns){SHOTS.slice(-ns).forEach(s=>s.sel=true);syncSel()}
+    if(Q.get('ov'))snapov.classList.add('show');
+    if(Q.get('zones'))setTimeout(()=>zones.classList.add('show'),1700);
+    SHOTS.forEach(s=>s.left=1e9);
+    if(!['tile','boot','snap'].includes(st))FW.forEach(f=>f.style.display='none');
+  }
+  if(Q.get('en'))setTimeout(()=>{
+    const D={'✓ di clipboard':'✓ copied','dipilih':'selected','pilih semua':'select all','cari clipboard…':'search clipboard…',
+      'gambar dari Chrome':'image from Chrome','meeting jam 3 pindah ke 4 ya':'standup moved to 4pm','tile · drop window ke zona':'tile · drop on a zone','ctrl+alt+1‥9':'ctrl+alt+#','monitor 1 · 2560×1440':'monitor 1',
+      'amber hangat, default':'warm amber, the default','teal dingin, jam 2 pagi':'cool teal, 2 a.m.','coral, vibe ala Poolsuite':'coral, poolside summer',
+      'sage, mode fokus':'sage, for focus','kertas fotokopi, light mode':'photocopied zine, light mode','ungu-pink, scanline':'purple-pink with scanlines',
+      '4 warna ala Game Boy':'4-shade handheld green','monokrom dot-matrix + merah':'monochrome dot-matrix + red','pink lembut di navy':'soft pink on navy',
+      'fosfor terminal jadul':'old terminal phosphor','biru abu, hujan sore':'blue-grey afternoon rain','tanpa grain, minimal modern':'no grain, plain modern',
+      'zona 1 · monitor 1':'zone 1 · monitor 1','zona 2 · monitor 1':'zone 2 · monitor 1','admin · zona 3':'admin · zone 3','admin · nunggu window…':'admin · waiting…',
+      '→ recycle bin · dicatat di oplog':'→ recycle bin · logged','Bersihin 4.6 GB':'Clean 4.6 GB','6.8 GB bisa dibersihin':'6.8 GB reclaimable',
+      'focus':'focus','kaito: build island-nya udah jalan belum? 👀':'kaito: is the island build running yet? 👀'};
+    const w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let n;
+    while(n=w.nextNode()){const t=n.nodeValue.trim();if(D[t])n.nodeValue=n.nodeValue.replace(t,D[t]);
+      else if(t.endsWith(' dipilih'))n.nodeValue=t.replace('dipilih','selected');}
+  },2200);
+}
+</script>
+</body>
+</html>

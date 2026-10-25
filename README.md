@@ -1,96 +1,107 @@
-# Daijobu Island
+<h1 align="center">Daijobu Island</h1>
 
-**A lofi dynamic island for Windows 11. Built in Rust, rendered with Skia, native Win32.**
+<p align="center">
+  A lofi dynamic island for Windows 11.<br>
+  Rust, Skia and plain Win32. No webview.
+</p>
 
-*Daijobu* (だいじょうぶ) means "it's okay" or "are you okay?" in Japanese. Daijobu Island is a small pill at the top of your screen. It plays your music, catches your screenshots, remembers your clipboard, tiles your windows, and quietly checks whether your PC is okay.
+<p align="center">
+  <img src="docs/images/app-pill.png" alt="Collapsed island" height="34"><br><br>
+  <img src="docs/images/app-home.png" alt="Expanded island: feature grid" width="620">
+</p>
 
-> **Status: pre-alpha / planning.** Nothing below ships yet. It is the design target.
-> See the interactive design doc: [`docs/plan.html`](docs/plan.html). Open it in a browser.
+<p align="center"><sub>The current build running on Windows 11. Every feature is still locked while it gets built.</sub></p>
 
 ---
 
-## Why
+*Daijobu* (大丈夫) is Japanese for "it's fine" or "are you okay?". The island sits at the top of the screen and stays out of the way. When you need it, it opens up to show what's playing, catch a screenshot, bring back something you copied, put your windows in place, or tell you whether your PC is having a bad day.
 
-- **Native, for real.** Raw Win32 with DirectComposition and Skia on D3D12. No webview, no Electron, no winit. It uses about 0% CPU when idle.
-- **Modern motion, lofi texture.** Interruptible spring morphs, plus film grain, ordered dithering, segmented VU meters and dot-matrix digits.
-- **Useful, not decorative.** Every state answers a question: what's playing, how loud, is my PC healthy, where did that screenshot go.
+## Status
 
-## Features (planned)
+Early development. The app itself runs: the window, rendering, animation, themes, tray and hotkeys work. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
 
-| | Feature | What it does |
+| Stage | | |
 |---|---|---|
-| 🎵 | **Media** | Now playing via SMTC, with cover, controls, seek, synced lyrics (LRCLIB) and a loopback audio visualizer |
-| 🔊 | **OSD** | Replaces the native volume and brightness flyouts |
-| 📸 | **Snap** | Lightshot-style screenshots: region and window select, loupe, annotate, blur, OCR, pin to screen |
-| 🫳 | **Snap stack** | Previews float under the island for a few seconds. You can multi-select them and drag them into any app as files |
-| 📋 | **Clipboard history** | Text, links, colors, files and **images** from any app. Search, pin, quick paste (`Ctrl+Shift+V`, with an optional `Win+V` takeover) |
-| 🪟 | **Tile** | Split windows into 2, 3 or 4 zones. You can drag a window onto the island to pick a layout |
-| 🌅 | **Scenes & Boot Scene** | Save a window layout, then restore it with one click or automatically after a restart, including apps that need admin |
-| 🩺 | **Vitals** | CPU, RAM, disk, network, battery, top processes, and a 0–100 health score |
-| 🧹 | **Sweep** | Clean temp and cache files, purge dev artifacts (`node_modules`, `target`, …), and find big files. Each run previews first and sends files to the Recycle Bin |
-| ⏱ | **Timer / Pomodoro** | Countdown in the island, with a focus mode |
-| 🔔 | **Notifications** | Windows toasts shown in the island |
-| 🌧 | **Ambient** | Rain, café and fire sounds, plus lofi radio |
-| ⌨ | **`dj` CLI** | Lets any script push a live activity, for example `cargo build && dj done "build ok"` |
-| 🎨 | **Themes** | 12+ built-in themes defined in TOML: colors, fonts, texture, shape, visualizer and motion. Themes hot-reload and can switch automatically by time, app or focus mode |
+| 1 | App shell: window, Skia renderer, spring motion, themes, tray | ✅ done |
+| 2 | Media: now playing, controls, audio visualizer | locked |
+| 3–5 | Volume OSD, vitals, timer | locked |
+| 6–7 | Screenshots with a floating preview stack, clipboard history | locked |
+| 8–10 | Notifications, lyrics, `dj` CLI | locked |
+| 11 | Window tiling, scenes, restore-after-reboot | locked |
+| 12–13 | Disk cleanup, file shelf, ambient sounds | locked |
 
-## Tech
+## Where it's going
 
-- **Language:** Rust (edition 2024)
-- **Rendering:** [`skia-safe`](https://github.com/rust-skia/rust-skia) (Ganesh on D3D12), DirectComposition premultiplied-alpha swap chain, SkSL shaders for grain and dither
-- **Platform:** [`windows`](https://github.com/microsoft/windows-rs) crate (Win32, COM, WinRT): SMTC, WASAPI loopback, Windows.Graphics.Capture, Windows.Media.Ocr, OLE drag & drop, Task Scheduler
-- **No** webview, winit or async runtime in the UI path
+These are design mockups from [`docs/plan.html`](docs/plan.html), not screenshots. Open that file in a browser for the interactive version.
 
-```
-crates/
-  dj-core      state machine, springs, config, themes (no unsafe, no platform)
-  dj-render    Skia + D3D12 + DirectComposition, SkSL effects
-  dj-win       window, message loop, hooks, tray, hotkeys, DPI
-  dj-media     SMTC, lyrics
-  dj-audio     loopback capture, FFT, endpoint volume
-  dj-vitals    system metrics, health score
-  dj-sweep     clean / purge / big files, path guard, recycle, op log
-  dj-capture   screenshot capture, overlay, annotation, OCR
-  dj-clip      clipboard history, OLE drag-out
-  dj-tile      zones, scenes, boot scene
-  dj-ipc       named-pipe API and the `dj` CLI
-app/           the Daijobu Island binary
-helper/        daijobu-elevated.exe (launches and places admin apps)
-```
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/concept-media.png" alt="Media"><br><b>Media.</b> Now playing from any app that reports to Windows, with a segmented VU visualizer.</td>
+    <td width="50%"><img src="docs/images/concept-snap.png" alt="Snap"><br><b>Snap.</b> Region screenshots with a loupe, annotations, blur, OCR and pin-to-screen.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/concept-snap-stack.png" alt="Snap stack"><br><b>Snap stack.</b> New screenshots float under the island for a few seconds. Select several and drag them straight into Discord, Explorer or a browser.</td>
+    <td><img src="docs/images/concept-clipboard.png" alt="Clipboard"><br><b>Clipboard.</b> History for text, links, colours, files and images, in the spirit of <code>Win+V</code>.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/concept-tile.png" alt="Tile"><br><b>Tile & Scenes.</b> Split windows into zones. Save a layout and have it restored after a reboot, admin apps included, through a one-time Task Scheduler consent.</td>
+    <td><img src="docs/images/concept-vitals.png" alt="Vitals"><br><b>Vitals.</b> CPU, memory, disk and network, plus a health score that answers the question in the name.</td>
+  </tr>
+</table>
 
-## Roadmap
+### Themes
 
-- **F0. Foundation:** transparent topmost window, Skia/D3D12, spring morph, theme engine, tray, hotkeys
-- **F1. Daily MVP:** media, visualizer, volume OSD, compact vitals, fullscreen auto-hide
-- **F2. Live activities:** timer, lyrics, notifications, **Snap + Snap stack**, **clipboard history**, `dj` CLI, all themes
-- **F3. Power tools:** full vitals, Sweep, **Tile, Scenes and Boot Scene**
-- **F4. Extras:** file shelf, ambient mixer, mic mute, audio device switcher, glance indicators
+Themes are small TOML files. Each one sets more than colours: fonts, grain, dither, corner shape, visualizer style and how bouncy the motion is. Drop a file into `~/.daijobu/themes/` and the island picks it up live. `Ctrl+Alt+T` cycles through them.
 
-## Requirements (target)
+<img src="docs/images/concept-themes.png" alt="Theme gallery">
 
-- Windows 11 22H2 or later
-- A GPU with D3D12 support (a CPU fallback is planned)
+Four of these ship with the current build (Tobacco Tape, Midnight Cassette, Paper Zine, Clean). The rest come later.
 
 ## Building
 
-Not buildable yet. Once F0 lands:
+Requirements: Windows 11, stable Rust (MSVC toolchain), Visual Studio Build Tools with the C++ workload, and Windows SDK 10.0.26100 or newer.
 
 ```sh
-git clone https://github.com/<you>/daijobu-island
+git clone https://github.com/xDaijobu/daijobu-island
 cd daijobu-island
 cargo build --release
+target\release\daijobu.exe
 ```
 
-Skia may build from source on first compile. That needs LLVM, Ninja, Python 3 and the VS 2022 C++ Build Tools.
+`skia-safe` downloads a prebuilt Skia, so the first build takes well under a minute on top of the Rust compile.
+
+| Shortcut | Action |
+|---|---|
+| Click the island | Expand / collapse |
+| `Ctrl+Alt+H` | Hide / show |
+| `Ctrl+Alt+T` | Next theme |
+
+The tray icon has the same controls, plus *Start with Windows*. Settings live in `~/.daijobu/config.toml`.
+
+## How it's built
+
+- **Window:** a raw Win32 popup (`WS_EX_NOREDIRECTIONBITMAP`, tool window, topmost, never activates) with a DirectComposition visual. Clicks outside the pill fall through to whatever is underneath.
+- **Rendering:** Skia's GPU backend on Direct3D 12, presenting through a premultiplied-alpha composition swap chain. Grain and dither are SkSL shaders.
+- **Motion:** damped springs (stiffness and damping derived from response and damping ratio) that can be interrupted mid-flight.
+- **Idle cost:** none. When nothing moves, the message loop blocks and nothing is drawn.
+
+```
+app/              the daijobu binary
+crates/dj-core    springs, themes, feature registry, island state (no unsafe, no Win32)
+crates/dj-render  Skia + D3D12 + DirectComposition
+crates/dj-win     window, tray, hotkeys, autostart
+```
+
+More crates (media, capture, clipboard, tiling, …) are added as their stages start. [`AGENTS.md`](AGENTS.md) describes the conventions and the stage-by-stage workflow.
 
 ## Privacy
 
-There is no telemetry. Clipboard history stays on your machine, encrypted with DPAPI, and items flagged by password managers are skipped. Screenshots are saved locally and nothing is uploaded unless you opt in.
+No telemetry. When the clipboard and screenshot features land, everything stays on your machine. Clipboard history will be encrypted with Windows DPAPI and will skip anything a password manager marks as private.
 
 ## Acknowledgements
 
-Inspired by Apple's Dynamic Island, by [WinIsland](https://github.com/WinIslandProject/WinIsland) for the island-on-Windows concept, and by [Mole](https://github.com/tw93/Mole) for the system cleanup ideas. Daijobu Island is an independent project with no affiliation to either. **No code is copied from either project.** Both are GPL-3.0, so this project re-implements the ideas from scratch.
+The island-on-Windows idea owes a lot to [WinIsland](https://github.com/WinIslandProject/WinIsland), and the cleanup features take ideas from [Mole](https://github.com/tw93/Mole). Both are GPL-3.0. Daijobu Island is an independent project and shares no code with either. And of course Apple's Dynamic Island, which started it all.
 
 ## License
 
-TBD. MIT / Apache-2.0 dual license is planned.
+Not decided yet (likely MIT / Apache-2.0).
