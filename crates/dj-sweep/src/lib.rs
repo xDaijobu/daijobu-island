@@ -8,9 +8,14 @@
 //! - `ops`: the side effects (delete, recycle, DNS flush, empty bin, reveal) behind the
 //!   [`Ops`] trait, so tests run against a fake.
 
-pub use dj_core::sweep::{Category, Removal};
+mod fs;
+mod ops;
+pub mod rules;
+mod scan;
 
-use std::io;
+pub use dj_core::sweep::{format_bytes, Category, Removal};
+
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -61,10 +66,60 @@ impl std::fmt::Debug for ScanEnv {
 
 impl ScanEnv {
     /// Reads the real locations from the environment. An empty `project_roots` means
-    /// the defaults (see [`default_project_roots`]).
+    /// the defaults (see [`default_project_roots`]). Paths are resolved to their final
+    /// long form, so short (8.3) names in `%TEMP%` do not trip the re-verify.
     pub fn from_system(project_roots: Vec<PathBuf>) -> Self {
-        let _ = project_roots;
-        todo!()
+        let var = |k: &str| std::env::var_os(k).map(PathBuf::from);
+        let profile = var("USERPROFILE")
+            .map(fs::final_or_same)
+            .unwrap_or_default();
+        let local_appdata = fs::final_or_same(
+            var("LOCALAPPDATA").unwrap_or_else(|| profile.join(r"AppData\Local")),
+        );
+        let roaming_appdata =
+            fs::final_or_same(var("APPDATA").unwrap_or_else(|| profile.join(r"AppData\Roaming")));
+        let temp = fs::final_or_same(std::env::temp_dir());
+        let mut system_dirs: Vec<PathBuf> = [
+            "SystemRoot",
+            "windir",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "ProgramData",
+        ]
+        .iter()
+        .filter_map(|k| var(k))
+        .map(fs::final_or_same)
+        .collect();
+        let drive = var("SystemDrive").unwrap_or_else(|| PathBuf::from("C:"));
+        for d in [
+            "Windows",
+            "Program Files",
+            "Program Files (x86)",
+            "ProgramData",
+        ] {
+            system_dirs.push(PathBuf::from(format!(r"{}\{d}", drive.display())));
+        }
+        let roots = if project_roots.is_empty() {
+            default_project_roots(&profile)
+        } else {
+            project_roots
+        };
+        Self {
+            project_roots: roots.into_iter().map(fs::final_or_same).collect(),
+            profile,
+            local_appdata,
+            roaming_appdata,
+            temp,
+            now: SystemTime::now(),
+            budget: Duration::from_secs(15),
+            system_dirs,
+            running: Arc::new(|exe: &str| {
+                ops::running_processes()
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(exe))
+            }),
+        }
     }
 }
 
@@ -87,15 +142,10 @@ pub struct CategoryScan {
     pub note: Option<String>,
 }
 
-/// Previews one category. Never deletes anything.
+/// Previews one category within `env.budget`. Never deletes anything.
 pub fn scan(env: &ScanEnv, cat: Category, cancel: &AtomicBool) -> CategoryScan {
-    let _ = (env, cancel);
-    CategoryScan {
-        category: cat,
-        items: Vec::new(),
-        total: 0,
-        note: None,
-    }
+    let budget = fs::Budget::new(env.budget, cancel);
+    scan::run(env, cat, &budget)
 }
 
 /// The side effects. `WinOps` is the real one; tests use a fake.
@@ -111,27 +161,9 @@ pub trait Ops: Send + Sync {
     fn reveal(&self, p: &Path) -> io::Result<()>;
 }
 
-/// The real Win32 operations.
+/// The real Win32 operations (see the `ops` module).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WinOps;
-
-impl Ops for WinOps {
-    fn remove_permanent(&self, _p: &Path) -> io::Result<u64> {
-        todo!()
-    }
-    fn recycle(&self, _p: &Path) -> io::Result<()> {
-        todo!()
-    }
-    fn flush_dns(&self) -> io::Result<()> {
-        todo!()
-    }
-    fn empty_recycle_bin(&self) -> io::Result<()> {
-        todo!()
-    }
-    fn reveal(&self, _p: &Path) -> io::Result<()> {
-        todo!()
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -151,8 +183,19 @@ impl OpLog {
         Self { path }
     }
 
+    /// Appends one line. Logging never fails the operation it describes.
     pub fn record(&self, run: &str, action: Action, path: &Path, detail: &str) {
-        let _ = (run, action, path, detail, &self.path);
+        let line = rules::log_line(SystemTime::now(), run, action, path, detail);
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            let _ = f.write_all(format!("{line}\r\n").as_bytes());
+        }
     }
 }
 
@@ -176,11 +219,89 @@ pub fn clean(
     run_id: &str,
     progress: &mut dyn FnMut(usize, usize),
 ) -> CleanOutcome {
-    let _ = (env, items, ops, log, run_id, progress);
-    CleanOutcome::default()
+    let guard = scan::guard(env);
+    let mut out = CleanOutcome::default();
+    let total = items.len();
+    for (i, (cat, path)) in items.iter().enumerate() {
+        let cancel = AtomicBool::new(false);
+        let budget = fs::Budget::new(env.budget, &cancel);
+        let fail = |out: &mut CleanOutcome, why: &str| {
+            out.failed += 1;
+            log.record(
+                run_id,
+                Action::Failed,
+                path,
+                &format!("{}, {why}", cat.key()),
+            );
+        };
+        let item = match scan::check(env, &guard, *cat, path, &budget)
+            .and_then(|it| fs::verify_final(path).map(|_| it))
+        {
+            Ok(it) => it,
+            Err(why) => {
+                fail(&mut out, &why);
+                progress(i + 1, total);
+                continue;
+            }
+        };
+        let size = format_bytes(item.bytes);
+        match cat.removal() {
+            Removal::Permanent => match ops.remove_permanent(path) {
+                Ok(n) if !exists(path) => {
+                    out.freed = out.freed.saturating_add(n);
+                    out.gone.push(path.clone());
+                    log.record(
+                        run_id,
+                        Action::Removed,
+                        path,
+                        &format!("{}, {}", cat.key(), format_bytes(n)),
+                    );
+                }
+                res => {
+                    let left = fs::measure(path, &budget).bytes;
+                    let part = item.bytes.saturating_sub(left);
+                    out.freed = out.freed.saturating_add(part);
+                    let why = match res {
+                        Err(e) => e.to_string(),
+                        Ok(_) => "still there".into(),
+                    };
+                    fail(&mut out, &format!("{} freed, {why}", format_bytes(part)));
+                }
+            },
+            Removal::Recycle => match ops.recycle(path) {
+                Ok(()) if !exists(path) => {
+                    out.freed = out.freed.saturating_add(item.bytes);
+                    out.gone.push(path.clone());
+                    log.record(
+                        run_id,
+                        Action::Recycled,
+                        path,
+                        &format!("{}, {size}", cat.key()),
+                    );
+                }
+                Ok(()) => fail(&mut out, "still there after recycling"),
+                Err(e) => fail(&mut out, &e.to_string()),
+            },
+        }
+        progress(i + 1, total);
+    }
+    out
 }
 
-/// A short id that ties one run's log lines together.
-pub fn new_run_id() -> String {
-    String::new()
+fn exists(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok()
 }
+
+/// A short id that ties one run's log lines together, e.g. "5f2a09c3".
+pub fn new_run_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mixed =
+        (nanos as u64) ^ ((nanos >> 64) as u64) ^ u64::from(std::process::id()).rotate_left(32);
+    format!("{:08x}", (mixed ^ (mixed >> 32)) as u32)
+}
+
+#[cfg(test)]
+mod tests;
