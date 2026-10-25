@@ -1,6 +1,8 @@
-//! `~/.daijobu/`: config, user themes and a tiny error log.
+//! `~/.daijobu/`: config, user themes, the sweep cache, the operations log path and a
+//! tiny error log.
 
 use dj_core::config::Config;
+use dj_core::sweep::SweepCache;
 use std::fs;
 use std::path::PathBuf;
 
@@ -31,6 +33,28 @@ pub fn load_config() -> Config {
 pub fn save_config(cfg: &Config) {
     if let Err(e) = fs::write(config_path(), cfg.to_toml()) {
         log(&format!("cannot save config: {e}"));
+    }
+}
+
+fn sweep_cache_path() -> PathBuf {
+    data_dir().join("sweep-cache.toml")
+}
+
+/// Every sweep action is appended here (by `dj_sweep::OpLog`).
+pub fn operations_log_path() -> PathBuf {
+    data_dir().join("operations.log")
+}
+
+/// The last reclaimable estimate. Missing or unreadable means "never scanned".
+pub fn load_sweep_cache() -> SweepCache {
+    fs::read_to_string(sweep_cache_path())
+        .map(|s| SweepCache::parse(&s))
+        .unwrap_or_default()
+}
+
+pub fn save_sweep_cache(cache: &SweepCache) {
+    if let Err(e) = fs::write(sweep_cache_path(), cache.to_toml()) {
+        log(&format!("cannot save the sweep cache: {e}"));
     }
 }
 

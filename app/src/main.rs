@@ -3,6 +3,7 @@
 
 mod app;
 mod storage;
+mod sweep;
 mod vitals;
 
 use dj_win::{system, window};
