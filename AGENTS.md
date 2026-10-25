@@ -16,7 +16,8 @@ Daijobu Island is a dynamic-island overlay for Windows 11, written in Rust and d
 2. **The name is "Daijobu Island".** Never write "Daijōbu". The binary is `daijobu.exe`, the config dir is `~/.daijobu/` and the CLI is `dj`.
 3. **No GPL code.** WinIsland and Mole are GPL-3.0. They can be used as references for ideas and API choices only. Never copy their code or lists verbatim, and never use the name "Mole".
 4. **Build only what the stage asks for.** Features outside the current stage stay locked ("coming soon"). Don't add features nobody asked for, and suggest them instead. Screen recording was explicitly rejected.
-5. **`unsafe` only in platform or GPU code**, each block with a `// SAFETY:` comment. `dj-core` is `#![forbid(unsafe_code)]` and has no Win32 or Skia dependency.
+5. **License is Apache-2.0.** New dependencies and assets must be compatible (MIT, Apache, BSD, OFL, …). No GPL/LGPL/AGPL. Third-party assets are listed in `NOTICE`.
+6. **`unsafe` only in platform or GPU code**, each block with a `// SAFETY:` comment. `dj-core` is `#![forbid(unsafe_code)]` and has no Win32 or Skia dependency.
 
 ## Workflow
 

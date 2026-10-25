@@ -1,0 +1,33 @@
+# Clean: no grain, minimal and modern.
+[meta]
+name   = "Clean"
+author = "daijobu"
+base   = "tobacco-tape"
+mode   = "dark"
+
+[color]
+pill      = "#000000"
+surface1  = "#141416"
+surface2  = "#232326"
+text      = "#F5F5F7"
+text_dim  = "#8E8E93"
+accent    = "#FFFFFF"
+warn      = "#FF453A"
+highlight = "#FFFFFF"
+
+[texture]
+grain         = 0.0
+dither_levels = 32
+
+[type]
+label  = "Geist"
+digits = "Geist"
+
+[shape]
+inner_glow = 0.0
+
+[motion]
+expand = { response = 0.45, damping = 0.78 }
+
+[visualizer]
+style = "bar"
