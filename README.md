@@ -6,6 +6,13 @@
 </p>
 
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-c9a26b" alt="License: Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2011-5b6b73" alt="Platform: Windows 11">
+  <img src="https://img.shields.io/badge/status-early%20development-a39785" alt="Status: early development">
+  <a href="https://github.com/xDaijobu/daijobu-island/stargazers"><img src="https://img.shields.io/github/stars/xDaijobu/daijobu-island?style=flat&color=e0a458" alt="GitHub stars"></a>
+</p>
+
+<p align="center">
   <img src="docs/images/app-pill.png" alt="Collapsed island" height="34"><br><br>
   <img src="docs/images/app-home.png" alt="Expanded island: feature grid" width="620">
 </p>
@@ -102,6 +109,20 @@ No telemetry. When the clipboard and screenshot features land, everything stays 
 
 The island-on-Windows idea owes a lot to [WinIsland](https://github.com/WinIslandProject/WinIsland), and the cleanup features take ideas from [Mole](https://github.com/tw93/Mole). Both are GPL-3.0. Daijobu Island is an independent project and shares no code with either. And of course Apple's Dynamic Island, which started it all.
 
+## Contributing
+
+Issues and ideas are welcome. The project is built in stages (see [`task/progress.md`](task/progress.md)), so it helps to check which stage a feature belongs to before opening a PR. Conventions are in [`AGENTS.md`](AGENTS.md).
+
+## Thanks
+
+To everyone who tries an early build, files an issue, or just reads this far: thank you. If Daijobu Island looks useful, a ⭐ on the repo helps other Windows users find it.
+
+<a href="https://star-history.com/#xDaijobu/daijobu-island&Date">
+  <img src="https://api.star-history.com/svg?repos=xDaijobu/daijobu-island&type=Date" alt="Star history" width="520">
+</a>
+
 ## License
 
-Not decided yet (likely MIT / Apache-2.0).
+Licensed under the [Apache License, Version 2.0](LICENSE). See [`NOTICE`](NOTICE) for bundled fonts (SIL Open Font License 1.1).
+
+Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in this project is licensed under Apache-2.0 as above, without any additional terms or conditions.

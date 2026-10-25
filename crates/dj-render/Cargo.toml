@@ -2,6 +2,7 @@
 name = "dj-render"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 dj-core = { path = "../dj-core" }
