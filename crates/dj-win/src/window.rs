@@ -15,13 +15,19 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, TrackMouseEvent, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL,
-    MOD_NOREPEAT, TME_LEAVE, TRACKMOUSEEVENT,
+    RegisterHotKey, ReleaseCapture, SetCapture, TrackMouseEvent, UnregisterHotKey,
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 pub const WM_TRAY: u32 = WM_APP + 1;
 pub const WM_THEMES_CHANGED: u32 = WM_APP + 2;
+/// Posted by the audio endpoint callback (any thread): the master volume or mute changed.
+pub const WM_VOLUME_CHANGED: u32 = WM_APP + 3;
+/// Posted by the `IMMNotificationClient` (any thread): the default render device changed.
+pub const WM_DEFAULT_DEVICE_CHANGED: u32 = WM_APP + 4;
+/// Posted by the low-level keyboard hook (any thread). `wparam` is the virtual-key code.
+pub const WM_VOLUME_KEY: u32 = WM_APP + 5;
 /// Not exported by the windows crate.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const TIMER_THEMES_DEBOUNCE: usize = 0xD001;
@@ -39,6 +45,13 @@ pub enum Event {
         x: i32,
         y: i32,
     },
+    /// Pointer moved with the left button held. Captured, so it may leave the pill.
+    Drag {
+        x: i32,
+        y: i32,
+    },
+    /// Left button released.
+    Release,
     Leave,
     Hotkey(i32),
     TrayLeft,
@@ -50,6 +63,12 @@ pub enum Event {
     Timer(usize),
     /// Explorer restarted: the tray icon must be re-added.
     TaskbarCreated,
+    /// The master volume or mute changed, from any source.
+    VolumeChanged,
+    /// The default render device changed: re-acquire the volume endpoint.
+    DefaultDeviceChanged,
+    /// A volume key was pressed (virtual-key code). Its default action is swallowed.
+    VolumeKey(u32),
 }
 
 pub trait Handler {
@@ -273,7 +292,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_ERASEBKGND => return LRESULT(1),
         WM_LBUTTONDOWN => {
             let (x, y) = lparam_xy(lp);
+            // Capture so a bar drag keeps reporting after the pointer leaves the pill.
+            // SAFETY: valid window handle owned by this thread.
+            let _ = unsafe { SetCapture(hwnd) };
             push(Event::Click { x, y });
+            return LRESULT(0);
+        }
+        WM_LBUTTONUP => {
+            // SAFETY: releases only this thread's capture; harmless if we don't hold it.
+            let _ = unsafe { ReleaseCapture() };
+            push(Event::Release);
             return LRESULT(0);
         }
         WM_MOUSEMOVE => {
@@ -290,7 +318,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
             }
             let (x, y) = lparam_xy(lp);
-            push(Event::Move { x, y });
+            // MK_LBUTTON: the left button is held (a drag, possibly captured).
+            if wp.0 & 0x0001 != 0 {
+                push(Event::Drag { x, y });
+            } else {
+                push(Event::Move { x, y });
+            }
             return LRESULT(0);
         }
         WM_MOUSELEAVE => {
@@ -321,6 +354,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_THEMES_CHANGED => {
             // Debounce: every notification re-arms the timer.
             set_timer(hwnd, TIMER_THEMES_DEBOUNCE, THEMES_DEBOUNCE_MS);
+            return LRESULT(0);
+        }
+        WM_VOLUME_CHANGED => {
+            push(Event::VolumeChanged);
+            return LRESULT(0);
+        }
+        WM_DEFAULT_DEVICE_CHANGED => {
+            push(Event::DefaultDeviceChanged);
+            return LRESULT(0);
+        }
+        WM_VOLUME_KEY => {
+            push(Event::VolumeKey(wp.0 as u32));
             return LRESULT(0);
         }
         WM_TIMER => {
