@@ -486,6 +486,7 @@
     <tr><td>Sweep expanded</td><td class="m">400 × 200</td><td class="m">32</td><td>checklist kategori dan ukurannya, tombol preview</td></tr>
   </table></div>
   <p style="font-size:13px">Semua ukuran dikali DPI scale. Tepi pill di-snap ke device pixel biar pola dither dan scanline gak goyang. Grain selalu 1 device-px.</p>
+  <p style="font-size:13px"><b style="color:var(--t1)">Style island: notch atau pill.</b> Default-nya <code>notch</code>: bodinya nempel ke tepi atas layar ala notch iPhone 13 / MacBook (atas rata di y = 0, bahu cekung 8 px di sambungannya, sudut bawah bulat), dan pas expand dia tumbuh ke bawah/samping tapi tetap nempel. Warnanya ikut <code>pill</code> dari theme. <code>pill</code> itu gaya lama: kapsul ngambang 6 px di bawah tepi layar. Diatur lewat <code>[island] style</code> di <code>~/.daijobu/config.toml</code> atau baris ISLAND STYLE di panel Settings (klik = toggle, langsung ke-apply dan ke-save). Rect pill, konten, dan hit testing tetap sama, yang beda cuma body yang digambar. Tetap overlay biasa, gak pakai AppBar atau strip layar yang di-reserve.</p>
 </div></section>
 
 <!-- ===================== THEME ENGINE ===================== -->

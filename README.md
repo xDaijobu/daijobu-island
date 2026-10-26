@@ -90,6 +90,8 @@ target\release\daijobu.exe
 
 The tray icon has the same controls, plus *Start with Windows*. Settings live in `~/.daijobu/config.toml`.
 
+By default the island is a notch attached to the top edge of the screen. To get the floating pill back, flip *Island style* in the Settings panel or set `[island] style = "pill"` in the config.
+
 ## How it's built
 
 - **Window:** a raw Win32 popup (`WS_EX_NOREDIRECTIONBITMAP`, tool window, topmost, never activates) with a DirectComposition visual. Clicks outside the pill fall through to whatever is underneath.

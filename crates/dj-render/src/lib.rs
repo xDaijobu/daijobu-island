@@ -7,6 +7,7 @@ mod gpu;
 mod icons;
 mod markup;
 mod music;
+mod notch;
 mod paint;
 mod settings;
 mod snap;

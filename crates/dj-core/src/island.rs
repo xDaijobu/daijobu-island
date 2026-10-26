@@ -1848,6 +1848,7 @@ mod tests {
             (layout::ST_TOGGLE, SettingsAction::ToggleAutostart),
             (layout::ST_HOTKEY, SettingsAction::CycleHotkey),
             (layout::ST_ALT, SettingsAction::CycleAltHotkey),
+            (layout::ST_STYLE, SettingsAction::ToggleStyle),
         ] {
             let (x, y) = view_at(layout::SETTINGS_W, r);
             assert_eq!(i.click(x, y, &t), ClickOutcome::Settings(want), "{r:?}");

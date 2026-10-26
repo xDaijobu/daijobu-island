@@ -21,10 +21,11 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 5 | **Vitals + Sweep**: Sweep merged into the Vitals panel (diagnose → clean), full vitals (disk I/O, top processes) | ✅ | PR #6 + `stage-5-safety-fixes` | Opus 5.5 (4 agents: sweep, wiring, render, safety review) · fixes and live test by the coordinator · [`stage-5-report.md`](stage-5-report.md) |
 | 6 | **Timer / Pomodoro**: focus/break cycles, chime alert, mini timer on Music compact | ✅ | `stage-6-timer` | Opus 5.5 agent (headless) · live test by the coordinator · [`stage-6-report.md`](stage-6-report.md) |
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
-| 7b | **Snap annotations**: Lightshot-style editor on release (8 tools, select/move, text re-edit, HSV picker, undo/redo) | ⬜ | `stage-7b-annotate` | defined with the user · brief: [`stage-7b-brief.md`](stage-7b-brief.md) |
+| 7b | **Snap annotations**: Lightshot-style editor on release (8 tools, select/move, text re-edit, HSV picker, undo/redo) | ✅ merged, live test pending | `xDaijobu/stage-7b-work` | Opus 5.5 agent (headless) · merged at the user's request before the live test · [`stage-7b-report.md`](stage-7b-report.md) |
 | 7c | Snap stack: floating previews, countdown, multi-select, OLE drag-out | 🔒 | — | after 7b |
 | 7d | Snap: pin + OCR | 🔒 | — | moved out of 7b |
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
+| N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -337,7 +338,7 @@ Press PrtSc. The screen freezes under a dimmed overlay, the loupe follows the cu
 Pin and OCR move to a new Stage 7d. The Snap stack stays 7c.
 
 ### Scope
-- [ ] **Flow (replaces 7a's copy on release).** The overlay has two phases:
+- [x] **Flow (replaces 7a's copy on release).** The overlay has two phases:
   - **Selecting:** unchanged from 7a (hover outline, drag, window click, arrow nudge, loupe). Esc or a right click cancels.
   - **Editing:** starts on release (a drag of at least 2×2, or a window/monitor click). The selection stays with 8 handles and its size label, the toolbar appears, and the loupe hides. Nothing touches the clipboard yet. A right click does nothing here.
   - **Finish:**
@@ -345,7 +346,7 @@ Pin and OCR move to a new Stage 7d. The Snap stack stays 7c.
     - `Ctrl+S` or the save button: the same, plus a save to `[snap] save_dir` (the 7a naming rule). The thumb opens as `saved`, and its button reads `open`.
     - `Esc` or ✕: cancel. Nothing is copied or saved, and there is no confirm.
   - The thumb's copy/save buttons work as in 7a, on the annotated image.
-- [ ] **Toolbar.** It uses the pill colour, r 12, 26 px buttons with r 8, and the active button in accent (plan.html `.snapov .tools`). Contents in order:
+- [x] **Toolbar.** It uses the pill colour, r 12, 26 px buttons with r 8, and the active button in accent (plan.html `.snapov .tools`). Contents in order:
   - `select`
   - the 8 tools: `pen`, `line`, `arrow`, `rect`, `marker`, `text`, `pixelate`, `step`
   - 8 colour swatches plus a custom swatch
@@ -354,9 +355,9 @@ Pin and OCR move to a new Stage 7d. The Snap stack stays 7c.
   - `copy`, `save`, `✕`
 
   Placement: under the selection, left-aligned with it. If there's no room it goes above, and if neither fits it sits inside the selection's bottom edge. It is clamped to the monitor that holds most of the selection, and wraps to two rows if it is wider than that monitor.
-- [ ] **Keys.** Tool shortcuts work except while typing: `V` select, `P` pen, `L` line, `A` arrow, `R` rect, `H` marker, `T` text, `X` pixelate, `N` step. The mouse wheel steps S/M/L. `Ctrl+Z` undoes, and `Ctrl+Y` or `Ctrl+Shift+Z` redoes.
+- [x] **Keys.** Tool shortcuts work except while typing: `V` select, `P` pen, `L` line, `A` arrow, `R` rect, `H` marker, `T` text, `X` pixelate, `N` step. The mouse wheel steps S/M/L. `Ctrl+Z` undoes, and `Ctrl+Y` or `Ctrl+Shift+Z` redoes.
   - **While typing a text:** Enter is a new line (it doesn't copy), and Backspace/Delete edit the text (they don't delete a shape). `Ctrl+C` and `Ctrl+S` commit the text first, then finish. Esc commits the text and stays in editing; a second Esc cancels.
-- [ ] **Tools.** Geometry is in physical desktop px. Sizes are logical px × the DPI scale of the monitor that holds most of the selection. Drawing starts only inside the selection, and markup is clipped to the selection on screen and in the output.
+- [x] **Tools.** Geometry is in physical desktop px. Sizes are logical px × the DPI scale of the monitor that holds most of the selection. Drawing starts only inside the selection, and markup is clipped to the selection on screen and in the output.
   - **pen:** freehand with round caps and joins, smoothed. A click without movement leaves a dot. Width S/M/L = 2/4/8.
   - **line, arrow:** straight from press to release. The arrow has a filled head scaled with the width. A drag shorter than 3 px is dropped.
   - **rect:** outline only, same widths.
@@ -364,27 +365,27 @@ Pin and OCR move to a new Stage 7d. The Snap stack stays 7c.
   - **text:** a click puts a caret there. Typing, Backspace, Delete, ←/→, Home/End and Enter (new line) work. A click elsewhere, Esc or a tool change commits the text, and an empty text is dropped. Font Geist Medium at 14/20/28. The caret doesn't blink (no timer). No IME composition: input comes through `WM_CHAR`, surrogate pairs included.
   - **pixelate:** drag a box. The frozen screen under it shows as square blocks of max(12 px, 10/14/20 × scale), on a grid anchored at the box's top-left. It covers any earlier markup under it. This is pixelate, not blur, because blur can be partly reversed.
   - **step:** a click places a filled circle (diameter 20/28/38) with the next number (the largest existing + 1, so an undo gives the number back). The number is black or white, whichever contrasts more with the colour.
-- [ ] **Colour.**
+- [x] **Colour.**
   - 8 swatches: red `#E5484D`, yellow `#F5C451`, green `#46A758`, blue `#3E7BFA`, purple `#8E4EC6`, white `#FFFFFF`, black `#111111`, and the theme accent.
   - A custom swatch shows the last custom colour. Clicking it opens an **HSV picker** popover next to the toolbar: a saturation/value square, a hue strip, a preview and the hex text. Dragging in it sets the colour live, and a click outside closes it.
-- [ ] **Select tool** (`V`, or a click on the active tool):
+- [x] **Select tool** (`V`, or a click on the active tool):
   - **Selection:** drag a handle to resize the selection, or drag on an empty spot inside it to move it. It is clamped to the desktop with a 2×2 minimum, and dragging past the opposite edge flips it. This is not undoable (as in Lightshot).
   - **Shapes:** a click selects a shape, topmost first, with about 6 px of hit tolerance on strokes. The selected shape gets a dashed box. Drag to move it, press Delete or Backspace to remove it, or click a swatch or a size to restyle it. Shapes can't be resized or rotated.
   - **Text:** double-click a text to edit it again. The text tool also edits an existing text when you click on it.
   - Markup stays put on screen when the selection moves, and what falls outside is clipped.
-- [ ] **Undo/redo.** The history keeps snapshots of the shape list (cap 100). Each of these is one step: add, move (press → release), delete, restyle, one text edit session, and one picker drag on a selected shape. A new step clears redo. `Ctrl+Z` while typing commits the text, then undoes it. The selection geometry and the current tool, colour and size are not in the history.
-- [ ] **Prefs** are remembered across snaps and restarts in `[snap.annotate]`:
+- [x] **Undo/redo.** The history keeps snapshots of the shape list (cap 100). Each of these is one step: add, move (press → release), delete, restyle, one text edit session, and one picker drag on a selected shape. A new step clears redo. `Ctrl+Z` while typing commits the text, then undoes it. The selection geometry and the current tool, colour and size are not in the history.
+- [x] **Prefs** are remembered across snaps and restarts in `[snap.annotate]`:
   - keys: `tool`, `color`, `custom`, `size`
   - defaults: arrow, red, `#FF7AC6`, `M`; invalid values fall back to them
   - written when the overlay closes, only if they changed, keeping the other sections (the Stage S writer)
-- [ ] **The output is what you see.** The copied/saved image is drawn by the same markup code as the overlay, onto a CPU surface the size of the crop, in physical px. It never contains the handles, outline, toolbar, dim or loupe. With no markup it is byte-identical to the 7a crop.
-- [ ] **Cursors:**
+- [x] **The output is what you see.** The copied/saved image is drawn by the same markup code as the overlay, onto a CPU surface the size of the crop, in physical px. It never contains the handles, outline, toolbar, dim or loupe. With no markup it is byte-identical to the 7a crop.
+- [x] **Cursors:**
   - crosshair while selecting and with a drawing tool
   - I-beam for text
   - move/size cursors over shapes and handles with select
   - arrow over the toolbar and the picker
-- [ ] **Idle CPU ≈ 0.** The overlay still draws only on input, with no caret blink and no animation. The frozen frames live until the overlay closes (as in 7a).
-- [ ] **Tests.** `fmt`, `clippy -D warnings`, `test` and `build --release` pass.
+- [x] **Idle CPU ≈ 0.** The overlay still draws only on input, with no caret blink and no animation. The frozen frames live until the overlay closes (as in 7a).
+- [x] **Tests.** `fmt`, `clippy -D warnings`, `test` and `build --release` pass.
   - **dj-core** (pure):
     - each tool from press/drag/release, including dots and dropped short drags
     - history: undo/redo, the cap, redo cleared by a new step, one step per move/edit/picker drag
@@ -417,6 +418,10 @@ Headless, as in 7a: fmt, clippy, test and release only. Don't run the exe, don't
 
 ### Log
 - 2026-10-26: defined with the user. The Lightshot flow was chosen: release opens the editor, and Ctrl+C or Enter copies. This replaces the handover's earlier idea ("edit from the thumb, keep auto-copy on release"). The 4 extra tools (arrow, marker, pixelate, step numbers), select/move/delete, text re-edit and an HSV picker are all in. Pin + OCR move to 7d.
+- 2026-10-26: built by one Opus 5.5 agent (Orca worker, headless) in 5 commits on `xDaijobu/stage-7b-work`.
+  - The coordinator re-verified fmt, clippy `-D warnings` and 360 tests, after cleaning the workspace crates, because the shared target dir can mix crates between worktrees.
+  - Merged `master` (with Stage N) in; the only conflict was one `use` line in `app.rs`.
+- 2026-10-26: merged at the user's request before the live test ("klo ud kelar dihajar aja"). **Live test pending:** the user runs the report's live test script.
 
 ---
 
@@ -444,6 +449,55 @@ Headless: fmt, clippy, test and release only. Don't run the exe, and don't touch
 ### Log
 - 2026-10-26: defined with the user (minimal: auto-start + Snap hotkeys; press-to-record later).
 - 2026-10-26: built by one Sonnet 5.5 agent (303 tests). Live test passed: gear → panel, the autostart toggle (Run key + config), hotkey chips applied live (the user pressed the keys), then restored to PrtSc + Ctrl+Space.
+
+---
+
+## Stage N: Notch style
+
+**Goal:** the island looks like a hardware notch (iPhone 13 / MacBook) attached to the top edge of the screen, not a pill floating under it. It is a choice in Settings, and notch is the default.
+
+### Scope
+- [x] **Config** `[island] style = "notch" | "pill"`, default `notch`. An unknown value falls back to notch.
+- [x] **Shape (notch).**
+  - The body reaches the top edge (y = 0) with a flat top.
+  - Where it meets the edge there are concave shoulders of 8 px (× scale) on each side.
+  - The sides are straight and the bottom corners use the view's animated radius.
+  - It grows downward and sideways with the spring morph and stays attached to the edge.
+  - The colour is the theme's pill colour (Paper Zine gives a light notch).
+  - The hairline outlines the sides, shoulders and bottom, never the top edge.
+- [x] **Nothing else moves.** The pill rect, every view's content and dj-core's hit testing are unchanged. Only the drawn body grows into the 6 px gap above the pill and out by the shoulders (`layout::notch_bounds`). Pill style renders exactly as before.
+- [x] **Click-through.** In notch style the window region is the pill's column from the top edge down, plus a strip as high as a shoulder, so the area beside the pill below the shoulders stays click-through. A click, hover or drag on the strip above the pill or on a shoulder acts on the nearest point of the pill.
+- [x] **Settings.** A 4th row, "ISLAND STYLE", with a chip (`notch` / `pill`). A click toggles it live, with no restart, and saves the config. The panel grows from 400×184 to 400×220.
+- [x] **No reserved screen space.** It stays an overlay; Windows can only reserve a full-width strip (AppBar), so that was rejected.
+- [x] Idle CPU ≈ 0 (no new timers).
+- [x] **Tests:**
+  - style parsing and defaults
+  - `notch_bounds`
+  - the Settings rects and the hit test for the new chip
+  - the notch path: filled at the top edge and the shoulders, empty inside the shoulder curve, degenerate morph frames
+  - the neck/shoulder clamp in the app
+
+  `fmt`, `clippy -D warnings`, `test` and `build --release` pass.
+
+### Acceptance
+With no `[island]` in the config, the island starts as a notch flush with the top of the screen, with smooth concave shoulders. Expanding it (Home, Music, Vitals, Timer, Settings, the snap thumb, the OSD) grows the notch downward while it stays attached. Clicking the strip above the content works like clicking the island. Settings → ISLAND STYLE toggles between notch and pill at once, and the choice survives a restart. Every theme looks right, including Paper Zine.
+
+### Log
+- 2026-10-26: requested by the user while Stage 7b runs, and built in parallel with it ("langsung aj diterapin", "paksa spawn subagent 4 biji").
+  - Decided: a Settings choice rather than a replacement, default notch, theme pill colour (forced black was rejected), no AppBar.
+  - Approach: the pill rect stays put and only the body shape grows to the edge, so the layout and hit testing are untouched.
+  - The coordinator wrote the shared skeleton (`d74d2bc`). Four Opus subagents filled in:
+    - dj-core tests
+    - dj-render shape
+    - the dj-render Settings row and docs
+    - the app region and neck clamp
+- 2026-10-26: integrated by the coordinator.
+  - The dj-core agent widened the window by 16 px (520 → 536) so Home's shoulders fit. Accepted: the swap chain is still sized once.
+  - The coordinator narrowed the click-through region from the whole `notch_bounds` box to the column plus the shoulder strip (`dj_win::window::set_hit_rects`, `CombineRgn`).
+  - fmt, clippy `-D warnings`, 328 tests (was 303) and `build --release` pass. Report: [`stage-n-report.md`](stage-n-report.md).
+- 2026-10-26: live test passed.
+  - Coordinator: idle notch flush with the edge, with concave shoulders and grain over the whole body. Home → gear → Settings stays attached. The ISLAND STYLE chip toggles notch ↔ pill live and saves `[island] style`.
+  - User, with the real mouse ("notch oke"): clicks on the top edge, click-through beside the panel, themes.
 
 ---
 

@@ -2,6 +2,7 @@
 //! Win32 events.
 
 use crate::chime::SystemChime;
+use crate::notch::{self, Edges};
 use crate::snap::{
     self as snapper, End, RoughMeasure, Snapper, SystemClipboard, SystemScreen, HOTKEY_SNAP,
     HOTKEY_SNAP_ALT, HOTKEY_SNAP_ESC, START_DELAY_MS, TIMER_SNAP_START, TIMER_SNAP_THUMB,
@@ -12,7 +13,7 @@ use crate::sweep::{Job, Msg, ScanId, Sweeper};
 use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
-use dj_core::config::{AnnotateConfig, Config, SnapHotkey};
+use dj_core::config::{AnnotateConfig, Config, IslandStyle, SnapHotkey};
 use dj_core::features::FEATURES;
 use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, SnapAction, TimerAction};
 use dj_core::layout;
@@ -58,9 +59,6 @@ const VK_VOLUME_UP: u32 = 0xAF;
 const FIRST_DT: f32 = 1.0 / 120.0;
 const MAX_DT: f32 = 0.05;
 const REGION_PAD: i32 = 2;
-
-/// Device-px edges `(left, top, right, bottom)` of the pill in the window.
-type Edges = (i32, i32, i32, i32);
 
 /// The Snap overlay while a snap is in progress: its window and its renderer.
 struct Overlay {
@@ -639,6 +637,14 @@ impl App {
                 self.register_snap_hotkey();
                 storage::save_config(&self.config);
             }
+            SettingsAction::ToggleStyle => {
+                let next = self.config.island.style().toggled();
+                self.config.island.style = next.label().to_string();
+                storage::save_config(&self.config);
+                // Switch at once: the next frame draws the new shape and `device_rect`
+                // (which reads the style) moves the window region with it.
+                self.dirty = true;
+            }
         }
     }
 
@@ -649,6 +655,7 @@ impl App {
             alt: self.config.snap.alt_hotkey(),
             hotkey_taken: self.snap_taken.0,
             alt_taken: self.snap_taken.1,
+            style: self.config.island.style(),
         }
     }
 
@@ -1494,25 +1501,38 @@ impl App {
         window::quit();
     }
 
+    /// Device-px edges of the island's column: the pill, or in notch style the pill
+    /// stretched up to the window's top edge (`set_region` adds the shoulders).
     fn device_rect(&self) -> Edges {
-        let r = self.island.view().rect;
-        let s = self.scale;
-        (
-            (r.x * s).round() as i32,
-            (r.y * s).round() as i32,
-            ((r.x + r.w) * s).round() as i32,
-            ((r.y + r.h) * s).round() as i32,
-        )
+        let body = notch::body_rect(self.config.island.style(), self.island.pill_rect());
+        notch::device_edges(body, self.scale)
     }
 
-    fn set_region(&self, (l, t, r, b): Edges) {
-        window::set_hit_region(
-            self.hwnd,
-            (l - REGION_PAD).max(0),
-            (t - REGION_PAD).max(0),
-            (r + REGION_PAD).min(self.win_px.0),
-            (b + REGION_PAD).min(self.win_px.1),
-        );
+    /// A window device-px point in window-logical px, as the island sees it: in notch
+    /// style the neck and the shoulders act as the nearest point of the pill.
+    fn island_point(&self, x: i32, y: i32) -> (f32, f32) {
+        let (lx, ly) = (x as f32 / self.scale, y as f32 / self.scale);
+        notch::to_pill(self.config.island.style(), self.island.pill_rect(), lx, ly)
+    }
+
+    /// Clips the window to the island's column (`device_rect`), plus in notch style the
+    /// shoulders' strip along the top edge.
+    fn set_region(&self, column: Edges) {
+        let pad = |(l, t, r, b): Edges| {
+            (
+                (l - REGION_PAD).max(0),
+                (t - REGION_PAD).max(0),
+                (r + REGION_PAD).min(self.win_px.0),
+                (b + REGION_PAD).min(self.win_px.1),
+            )
+        };
+        match self.config.island.style() {
+            IslandStyle::Pill => window::set_hit_rects(self.hwnd, &[pad(column)]),
+            IslandStyle::Notch => window::set_hit_rects(
+                self.hwnd,
+                &[pad(column), pad(notch::shoulder_strip(column, self.scale))],
+            ),
+        }
     }
 }
 
@@ -1520,7 +1540,7 @@ impl Handler for App {
     fn event(&mut self, ev: Event) {
         match ev {
             Event::Click { x, y } => {
-                let (lx, ly) = (x as f32 / self.scale, y as f32 / self.scale);
+                let (lx, ly) = self.island_point(x, y);
                 let tokens = self.anim.current().clone();
                 let outcome = self.island.click(lx, ly, &tokens);
                 if outcome != ClickOutcome::Ignored {
@@ -1553,15 +1573,13 @@ impl Handler for App {
                 }
             }
             Event::Move { x, y } => {
-                if self
-                    .island
-                    .hover(x as f32 / self.scale, y as f32 / self.scale)
-                {
+                let (lx, ly) = self.island_point(x, y);
+                if self.island.hover(lx, ly) {
                     self.dirty = true;
                 }
             }
             Event::Drag { x, y } => {
-                let (lx, ly) = (x as f32 / self.scale, y as f32 / self.scale);
+                let (lx, ly) = self.island_point(x, y);
                 match self.island.drag(lx) {
                     Some(level) => {
                         self.set_level(level);
@@ -1700,8 +1718,8 @@ impl Handler for App {
         self.island.step(dt, self.anim.current());
         self.dirty = false;
 
-        // The region must cover both this frame's pill and the previous one, or the
-        // compositor can clip a shrinking pill for a frame.
+        // The region must cover both this frame's body and the previous one, or the
+        // compositor can clip a shrinking pill (or a style switch) for a frame.
         let rect = self.device_rect();
         let region = self.last_rect.map_or(rect, |p| {
             (
@@ -1752,6 +1770,7 @@ impl Handler for App {
             timer: &timer,
             snap: self.snap_frame,
             settings: &settings,
+            island_style: self.config.island.style(),
         };
         match renderer.render(&frame) {
             Ok(()) => {}
