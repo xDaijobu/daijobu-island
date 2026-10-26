@@ -1,6 +1,6 @@
 # Stage 7c brief: Snap stack (preview UI only)
 
-Status: implementation authorized by the user on 2026-10-26. Worktree `stage-7c-snap-stack` starts at master `f7f9215` plus the uncommitted 7b fixes. No commits, pushes or PRs requested. Stage 7b startup was checked, but full live input/clipboard checks are still pending; do not call them passed from unit tests.
+Status: built 2026-10-26 on `xDaijobu/stage-7c-snap-stack` (see [`stage-7c-report.md`](stage-7c-report.md)); live acceptance pending. Stage 7b live input/clipboard checks are still pending too; do not call them passed from unit tests.
 
 ## Contract and scope
 
