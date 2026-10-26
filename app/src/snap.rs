@@ -8,8 +8,11 @@
 //! cancelled, or rendered with its markup and copied (and saved).
 //!
 //! Memory: the frozen frames live only while the overlay is up (`Session`). After that
-//! only the annotated image and its PNG are kept (`Shot`), until the thumb goes.
+//! only the annotated image and its PNG are kept (`Shot`), until the thumb goes. Both
+//! are behind `Arc`s: the preview stack's cards share them (`Snapper::payload`) instead
+//! of copying, so a shot costs its pixels and its PNG once however many owners it has.
 
+use crate::preview_store::Payload;
 use crate::storage;
 use dj_core::config::SnapHotkey;
 use dj_core::snap::{
@@ -19,6 +22,7 @@ use dj_core::snap_edit::{Display, EditInput, Editor, Outcome, Prefs, Rgba, TextM
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Hotkey ids: the app has 1 (toggle) and 2 (theme).
@@ -145,9 +149,10 @@ pub struct Ended {
 
 /// The last snap, kept for the thumb's copy and save until the thumb goes.
 pub struct Shot {
-    pub bitmap: Bitmap,
-    /// None if encoding failed; copy and save try again.
-    png: Option<Vec<u8>>,
+    /// The annotated image. Shared (never copied) with the preview stack's card.
+    pub bitmap: Arc<Bitmap>,
+    /// None if encoding failed; copy and save try again. Shared like `bitmap`.
+    png: Option<Arc<[u8]>>,
     pub status: ThumbStatus,
     /// Where the last save went. The thumb's save button then reads "open" and reveals
     /// this file instead of saving a second copy.
@@ -282,7 +287,7 @@ impl Snapper {
             };
         drop(session);
         let mut shot = Shot {
-            bitmap,
+            bitmap: Arc::new(bitmap),
             png: None,
             status: ThumbStatus::Copied,
             saved: None,
@@ -303,6 +308,19 @@ impl Snapper {
 
     pub fn shot(&self) -> Option<&Shot> {
         self.shot.as_ref()
+    }
+
+    /// The current shot's image and PNG for a preview card: clones of the `Arc`s, so
+    /// nothing is copied and the bytes are counted once. None without a shot. The card
+    /// keeps them after the thumb goes (`dismiss`), and the thumb after the card does.
+    // Used by the preview stack's controller (Stage 7c, part F).
+    #[allow(dead_code)]
+    pub fn payload(&self) -> Option<Payload> {
+        let shot = self.shot.as_ref()?;
+        Some(Payload {
+            bitmap: Arc::clone(&shot.bitmap),
+            png: shot.png.clone(),
+        })
     }
 
     /// The thumb's **copy**: puts the shot on the clipboard again.
@@ -362,14 +380,14 @@ impl Snapper {
 /// The shot's PNG, encoded on first use.
 fn ensure_png(shot: &mut Shot) -> Result<&[u8], String> {
     if shot.png.is_none() {
-        shot.png = Some(dj_capture::png::encode(&shot.bitmap)?);
+        shot.png = Some(Arc::from(dj_capture::png::encode(&shot.bitmap)?));
     }
     Ok(shot.png.as_deref().unwrap_or_default())
 }
 
 fn copy_shot(shot: &mut Shot, clipboard: &mut dyn Clipboard) -> Result<(), String> {
-    let dib = dj_capture::dib::from_bitmap(&shot.bitmap);
-    let result = ensure_png(shot).and_then(|png| clipboard.put(png, &dib));
+    let bitmap = Arc::clone(&shot.bitmap);
+    let result = ensure_png(shot).and_then(|png| put_image(&bitmap, png, clipboard));
     shot.status = if result.is_ok() {
         ThumbStatus::Copied
     } else {
@@ -378,9 +396,20 @@ fn copy_shot(shot: &mut Shot, clipboard: &mut dyn Clipboard) -> Result<(), Strin
     result
 }
 
+/// Puts an image on the clipboard as its PNG plus a `CF_DIB` made from `bitmap`. The
+/// thumb's copy and the preview cards' copy both end here.
+pub(crate) fn put_image(
+    bitmap: &Bitmap,
+    png: &[u8],
+    clipboard: &mut dyn Clipboard,
+) -> Result<(), String> {
+    clipboard.put(png, &dj_capture::dib::from_bitmap(bitmap))
+}
+
 /// Writes `bytes` to the first free `snap-…png` name in `dir`. `create_new` makes the
-/// check and the create one step, so nothing is ever overwritten.
-fn write_new(dir: &Path, stamp: Stamp, bytes: &[u8]) -> Result<PathBuf, String> {
+/// check and the create one step, so nothing is ever overwritten. Used by the thumb's
+/// save and by the preview store's worker.
+pub(crate) fn write_new(dir: &Path, stamp: Stamp, bytes: &[u8]) -> Result<PathBuf, String> {
     fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     for n in 1..=MAX_NAME_TRIES {
         let path = dir.join(file_name(stamp, n));
@@ -629,7 +658,7 @@ mod tests {
         assert!(s.session().is_none(), "the frozen frames are gone");
         let shot = s.shot().unwrap();
         assert_eq!((shot.bitmap.width, shot.bitmap.height), (4, 2));
-        assert_eq!(shot.bitmap, crop(&frames(), IRect::new(-2, 3, 4, 2)));
+        assert_eq!(*shot.bitmap, crop(&frames(), IRect::new(-2, 3, 4, 2)));
         assert_eq!(shot.status, ThumbStatus::Copied);
         let puts = puts.borrow();
         assert_eq!(puts.len(), 1, "one clipboard session");
@@ -663,7 +692,7 @@ mod tests {
         // Inside it: the frozen screen, desktop (200, 200).
         assert_eq!(px(b, 100, 100), [1, 200, 200, 255]);
         let plain = crop(&layout((1200, 800), 400), IRect::new(100, 100, 300, 200));
-        assert_ne!(*b, plain);
+        assert_ne!(**b, plain);
         assert_eq!(px(b, 10, 10), px(&plain, 10, 10));
         let puts = puts.borrow();
         assert_eq!(puts.len(), 1);
@@ -900,6 +929,50 @@ mod tests {
         }
         assert_eq!(island.state(), IslandState::MusicCompact);
         assert!(s.shot().is_none());
+    }
+
+    #[test]
+    fn the_payload_shares_the_shots_image_and_png() {
+        let (mut s, _, _) = snapper(vec![]);
+        assert!(s.payload().is_none(), "no shot yet");
+        begin(&mut s, DESK);
+        drag(&mut s, (0, 0), (8, 6));
+        finish(&mut s, Instant::now());
+        let shot = s.shot().unwrap();
+        let png = shot.png.clone().expect("the copy encoded it");
+        assert_eq!(Arc::strong_count(&shot.bitmap), 1);
+        let p = s.payload().unwrap();
+        let shot = s.shot().unwrap();
+        assert!(Arc::ptr_eq(&p.bitmap, &shot.bitmap), "same pixels, no copy");
+        assert!(Arc::ptr_eq(p.png.as_ref().unwrap(), &png), "same PNG");
+        assert_eq!(Arc::strong_count(&shot.bitmap), 2);
+        // Counted once: the payload's size is the pixels plus the PNG, not a second set.
+        assert_eq!(p.bytes(), 8 * 6 * 4 + png.len() as u64);
+        // The card outlives the thumb, and the thumb's copy and save still work.
+        let image = Arc::downgrade(&p.bitmap);
+        s.dismiss();
+        assert!(s.payload().is_none());
+        assert!(image.upgrade().is_some(), "the card still holds the image");
+        drop(p);
+        drop(png);
+        assert!(image.upgrade().is_none(), "freed with its last owner");
+    }
+
+    #[test]
+    fn the_thumbs_save_and_copy_use_the_shared_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, puts, _) = snapper(vec![]);
+        begin(&mut s, DESK);
+        drag(&mut s, (0, 0), (8, 6));
+        finish(&mut s, Instant::now());
+        let p = s.payload().unwrap();
+        s.copy().unwrap();
+        let path = s.save(dir.path(), STAMP).unwrap();
+        let png = p.png.as_ref().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), **png);
+        assert_eq!(puts.borrow().len(), 2);
+        assert_eq!(puts.borrow()[1].0, **png);
+        assert!(Arc::ptr_eq(png, s.payload().unwrap().png.as_ref().unwrap()));
     }
 
     #[test]
