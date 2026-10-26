@@ -496,4 +496,33 @@ mod tests {
         let off = Config::parse("[vitals]\nhealth_lamp = false\n");
         assert!(!off.vitals.health_lamp);
     }
+
+    #[test]
+    fn settings_changes_round_trip_and_keep_the_other_sections() {
+        let mut c = Config::parse(
+            "theme = \"paper-zine\"\n[timer]\nfocus_min = 50\n[snap]\nsave_dir = \"D:/shots\"\n[sweep]\nproject_roots = [\"~/src\"]\n",
+        );
+        c.start_with_windows = true;
+        c.snap.hotkey = crate::settings::next_hotkey(c.snap.hotkey())
+            .label()
+            .to_string();
+        c.snap.alt_hotkey = crate::settings::alt_config(crate::settings::next_alt_hotkey(
+            c.snap.alt_hotkey(),
+            c.snap.hotkey(),
+        ))
+        .to_string();
+        let back = Config::parse(&c.to_toml());
+        assert_eq!(back, c);
+        assert!(back.start_with_windows);
+        assert_eq!(back.snap.hotkey(), SnapHotkey::CtrlSpace);
+        // Ctrl+Space is now the main key, so the alt chip moves on from it.
+        assert_eq!(back.snap.alt_hotkey(), Some(SnapHotkey::CtrlAltS));
+        assert_eq!(back.theme, "paper-zine");
+        assert_eq!(back.timer.focus_min, 50);
+        assert_eq!(back.snap.save_dir, "D:/shots");
+        assert_eq!(back.sweep.project_roots, vec!["~/src".to_string()]);
+        // Turning the alt off writes "none" and reads back as off.
+        c.snap.alt_hotkey = crate::settings::alt_config(None).to_string();
+        assert_eq!(Config::parse(&c.to_toml()).snap.alt_hotkey(), None);
+    }
 }
