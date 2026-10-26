@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn timer_compact_and_alert_parts_fit() {
         assert!(inside(&TC_RING, TIMER_COMPACT_W, TIMER_COMPACT_H));
-        assert!(TC_LABEL_X > TC_RING.x + TC_RING.w && TC_DIGITS_RIGHT < TIMER_COMPACT_W);
+        const { assert!(TC_LABEL_X > TC_RING.x + TC_RING.w && TC_DIGITS_RIGHT < TIMER_COMPACT_W) };
         let parts = [AL_TEXT, AL_CONTINUE, AL_STOP];
         for (i, a) in parts.iter().enumerate() {
             assert!(inside(a, ALERT_W, ALERT_H), "{a:?}");
