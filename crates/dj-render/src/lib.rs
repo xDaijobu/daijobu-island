@@ -7,6 +7,7 @@ mod gpu;
 mod icons;
 mod music;
 mod paint;
+mod settings;
 mod snap;
 mod sweep;
 mod timer;

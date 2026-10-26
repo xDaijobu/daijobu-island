@@ -2,7 +2,7 @@
 //! testing, and what the panel shows. Pure; the app applies the actions (autostart,
 //! hotkey registration, saving the config).
 
-use crate::config::SnapHotkey;
+use crate::config::{SnapConfig, SnapHotkey};
 use crate::layout;
 
 /// The order the Snap hotkey chip cycles through.
@@ -52,6 +52,23 @@ pub fn alt_label(alt: Option<SnapHotkey>) -> &'static str {
 
 pub fn alt_config(alt: Option<SnapHotkey>) -> &'static str {
     alt.map_or(ALT_OFF, SnapHotkey::label)
+}
+
+/// A click on the Snap hotkey chip: the next main key. When it lands on the alt key,
+/// the alt moves on (it can't be the same key).
+pub fn cycle_hotkey(snap: &mut SnapConfig) {
+    let main = next_hotkey(snap.hotkey());
+    snap.hotkey = main.label().to_string();
+    let alt = SnapHotkey::parse(&snap.alt_hotkey);
+    if alt == Some(main) {
+        snap.alt_hotkey = alt_config(next_alt_hotkey(alt, main)).to_string();
+    }
+}
+
+/// A click on the alt chip: the next alt key, never the main key.
+pub fn cycle_alt_hotkey(snap: &mut SnapConfig) {
+    let alt = next_alt_hotkey(snap.alt_hotkey(), snap.hotkey());
+    snap.alt_hotkey = alt_config(alt).to_string();
 }
 
 /// A control in the Settings panel. Back is handled by the island.
@@ -210,5 +227,38 @@ mod tests {
         assert_eq!(v.status(), None);
         v.alt_taken = true;
         assert_eq!(v.status(), Some("taken by another app"));
+    }
+
+    fn snap(main: &str, alt: &str) -> SnapConfig {
+        SnapConfig {
+            hotkey: main.into(),
+            alt_hotkey: alt.into(),
+            ..SnapConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_main_chip_click_moves_the_alt_off_the_same_key() {
+        let mut c = snap("PrtSc", "Ctrl+Space");
+        cycle_hotkey(&mut c);
+        assert_eq!(c.hotkey(), CtrlSpace);
+        assert_eq!(c.alt_hotkey(), Some(CtrlAltS));
+        assert_eq!(c.alt_hotkey, "Ctrl+Alt+S");
+        // An alt that is off stays off.
+        let mut c = snap("PrtSc", "none");
+        cycle_hotkey(&mut c);
+        assert_eq!((c.hotkey(), c.alt_hotkey()), (CtrlSpace, None));
+        assert_eq!(c.alt_hotkey, "none");
+    }
+
+    #[test]
+    fn an_alt_chip_click_never_lands_on_the_main_key() {
+        let mut c = snap("Ctrl+Alt+S", "Ctrl+Space");
+        cycle_alt_hotkey(&mut c);
+        assert_eq!(c.alt_hotkey(), Some(CtrlShiftS));
+        cycle_alt_hotkey(&mut c);
+        assert_eq!(c.alt_hotkey(), None);
+        cycle_alt_hotkey(&mut c);
+        assert_eq!(c.alt_hotkey(), Some(CtrlSpace));
     }
 }

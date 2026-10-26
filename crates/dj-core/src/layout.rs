@@ -415,9 +415,12 @@ mod tests {
     fn the_gear_sits_in_the_home_header_clear_of_the_label_and_the_clock() {
         assert!(inside(&HOME_GEAR, HOME_W, HOME_H));
         // The clock is about 70 px wide, flush with the header's right edge.
-        assert!(HOME_GEAR.x + HOME_GEAR.w <= HEADER.x + HEADER.w - 70.0);
-        assert!(HOME_GEAR.y >= HEADER.y && HOME_GEAR.y + HOME_GEAR.h <= HEADER.y + HEADER.h);
-        assert!(HOME_GEAR.x > HEADER.x + 160.0);
+        const {
+            assert!(HOME_GEAR.x + HOME_GEAR.w <= HEADER.x + HEADER.w - 70.0);
+            assert!(HOME_GEAR.y >= HEADER.y);
+            assert!(HOME_GEAR.y + HOME_GEAR.h <= HEADER.y + HEADER.h);
+            assert!(HOME_GEAR.x > HEADER.x + 160.0);
+        }
     }
 
     #[test]
