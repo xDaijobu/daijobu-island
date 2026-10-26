@@ -120,6 +120,22 @@ save_dir = "~/Pictures/Daijobu"
 
 If PrtSc is taken, `~/.daijobu/daijobu.log` gets a line such as `snap: PrtSc is not available (…), using Ctrl+Shift+S`.
 
+## Live test (2026-10-26, user's machine, 3440×1440, scale 1.0)
+
+The coordinator re-verified fmt, clippy (`-D warnings`), 284/284 tests and the release build. The user ran the snap flow by hand. The overlay can't be checked by the coordinator's automated screenshot (a GDI `CopyFromScreen` doesn't see the fullscreen DComp overlay), and it captures all input, so it can't be driven while the user is working.
+
+| Check | Result |
+|---|---|
+| PrtSc registered (no fallback logged) and starts a snap | Pass |
+| Screen freezes and dims, the loupe follows the cursor, hovering outlines windows | Pass (seen by the user) |
+| Drag a region and release → snap thumb with the size and `✓ copied` | Pass |
+| Paste into another app gives exactly the selected region; the clipboard holds `PNG` + `DeviceIndependentBitmap` (checked: 485×292) | Pass |
+| Save writes `Pictures\Daijobu\snap-….png`, never overwriting (same-second saves got `-2`) | Pass |
+| A single click on a hovered window captures that window | Pass |
+| **Added after the live test, at the user's request:** once saved, the save button reads **open** and reveals the file in Explorer (`explorer /select`) | Pass (user) |
+
+Still not verified live: multi-monitor or mixed DPI (single monitor here), the GDI fallback, the Ctrl+Shift+S fallback, HDR, and large crops' encode time.
+
 ## Suggested live test (not run)
 
 1. Press PrtSc (or Ctrl+Shift+S, see the log). The screen freezes under a dim; the loupe follows the cursor with the hex and coordinates; hovering a window outlines it with its size.

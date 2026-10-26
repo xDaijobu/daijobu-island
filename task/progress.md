@@ -280,15 +280,15 @@ Headless: fmt, clippy and test only, `CARGO_BUILD_JOBS=2`. Don't run the exe and
 Snap is split into three stages: **7a** core (this one), **7b** annotations + pin + OCR, **7c** the Snap stack (floating previews, countdown, multi-select, OLE drag-out). The 7b/7c features stay out of this stage.
 
 ### Scope
-- [ ] **Unlock Snap** in the feature registry (5 of 12 ready). Clicking the tile starts a snap (the island collapses first, so it isn't in the shot).
-- [ ] **Hotkey:** PrtSc (`VK_SNAPSHOT`, no modifiers) through `RegisterHotKey`. If registration fails (for example, Windows' "Use the Print screen key to open screen capture" setting holds it), fall back to **Ctrl+Shift+S**, and write the reason to the app log. `[snap] hotkey = "PrtSc"` in config accepts `"PrtSc"`, `"Ctrl+Shift+S"` or `"Ctrl+Alt+S"`.
-- [ ] **`crates/dj-capture`** (Win32 + D3D11/DXGI; the only new crate):
+- [x] **Unlock Snap** in the feature registry (5 of 12 ready). Clicking the tile starts a snap (the island collapses first, so it isn't in the shot).
+- [x] **Hotkey:** PrtSc (`VK_SNAPSHOT`, no modifiers) through `RegisterHotKey`. If registration fails (for example, Windows' "Use the Print screen key to open screen capture" setting holds it), fall back to **Ctrl+Shift+S**, and write the reason to the app log. `[snap] hotkey = "PrtSc"` in config accepts `"PrtSc"`, `"Ctrl+Shift+S"` or `"Ctrl+Alt+S"`.
+- [x] **`crates/dj-capture`** (Win32 + D3D11/DXGI; the only new crate):
   - **Freeze:** capture every monitor once, before the overlay shows. DXGI Desktop Duplication per output, with GDI `BitBlt` from the screen DC as the fallback. The result is one BGRA frame per monitor, with its desktop rect and DPI.
   - **Window rects** for snapping: `EnumWindows` → visible, not minimised, not cloaked (`DWMWA_CLOAKED`), not tool windows, not our own windows, with the size from `DWMWA_EXTENDED_FRAME_BOUNDS`. Z-ordered top to bottom.
   - **PNG encode** through WIC (`IWICImagingFactory`, built into Windows; no new crates).
   - **Clipboard:** `CF_DIB` (top-down converted to bottom-up, 32-bit) plus the registered `"PNG"` format, in one `OpenClipboard`/`EmptyClipboard` session.
   - All `unsafe` stays in this crate (and existing platform crates), each block with a `// SAFETY:` comment.
-- [ ] **`dj-core::snap`** (pure, tested): selection geometry in physical desktop px, which can be negative on left or top monitors.
+- [x] **`dj-core::snap`** (pure, tested): selection geometry in physical desktop px, which can be negative on left or top monitors.
   - drag in any direction, normalised to a rect
   - a click with no drag selects the window under the cursor (topmost hit from the rect list)
   - arrow keys nudge the selection by 1 px (Shift: 10 px)
@@ -297,13 +297,13 @@ Snap is split into three stages: **7a** core (this one), **7b** annotations + pi
   - loupe sampling: a 15×15 px grid around the cursor, clamped at the edges
   - the size label and hex colour text
   - the file name `snap-YYYY-MM-DD_HHMMSS.png`, with `-2`, `-3`… when the name is taken
-- [ ] **Overlay window:** a separate topmost `WS_POPUP` covering the whole virtual desktop, drawn with Skia on the existing DComp/D3D12 path. It shows the frozen frame, dims (about 55%) outside the selection, a dashed selection outline, the size label, and the loupe (8× magnified, pixelated, with a crosshair and `#E0A458 · 812,344`). Hovering highlights the window under the cursor before any drag. Esc or a right click cancels. The cursor is a crosshair. It renders only on input (no idle loop). It's created when the snap starts and destroyed after it, so the swap-chain rule for the island window is unaffected.
-- [ ] **On release:** crop from the frozen frame (across monitors if the rect spans several). Copy it to the clipboard (PNG + CF_DIB), close the overlay, and show the **snap thumb** in the island.
-- [ ] **Snap thumb** 330×72 (r 26, per the plan's size): a thumbnail (76×48, r 8, aspect-fit), `snap · 612×388`, `✓ copied`, and **copy** and **save** buttons. Activity priority sits right below the OSD (above timer done and media). It disappears after 6 s; hovering pauses the countdown. A click elsewhere on the thumb dismisses it. After it goes, the island returns to its rest state (Music/Timer compact or Idle).
-- [ ] **Save:** PNG to `[snap] save_dir` (default `%USERPROFILE%\Pictures\Daijobu`, created if missing), and the thumb then shows `saved`. The save never overwrites (see the naming rule). Failures show `save failed` and are written to the app log.
-- [ ] **Multi-monitor and DPI:** the overlay spans every monitor, the selection may cross them, and the output is in physical pixels (no scaling).
-- [ ] **Idle CPU ≈ 0:** nothing is captured or kept in memory outside a snap. The frozen frames are freed when the overlay closes; only the last crop is kept, for the thumb's copy/save, until the thumb goes.
-- [ ] Tests:
+- [x] **Overlay window:** a separate topmost `WS_POPUP` covering the whole virtual desktop, drawn with Skia on the existing DComp/D3D12 path. It shows the frozen frame, dims (about 55%) outside the selection, a dashed selection outline, the size label, and the loupe (8× magnified, pixelated, with a crosshair and `#E0A458 · 812,344`). Hovering highlights the window under the cursor before any drag. Esc or a right click cancels. The cursor is a crosshair. It renders only on input (no idle loop). It's created when the snap starts and destroyed after it, so the swap-chain rule for the island window is unaffected.
+- [x] **On release:** crop from the frozen frame (across monitors if the rect spans several). Copy it to the clipboard (PNG + CF_DIB), close the overlay, and show the **snap thumb** in the island.
+- [x] **Snap thumb** 330×72 (r 26, per the plan's size): a thumbnail (76×48, r 8, aspect-fit), `snap · 612×388`, `✓ copied`, and **copy** and **save** buttons. Activity priority sits right below the OSD (above timer done and media). It disappears after 6 s; hovering pauses the countdown. A click elsewhere on the thumb dismisses it. After it goes, the island returns to its rest state (Music/Timer compact or Idle).
+- [x] **Save:** PNG to `[snap] save_dir` (default `%USERPROFILE%\Pictures\Daijobu`, created if missing), and the thumb then shows `saved`. The save never overwrites (see the naming rule). Failures show `save failed` and are written to the app log.
+- [x] **Multi-monitor and DPI:** the overlay spans every monitor, the selection may cross them, and the output is in physical pixels (no scaling).
+- [x] **Idle CPU ≈ 0:** nothing is captured or kept in memory outside a snap. The frozen frames are freed when the overlay closes; only the last crop is kept, for the thumb's copy/save, until the thumb goes.
+- [x] Tests:
   - selection geometry (directions, click-to-window with z-order, nudge, clamps, negative coordinates, the minimum size)
   - loupe sampling at the edges
   - hex and size text
@@ -323,6 +323,7 @@ Press PrtSc. The screen freezes under a dimmed overlay, the loupe follows the cu
 
 ### Log
 - 2026-10-26: Snap split into 7a/7b/7c with the user. 7a defined: PrtSc with a Ctrl+Shift+S fallback, auto-copy on release plus the island thumb, save to `Pictures\Daijobu` without a dialog.
+- 2026-10-26: built by one Opus 5.5 agent (284 tests, new crate `dj-capture`). The coordinator re-verified fmt, clippy, test and release. Live test with the user passed (freeze, loupe, window snap, auto-copy PNG + DIB, save, window click). Added at the user's request: after save, the button reads **open** and reveals the file in Explorer.
 
 ---
 
