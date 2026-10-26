@@ -145,6 +145,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dj-capture"
+version = "0.1.0"
+dependencies = [
+ "dj-core",
+ "windows",
+]
+
+[[package]]
 name = "dj-core"
 version = "0.1.0"
 dependencies = [

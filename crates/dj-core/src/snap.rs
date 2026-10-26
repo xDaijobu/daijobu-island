@@ -97,7 +97,7 @@ impl Bitmap {
     /// An opaque black bitmap.
     pub fn black(width: u32, height: u32) -> Self {
         let mut pixels = vec![0u8; width as usize * height as usize * 4];
-        for px in pixels.chunks_exact_mut(4) {
+        for px in pixels.as_chunks_mut::<4>().0 {
             px[3] = 255;
         }
         Self {
