@@ -1092,8 +1092,14 @@ impl App {
             }
             SnapAction::Save => {
                 let (dir, stamp) = self.save_target();
-                if let Err(e) = self.snapper.save(&dir, stamp) {
-                    storage::log(&format!("snap: save failed: {e}"));
+                match self.snapper.save(&dir, stamp) {
+                    // The stack's card for this shot reads "open" for the same file.
+                    Ok(path) => {
+                        if let Some(bitmap) = self.snapper.shot().map(|s| s.bitmap.clone()) {
+                            self.previews.mark_saved(&bitmap, &path);
+                        }
+                    }
+                    Err(e) => storage::log(&format!("snap: save failed: {e}")),
                 }
             }
             // The island has gone to its rest state already.
@@ -1270,8 +1276,7 @@ impl App {
         // preview stack is made again at the new scale under the island.
         self.sync_appbar(true);
         let now = Instant::now();
-        self.previews.set_anchor(self.stack_anchor(), now);
-        self.previews.relayout(now);
+        self.previews.relayout(self.stack_anchor(), now);
     }
 
     /// The island itself needs a frame: it moves, crossfades a theme, or changed.
@@ -1794,7 +1799,15 @@ impl Handler for App {
             Event::Music => self.drain_engine(),
             Event::Wake => {
                 self.drain_art();
-                self.previews.drain(Instant::now());
+                // A card saved the thumb's shot: the thumb reads "open" too.
+                let saved = self.previews.drain(Instant::now());
+                if !saved.is_empty() {
+                    for (bitmap, path) in &saved {
+                        self.snapper.mark_saved(bitmap, path);
+                    }
+                    self.update_snap_frame();
+                    self.dirty = true;
+                }
             }
             Event::TaskbarCreated => {
                 if let Some(icon) = self.icon {

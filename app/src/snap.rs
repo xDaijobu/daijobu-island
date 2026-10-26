@@ -342,6 +342,19 @@ impl Snapper {
         result
     }
 
+    /// A preview card saved the image the thumb shows: the thumb reads "saved" and its
+    /// button "open" for that file, rather than saving a second copy.
+    pub fn mark_saved(&mut self, bitmap: &Arc<Bitmap>, path: &Path) {
+        if let Some(shot) = self
+            .shot
+            .as_mut()
+            .filter(|s| Arc::ptr_eq(&s.bitmap, bitmap))
+        {
+            shot.status = ThumbStatus::Saved;
+            shot.saved = Some(path.to_path_buf());
+        }
+    }
+
     /// The thumb goes: the crop and its PNG are freed.
     pub fn dismiss(&mut self) {
         self.shot = None;
@@ -971,6 +984,23 @@ mod tests {
         assert_eq!(puts.borrow().len(), 2);
         assert_eq!(puts.borrow()[1].0, **png);
         assert!(Arc::ptr_eq(png, s.payload().unwrap().png.as_ref().unwrap()));
+    }
+
+    #[test]
+    fn a_cards_save_shows_on_the_thumb_of_the_same_shot_only() {
+        let (mut s, _, _) = snapper(vec![]);
+        begin(&mut s, DESK);
+        drag(&mut s, (0, 0), (8, 6));
+        finish(&mut s, Instant::now());
+        let path = PathBuf::from("C:/shots/snap.png");
+        // Another image (an older card's): nothing changes.
+        s.mark_saved(&Arc::new(Bitmap::black(8, 6)), &path);
+        assert_eq!(s.shot().unwrap().saved, None);
+        assert_eq!(s.shot().unwrap().status, ThumbStatus::Copied);
+        let mine = s.payload().unwrap().bitmap;
+        s.mark_saved(&mine, &path);
+        assert_eq!(s.shot().unwrap().saved, Some(path));
+        assert_eq!(s.shot().unwrap().status, ThumbStatus::Saved);
     }
 
     #[test]

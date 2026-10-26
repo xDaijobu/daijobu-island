@@ -289,6 +289,12 @@ pub fn focus(hwnd: HWND) {
     }
 }
 
+/// The window is the foreground window (it has the keyboard after [`focus`]).
+pub fn has_foreground(hwnd: HWND) -> bool {
+    // SAFETY: no pointers involved; only compares handles.
+    unsafe { GetForegroundWindow() == hwnd }
+}
+
 /// Destroys the window (on the thread that created it).
 pub fn destroy(hwnd: HWND) {
     TRACKING.with(|t| t.set(false));

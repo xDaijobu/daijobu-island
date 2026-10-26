@@ -16,7 +16,7 @@
 use crate::preview_store::{CopyStart, Payload, ReplyKind, RevealError, Store};
 use crate::snap::Clipboard;
 use dj_core::layout::Rect;
-use dj_core::snap::{Stamp, ThumbStatus};
+use dj_core::snap::{Bitmap, Stamp, ThumbStatus};
 use dj_core::snap_stack::{
     self as stack, Admit, BarAction, CardAction, CardLayout, CardStatus, Focus, Hit, Item, ItemId,
     KeyCmd, Motion, MotionCard, Stack, StackKey, StackLayout,
@@ -27,9 +27,10 @@ use dj_render::{
 };
 use dj_win::previews::{self as win, PreviewInput};
 use dj_win::{window, HWND};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// The countdown tick (and the notice's one-shot). App timer ids 1-8 are taken.
 pub const TIMER_SNAP_STACK: usize = 9;
@@ -39,6 +40,12 @@ const TICK_MS: u32 = 100;
 /// focused card adds its outline (2 px wide, 2 px off the card).
 const REGION_PAD: f32 = 2.0;
 const REGION_PAD_OUTLINE: f32 = 5.0;
+const NOTICE_PAD: f32 = 3.0;
+/// The window or its GPU surface couldn't be made: try again this often, this many times.
+const RETRY: Duration = Duration::from_millis(500);
+const MAX_RETRIES: u8 = 3;
+/// A one-shot already armed within this of the wanted time is left alone.
+const TIMER_SLACK: Duration = Duration::from_millis(20);
 
 const VK_TAB: u16 = 0x09;
 const VK_RETURN: u16 = 0x0D;
@@ -93,8 +100,9 @@ pub struct Model {
     /// `[snap] save_dir` and the time for a new file's name.
     save_dir: PathBuf,
     stamp: fn() -> Stamp,
-    /// Copies waiting for the worker to encode their PNG.
+    /// Copies waiting for the worker to encode their PNG, and saves waiting for it.
     copying: Vec<ItemId>,
+    saving: Vec<ItemId>,
     /// What went wrong since the last `take_errors`, for the log.
     errors: Vec<String>,
 }
@@ -116,6 +124,7 @@ impl Model {
             save_dir,
             stamp,
             copying: Vec::new(),
+            saving: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -169,6 +178,7 @@ impl Model {
     fn forget(&mut self, id: ItemId) {
         self.store.remove(id.0);
         self.copying.retain(|c| *c != id);
+        self.saving.retain(|s| *s != id);
     }
 
     /// Removes the cards whose countdown ran out; returns them.
@@ -244,7 +254,7 @@ impl Model {
             }
             CopyStart::Pending => {
                 self.copying.push(id);
-                self.stack.set_busy(id, true, now);
+                self.sync_busy(id, now);
             }
         }
     }
@@ -272,14 +282,15 @@ impl Model {
     }
 
     fn save(&mut self, id: ItemId, now: Instant) {
-        if self.stack.get(id).is_some_and(|it| it.busy) {
+        if self.saving.contains(&id) {
             return;
         }
         // A file that went missing is saved again under a new name.
         self.stack.set_saved(id, None);
         if self.store.save(id.0, self.save_dir.clone(), (self.stamp)()) {
+            self.saving.push(id);
             self.stack.set_status(id, CardStatus::Saving);
-            self.stack.set_busy(id, true, now);
+            self.sync_busy(id, now);
         } else {
             self.stack.set_status(id, CardStatus::SaveFailed);
             self.errors
@@ -287,8 +298,11 @@ impl Model {
         }
     }
 
-    /// Applies the worker's replies. Replies for cards that are gone are dropped.
-    pub fn drain(&mut self, now: Instant) {
+    /// Applies the worker's replies; replies for cards that are gone are dropped. Returns
+    /// the images that were saved and where, so the thumb (which may share one) can say
+    /// so too.
+    pub fn drain(&mut self, now: Instant) -> Vec<(Arc<Bitmap>, PathBuf)> {
+        let mut saved = Vec::new();
         for reply in self.store.drain() {
             let id = ItemId(reply.id);
             if self.stack.get(id).is_none() {
@@ -296,18 +310,20 @@ impl Model {
             }
             match reply.kind {
                 ReplyKind::Saved(path) => {
-                    self.stack.set_busy(id, false, now);
+                    self.saving.retain(|s| *s != id);
+                    if let Some(p) = self.store.get(id.0) {
+                        saved.push((Arc::clone(&p.bitmap), path.clone()));
+                    }
                     self.stack.set_saved(id, Some(path));
                     self.stack.set_status(id, CardStatus::Saved);
                 }
                 ReplyKind::SaveFailed(e) => {
-                    self.stack.set_busy(id, false, now);
+                    self.saving.retain(|s| *s != id);
                     self.stack.set_status(id, CardStatus::SaveFailed);
                     self.errors.push(format!("snap stack: save failed: {e}"));
                 }
                 ReplyKind::Encoded => {
                     if self.take_copying(id) {
-                        self.stack.set_busy(id, false, now);
                         let status = match self.store.finish_copy(id.0, self.clipboard.as_mut()) {
                             Ok(()) => CardStatus::Copied,
                             Err(e) => {
@@ -320,12 +336,34 @@ impl Model {
                 }
                 ReplyKind::EncodeFailed(e) => {
                     if self.take_copying(id) {
-                        self.stack.set_busy(id, false, now);
                         self.stack.set_status(id, CardStatus::CopyFailed);
                         self.errors.push(format!("snap stack: copy failed: {e}"));
                     }
                 }
             }
+            self.sync_busy(id, now);
+        }
+        saved
+    }
+
+    /// The thumb saved the image a card shows: the card reads "open" for that file
+    /// instead of saving a second copy.
+    pub fn mark_saved(&mut self, bitmap: &Arc<Bitmap>, path: &Path) {
+        let ids: Vec<ItemId> = self
+            .stack
+            .items()
+            .iter()
+            .map(|it| it.id)
+            .filter(|id| !self.saving.contains(id))
+            .filter(|id| {
+                self.store
+                    .get(id.0)
+                    .is_some_and(|p| Arc::ptr_eq(&p.bitmap, bitmap))
+            })
+            .collect();
+        for id in ids {
+            self.stack.set_saved(id, Some(path.to_path_buf()));
+            self.stack.set_status(id, CardStatus::Saved);
         }
     }
 
@@ -333,6 +371,12 @@ impl Model {
         let before = self.copying.len();
         self.copying.retain(|c| *c != id);
         self.copying.len() != before
+    }
+
+    /// A card is busy (paused, never evicted) while a save or a copy's encode is out.
+    fn sync_busy(&mut self, id: ItemId, now: Instant) {
+        let busy = self.saving.contains(&id) || self.copying.contains(&id);
+        self.stack.set_busy(id, busy, now);
     }
 }
 
@@ -370,7 +414,14 @@ pub fn region(
         out.push(region_rect(m.rect, pad(m.id) + grow, scale));
     }
     out.extend(layout.bar.iter().map(|b| region_rect(b.rect, 0.0, scale)));
-    out.extend(layout.notice.iter().map(|&r| region_rect(r, 0.0, scale)));
+    // The region's corners are the cards' r 12; the notice is drawn at r 8, so it gets a
+    // little room or its corners would be cut.
+    out.extend(
+        layout
+            .notice
+            .iter()
+            .map(|&r| region_rect(r, NOTICE_PAD, scale)),
+    );
     out
 }
 
@@ -471,6 +522,15 @@ struct Surface {
     shown: bool,
 }
 
+/// What `TIMER_SNAP_STACK` is armed for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Armed {
+    /// The 10 Hz ring tick (repeating).
+    Tick,
+    /// One shot at this time: the notice ends, or a retry.
+    At(Instant),
+}
+
 pub struct Previews {
     model: Model,
     motion: Motion,
@@ -487,11 +547,21 @@ pub struct Previews {
     pressed: Option<Hit>,
     /// Each card's last layout, so a fading card keeps its parts.
     parts: HashMap<ItemId, CardLayout>,
+    /// The cards with a thumbnail on the GPU.
+    uploaded: HashSet<ItemId>,
+    /// The cards whose buttons were on screen in the last frame: only those take a click
+    /// on a button (a tap on a card that shows none selects it instead).
+    buttons_shown: Vec<ItemId>,
+    /// The last frame's region, kept for one more frame: the swap chain shows a frame
+    /// or two late, and a moving card must not be clipped meanwhile.
+    last_region: Vec<(i32, i32, i32, i32)>,
     /// Draw a frame even though nothing moves.
     dirty: bool,
-    timer_armed: bool,
-    /// The GPU device was lost: make the surface again on the next sync.
+    timer: Option<Armed>,
+    /// The window or the GPU surface is gone (device lost) or couldn't be made: make it
+    /// again, at most `MAX_RETRIES` times in a row.
     rebuild: bool,
+    retries: u8,
 }
 
 impl Previews {
@@ -506,9 +576,13 @@ impl Previews {
             allowed: true,
             pressed: None,
             parts: HashMap::new(),
+            uploaded: HashSet::new(),
+            buttons_shown: Vec::new(),
+            last_region: Vec::new(),
             dirty: false,
-            timer_armed: false,
+            timer: None,
             rebuild: false,
+            retries: 0,
         }
     }
 
@@ -520,6 +594,10 @@ impl Previews {
     fn has_content(&self, now: Instant) -> bool {
         let stack = self.model.stack();
         !stack.is_empty() || stack.notice(now).is_some() || !self.motion.cards().is_empty()
+    }
+
+    fn can_retry(&self) -> bool {
+        self.rebuild && self.allowed && self.retries < MAX_RETRIES
     }
 
     /// There are cards the tray can give the keyboard to.
@@ -555,6 +633,7 @@ impl Previews {
         self.log_errors();
         if self.surface.is_none() {
             // Uploads every card's thumbnail, this one's included.
+            self.retries = 0;
             self.ensure_surface();
         } else if let Some(id) = id {
             self.upload(id);
@@ -570,9 +649,17 @@ impl Previews {
         let (Some(gpu), Some(p)) = (s.gpu.as_mut(), self.model.payload(id)) else {
             return;
         };
-        if !gpu.set_image(id.0, &p.bitmap, s.scale) {
+        if gpu.set_image(id.0, &p.bitmap, s.scale) {
+            self.uploaded.insert(id);
+        } else {
             crate::storage::log("snap stack: cannot make a card's thumbnail");
         }
+    }
+
+    /// The thumb saved its shot: a card showing the same image says so too.
+    pub fn mark_saved(&mut self, bitmap: &Arc<Bitmap>, path: &Path) {
+        self.model.mark_saved(bitmap, path);
+        self.dirty = true;
     }
 
     /// The island moved: the stack follows its lower edge.
@@ -599,10 +686,16 @@ impl Previews {
         }
     }
 
-    /// DPI or displays changed: the window and the thumbnails are made again at the new
-    /// scale.
-    pub fn relayout(&mut self, now: Instant) {
-        self.destroy_surface();
+    /// DPI or displays changed: the window and the thumbnails are made again at the
+    /// scale of the island's monitor.
+    pub fn relayout(&mut self, anchor: (i32, i32), now: Instant) {
+        self.anchor = anchor;
+        self.rebuild_surface(now);
+    }
+
+    fn rebuild_surface(&mut self, now: Instant) {
+        self.destroy_surface(now);
+        self.retries = 0;
         if self.has_content(now) {
             self.ensure_surface();
             self.dirty = true;
@@ -611,15 +704,14 @@ impl Previews {
     }
 
     pub fn shutdown(&mut self) {
-        if self.timer_armed {
+        if self.timer.take().is_some() {
             window::kill_timer(self.owner, TIMER_SNAP_STACK);
-            self.timer_armed = false;
         }
-        self.destroy_surface();
+        self.destroy_surface(Instant::now());
     }
 
     /// Makes the window and its surface (hidden) if there are none, with every card's
-    /// thumbnail.
+    /// thumbnail. On failure the next `sync` tries again (`RETRY`, `MAX_RETRIES`).
     fn ensure_surface(&mut self) {
         if self.surface.is_some() {
             return;
@@ -631,6 +723,7 @@ impl Previews {
             Ok(h) => h,
             Err(e) => {
                 crate::storage::log(&format!("snap stack: cannot create the window: {e}"));
+                self.failed();
                 return;
             }
         };
@@ -639,12 +732,16 @@ impl Previews {
             Err(e) => {
                 crate::storage::log(&format!("snap stack: renderer: {e}"));
                 win::destroy(hwnd);
+                self.failed();
                 return;
             }
         };
+        self.uploaded.clear();
         for it in self.model.stack().items() {
             if let Some(p) = self.model.payload(it.id) {
-                if !gpu.set_image(it.id.0, &p.bitmap, scale) {
+                if gpu.set_image(it.id.0, &p.bitmap, scale) {
+                    self.uploaded.insert(it.id);
+                } else {
                     crate::storage::log("snap stack: cannot make a card's thumbnail");
                 }
             }
@@ -657,15 +754,32 @@ impl Previews {
             rect,
             shown: false,
         });
+        self.rebuild = false;
     }
 
-    fn destroy_surface(&mut self) {
+    fn failed(&mut self) {
+        self.rebuild = true;
+        self.retries = self.retries.saturating_add(1);
+        if self.retries == MAX_RETRIES {
+            crate::storage::log("snap stack: giving up on the window until the next snap");
+        }
+    }
+
+    /// The window goes (its GPU side first). Nothing it showed can be hovered, pressed
+    /// or focused any more: a destroyed window sends no `WM_MOUSELEAVE`.
+    fn destroy_surface(&mut self, now: Instant) {
         if let Some(mut s) = self.surface.take() {
             dj_win::system::set_topmost_companion(None);
             s.gpu = None;
             win::destroy(s.hwnd);
         }
+        self.uploaded.clear();
+        self.buttons_shown.clear();
+        self.last_region.clear();
         self.pressed = None;
+        let stack = self.model.stack_mut();
+        stack.set_hover(None, now);
+        stack.set_focus(None, now);
     }
 
     fn place(&mut self, now: Instant) {
@@ -676,7 +790,7 @@ impl Previews {
         let scale = win::dpi_at(ax, ay) as f32 / 96.0;
         if (scale - old_scale).abs() > f32::EPSILON {
             // The island is on a monitor with another DPI now.
-            self.relayout(now);
+            self.rebuild_surface(now);
             return;
         }
         let rect = stack::place(ax, ay, scale, win::work_area_at(ax, ay));
@@ -687,27 +801,27 @@ impl Previews {
     }
 
     /// Shows or hides the window for the current state (drawing before it shows, so a
-    /// stale frame never flashes), keeps the countdowns paused while it is hidden, frees
-    /// everything once nothing is left to show, and arms the timer.
+    /// stale frame never flashes), frees everything once nothing is left to show, keeps
+    /// the countdowns paused exactly while nothing is on screen, and arms the timer.
     fn sync(&mut self, now: Instant) {
-        let content = self.has_content(now);
-        if !content {
-            self.destroy_surface();
-        } else if self.rebuild && self.allowed {
-            self.rebuild = false;
+        if self.surface.is_none() && self.can_retry() && self.has_content(now) {
             self.ensure_surface();
             self.dirty = true;
         }
-        let want = self.allowed && content && self.surface.is_some();
-        let shown = self.shown();
-        if want && !shown {
-            self.model.stack_mut().set_hidden(false, now);
+        if !self.has_content(now) {
+            self.destroy_surface(now);
+            self.rebuild = false;
+        }
+        let want = self.allowed && self.surface.is_some() && self.has_content(now);
+        if want && !self.shown() {
+            // Drawn while still hidden; a lost device leaves nothing to show (and the
+            // countdowns paused) until the rebuild.
             self.draw(now, 0.0);
             if let Some(s) = self.surface.as_mut() {
                 win::show(s.hwnd);
                 s.shown = true;
             }
-        } else if !want && shown {
+        } else if !want && self.shown() {
             if let Some(s) = self.surface.as_mut() {
                 win::hide(s.hwnd);
                 s.shown = false;
@@ -716,57 +830,83 @@ impl Previews {
             let stack = self.model.stack_mut();
             stack.set_hover(None, now);
             stack.set_focus(None, now);
+            // A card still fading out doesn't keep a hidden window alive.
+            if self.model.stack().is_empty() {
+                self.motion = Motion::new();
+                self.parts.clear();
+            }
+            if !self.has_content(now) {
+                self.destroy_surface(now);
+            }
         }
-        if !want {
-            self.model.stack_mut().set_hidden(true, now);
-        }
+        let hidden = !self.shown();
+        self.model.stack_mut().set_hidden(hidden, now);
         self.sync_timer(now);
     }
 
     /// 10 Hz while a visible countdown runs; otherwise a one-shot to the next change
-    /// (the notice going away); otherwise nothing.
-    fn sync_timer(&mut self, now: Instant) {
+    /// (the notice going away, shown or not) or to a retry; otherwise nothing.
+    fn wanted_timer(&self, now: Instant) -> Option<Armed> {
         let stack = self.model.stack();
-        let ms = if !self.shown() {
-            None
-        } else if stack.any_running() {
-            Some(TICK_MS)
-        } else {
-            stack
-                .next_change(now)
-                .map(|d| (d.as_millis() as u32).saturating_add(5).max(1))
-        };
-        match ms {
-            Some(ms) => {
-                window::set_timer(self.owner, TIMER_SNAP_STACK, ms);
-                self.timer_armed = true;
-            }
-            None if self.timer_armed => {
-                window::kill_timer(self.owner, TIMER_SNAP_STACK);
-                self.timer_armed = false;
-            }
-            None => {}
+        if self.shown() && stack.any_running() {
+            return Some(Armed::Tick);
+        }
+        let change = self
+            .surface
+            .as_ref()
+            .and(stack.next_change(now))
+            .map(|d| now + d);
+        let retry = (self.surface.is_none() && self.can_retry()).then(|| now + RETRY);
+        match (change, retry) {
+            (Some(a), Some(b)) => Some(Armed::At(a.min(b))),
+            (a, b) => a.or(b).map(Armed::At),
         }
     }
 
-    /// `TIMER_SNAP_STACK`: expire cards and redraw the rings.
+    /// Arms `TIMER_SNAP_STACK` for `wanted_timer`, leaving a timer that is already right
+    /// alone: re-arming on every input would keep the tick from ever firing.
+    fn sync_timer(&mut self, now: Instant) {
+        let want = self.wanted_timer(now);
+        let same = match (self.timer, want) {
+            (Some(Armed::Tick), Some(Armed::Tick)) | (None, None) => true,
+            (Some(Armed::At(a)), Some(Armed::At(b))) => a.max(b) - a.min(b) < TIMER_SLACK,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        match want {
+            Some(Armed::Tick) => window::set_timer(self.owner, TIMER_SNAP_STACK, TICK_MS),
+            Some(Armed::At(t)) => {
+                let ms = (t.saturating_duration_since(now).as_millis() as u32).saturating_add(5);
+                window::set_timer(self.owner, TIMER_SNAP_STACK, ms.max(1));
+            }
+            None => window::kill_timer(self.owner, TIMER_SNAP_STACK),
+        }
+        self.timer = want;
+    }
+
+    /// `TIMER_SNAP_STACK`: expire cards, redraw the rings, retry a lost window.
     pub fn timer(&mut self, now: Instant) {
         window::kill_timer(self.owner, TIMER_SNAP_STACK);
-        self.timer_armed = false;
+        self.timer = None;
         self.model.tick(now);
         self.dirty = true;
         self.sync(now);
     }
 
-    /// `Event::Wake`: the worker may have results.
-    pub fn drain(&mut self, now: Instant) {
-        self.model.drain(now);
+    /// `Event::Wake`: the worker may have results. Returns the images it saved and where,
+    /// for the thumb.
+    pub fn drain(&mut self, now: Instant) -> Vec<(Arc<Bitmap>, PathBuf)> {
+        let saved = self.model.drain(now);
         self.log_errors();
         self.dirty = true;
         self.sync(now);
+        saved
     }
 
-    /// The tray's "Focus Snap previews": the keyboard goes to the newest card.
+    /// The tray's "Focus Snap previews": the keyboard goes to the newest card, if the
+    /// window really got the foreground.
     pub fn focus_keyboard(&mut self, now: Instant) {
         let Some(hwnd) = self.surface.as_ref().filter(|s| s.shown).map(|s| s.hwnd) else {
             return;
@@ -774,24 +914,32 @@ impl Previews {
         let Some(first) = self.model.stack().items().first().map(|it| it.id) else {
             return;
         };
-        self.model
-            .stack_mut()
-            .set_focus(Some(Focus::Card(first)), now);
         win::focus(hwnd);
+        if win::has_foreground(hwnd) {
+            self.model
+                .stack_mut()
+                .set_focus(Some(Focus::Card(first)), now);
+        } else {
+            crate::storage::log("snap stack: could not take the keyboard");
+        }
         self.dirty = true;
         self.sync(now);
     }
 
+    /// What a client point lands on. A button that isn't on screen counts as its card.
     fn hit_at(&self, x: i32, y: i32, now: Instant) -> Option<Hit> {
         let scale = self.surface.as_ref().map_or(1.0, |s| s.scale);
         let layout = stack::layout(self.model.stack(), now);
-        stack::hit(&layout, x as f32 / scale, y as f32 / scale)
+        match stack::hit(&layout, x as f32 / scale, y as f32 / scale) {
+            Some(Hit::Action(id, _)) if !self.buttons_shown.contains(&id) => Some(Hit::Card(id)),
+            hit => hit,
+        }
     }
 
     pub fn input(&mut self, input: PreviewInput, now: Instant) {
-        if !self.shown() {
+        let Some(hwnd) = self.surface.as_ref().filter(|s| s.shown).map(|s| s.hwnd) else {
             return;
-        }
+        };
         match input {
             PreviewInput::Move { x, y } => {
                 let hover = match self.hit_at(x, y, now) {
@@ -824,6 +972,8 @@ impl Previews {
                     KeyCmd::Bar(action) => self.model.bar(action, now),
                 }
             }
+            // A loss that was queued before the tray handed the keyboard back is stale.
+            PreviewInput::FocusLost if win::has_foreground(hwnd) => {}
             PreviewInput::FocusLost => self.model.stack_mut().set_focus(None, now),
         }
         self.log_errors();
@@ -838,15 +988,24 @@ impl Previews {
         }
         self.dirty = false;
         self.draw(now, dt);
-        let finished = self.motion.take_finished();
+        // Thumbnails and parts of cards that are gone and done fading (or that were
+        // evicted before they were ever drawn) are freed.
+        self.motion.take_finished();
+        let live: HashSet<ItemId> = self
+            .model
+            .stack()
+            .items()
+            .iter()
+            .map(|it| it.id)
+            .chain(self.motion.cards().iter().map(|m| m.id))
+            .collect();
         if let Some(gpu) = self.surface.as_mut().and_then(|s| s.gpu.as_mut()) {
-            for id in &finished {
+            for id in self.uploaded.difference(&live) {
                 gpu.drop_image(id.0);
             }
         }
-        for id in &finished {
-            self.parts.remove(id);
-        }
+        self.uploaded.retain(|id| live.contains(id));
+        self.parts.retain(|id, _| live.contains(id));
         self.sync(now);
     }
 
@@ -863,12 +1022,17 @@ impl Previews {
             return;
         };
         let st = self.model.stack();
-        win::set_regions(
-            s.hwnd,
-            &region(st, &layout, &drawn, s.scale),
-            (stack::CARD_R * s.scale).round() as i32,
-        );
+        let rects = region(st, &layout, &drawn, s.scale);
+        let mut both = rects.clone();
+        both.extend_from_slice(&self.last_region);
+        win::set_regions(s.hwnd, &both, (stack::CARD_R * s.scale).round() as i32);
+        self.last_region = rects;
         let cards = scene_cards(st, &drawn, &self.parts, now);
+        self.buttons_shown = cards
+            .iter()
+            .filter(|c| c.show_actions)
+            .map(|c| ItemId(c.id))
+            .collect();
         let count = format!("{} selected", st.selected().len());
         let focus = st.focus();
         let buttons: Vec<PreviewButton> = layout
@@ -898,11 +1062,11 @@ impl Previews {
             None => Ok(()),
         };
         match result {
-            Ok(()) => {}
+            Ok(()) => self.retries = 0,
             Err(RenderError::DeviceLost) => {
                 crate::storage::log("snap stack: GPU device lost; rebuilding");
-                self.destroy_surface();
-                self.rebuild = true;
+                self.destroy_surface(now);
+                self.failed();
             }
             Err(e) => crate::storage::log(&format!("snap stack: render: {e}")),
         }
@@ -1367,5 +1531,77 @@ mod tests {
         };
         let cards = scene_cards(r.m.stack(), &[ghost], &parts, r.t0);
         assert!(cards[0].status.is_none() && !cards[0].show_actions && !cards[0].pinned);
+    }
+
+    #[test]
+    fn the_thumbs_save_marks_the_card_showing_the_same_image() {
+        let mut r = rig();
+        let shot = payload(1);
+        let same =
+            r.m.add(shot.clone(), CardStatus::Copied, None, r.t0)
+                .unwrap();
+        let other = r.add(2);
+        let path = r.dir.path().join("thumb.png");
+        r.m.mark_saved(&shot.bitmap, &path);
+        assert_eq!(r.saved(same), Some(path));
+        assert_eq!(r.status(same), CardStatus::Saved);
+        assert_eq!(r.saved(other), None);
+        assert_eq!(r.status(other), CardStatus::Copied);
+    }
+
+    #[test]
+    fn a_cards_save_is_reported_for_the_thumb() {
+        let mut r = rig();
+        let shot = payload(5);
+        let id =
+            r.m.add(shot.clone(), CardStatus::Copied, None, r.t0)
+                .unwrap();
+        r.m.card(id, CardAction::Save, r.t0);
+        let mut reported = Vec::new();
+        for _ in 0..500 {
+            reported.extend(r.m.drain(r.t0));
+            if !reported.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(reported.len(), 1);
+        assert!(Arc::ptr_eq(&reported[0].0, &shot.bitmap));
+        assert_eq!(Some(reported[0].1.clone()), r.saved(id));
+    }
+
+    #[test]
+    fn a_card_stays_busy_until_its_save_and_its_copy_are_both_done() {
+        let mut r = rig();
+        let id = r.add(1);
+        r.m.saving.push(id);
+        r.m.copying.push(id);
+        r.m.sync_busy(id, r.t0);
+        assert!(r.m.stack().get(id).unwrap().busy);
+        r.m.saving.clear();
+        r.m.sync_busy(id, r.t0);
+        assert!(r.m.stack().get(id).unwrap().busy, "the copy is still out");
+        r.m.copying.clear();
+        r.m.sync_busy(id, r.t0);
+        assert!(!r.m.stack().get(id).unwrap().busy);
+    }
+
+    #[test]
+    fn the_notice_gets_room_for_its_smaller_corners() {
+        let mut r = rig();
+        for i in 0..5 {
+            let id = r.add(i);
+            r.m.card(id, CardAction::Pin, r.t0);
+        }
+        assert_eq!(r.m.add(payload(9), CardStatus::Copied, None, r.t0), None);
+        let layout = stack::layout(r.m.stack(), r.t0);
+        let n = layout.notice.unwrap();
+        let rects = region(r.m.stack(), &layout, &[], 1.0);
+        assert!(rects.contains(&(
+            n.x as i32 - 3,
+            n.y as i32 - 3,
+            (n.x + n.w) as i32 + 3,
+            (n.y + n.h) as i32 + 3
+        )));
     }
 }

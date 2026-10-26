@@ -12,6 +12,7 @@ Built 2026-10-26 by the coordinator (Claude Opus 5.5) with four parallel Claude 
 | D store | `app/src/preview_store.rs`: shared payloads (`Arc`), one bounded IO thread for saves and encodes, reveal with a missing-file check; `Shot` now shares its image | Sonnet worker |
 | F wiring | `app/src/previews.rs` (controller: `Model` + window/surface) and `app.rs`; topmost companion in `dj_win::system`; review and fixes across A–D | coordinator |
 | 7b review | read-only review of the 7b follow-up fixes (verdict: ship; one gap fixed, see below) | Sonnet reviewer |
+| F review | read-only review of the wiring (no high-severity bug; the medium/low findings are fixed, see "Review of the wiring") | Sonnet reviewer |
 
 ## Checklist (Stage 7c scope in `progress.md`)
 
@@ -30,6 +31,22 @@ Legend: ✅ done and covered by headless tests · 🟡 done, needs the live test
 
 Also in this branch: the 7b follow-up fixes (pixelate fails closed; double-click stays off the toolbar/picker) and, from the 7b review, **a double-click on a selection handle now grabs the handle** instead of re-editing text under it (`double_click_on_a_selection_handle_grabs_it_instead_of_editing_text`, verified to fail without the fix).
 
+## Review of the wiring
+
+A Sonnet reviewer read part F after it was written (no high-severity bug). Fixed:
+
+- **The 10 Hz tick was re-armed on every input**, so a card could not expire while the mouse kept moving over the stack. The timer is now armed only when what it is for changes (`Armed::Tick` / `Armed::At`, 20 ms slack for one-shots).
+- **Hover/focus survived a window rebuild** (DPI or display change, lost device), leaving a card paused for good. `destroy_surface` now clears press, hover and focus.
+- **A lost device or a failed window left cards counting down unseen** and never retried. The countdowns now pause exactly while nothing is on screen (`set_hidden(!shown)` after every sync), and a lost/failed window is retried every 500 ms, at most 3 times in a row (reset by the next snap or relayout).
+- **A stale `FocusLost`** (queued while the tray menu had the foreground) could clear the focus the tray had just given. It is ignored while the window holds the foreground, and the focus is only set if `SetForegroundWindow` actually worked.
+- **Buttons that weren't drawn could be tapped** (touch/pen press before the hover frame). A press on a hidden button now counts as a press on its card.
+- The window region is unioned with the previous frame's, so a moving card isn't clipped while the swap chain shows a late frame; the notice gets 3 px of room for its r 8 corners.
+- Thumbnails of cards evicted before they were ever drawn, ghosts of a hidden empty stack and a hidden notice-only window are now freed; a DPI change rebuilds once, not twice.
+- `busy` now lasts until both a card's save and its copy-encode are done.
+- Saving from the thumb marks the card showing the same image as saved (and the other way round), so the second button reads `open` instead of writing a duplicate file.
+
+Left as they are: `open` failing for another reason than a missing file is only logged; a shot whose PNG is encoded later is under-counted by its PNG size.
+
 ## Commands and results
 
 Worktree-local target (`CARGO_TARGET_DIR=…/stage-7c-snap-stack/target`), env from `dj-build-env.sh`:
@@ -38,10 +55,10 @@ Worktree-local target (`CARGO_TARGET_DIR=…/stage-7c-snap-stack/target`), env f
 |---|---|
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-| `cargo test --workspace` | **536 passed, 0 failed** (daijobu 75, dj-core 317, dj-render 54, dj-sweep 35, dj-vitals 26, dj-win 21, dj-capture 8). Base before 7c: 393. |
+| `cargo test --workspace` | **541 passed, 0 failed** (daijobu 80, dj-core 317, dj-render 54, dj-sweep 35, dj-vitals 26, dj-win 21, dj-capture 8). Base before 7c: 393. |
 | `cargo build --release` | clean, `target/release/daijobu.exe` (10.9 MB) |
 
-New tests: core 69 (`snap_stack`) + 3 config, render 21 (CPU raster), win 12, store 19 + 2 snap, controller 15, 7b handle 1.
+New tests: core 69 (`snap_stack`) + 3 config, render 21 (CPU raster), win 12, store 19 + 3 snap, controller 19, 7b handle 1.
 
 ## How to run
 
@@ -74,7 +91,6 @@ Keyboard: tray menu → **Focus Snap previews** (greyed without cards). Without 
 - **No fan and no hover lift.** One row, always spread out (the contract makes the fan optional).
 - **Esc doesn't hand the keyboard back** to the previous app; the foreground before the tray menu is the tray itself, so there is nothing useful to restore. The focus ring and its pause go away at once.
 - A notice can show on an otherwise empty window (an oversized shot with no cards).
-- If a card's PNG is encoded later (only after a failed first encode), the stack under-counts that card by its PNG size.
 - 7b review leftovers (not changed here): a pixelate that can't be drawn shows solid black in the editor and Ctrl+C/S then refuse with only a log line; the error branch of `Snapper::end` has no test.
 - Win32 lost-capture recovery for the **overlay** (7b) is still unverified; the stack window turns `WM_CAPTURECHANGED`/`WM_CANCELMODE` into a leave.
 
