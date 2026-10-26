@@ -739,7 +739,12 @@ impl Editor {
 
     fn double_click(&mut self, x: i32, y: i32, m: &dyn TextMeasure) -> Outcome {
         let (fx, fy) = (x as f32, y as f32);
-        if self.tool == Tool::Select && self.text.is_none() && self.idle() {
+        if self.tool == Tool::Select
+            && self.text.is_none()
+            && self.idle()
+            && self.picker.is_none()
+            && !self.toolbar().contains(fx, fy)
+        {
             let top = self
                 .selection
                 .contains(x, y)
@@ -1568,6 +1573,104 @@ mod tests {
         assert!(e.shapes().is_empty());
         key(&mut e, Key::ctrl(letter('Z')));
         assert_eq!(text_of(&e, 0), "abc");
+    }
+
+    #[test]
+    fn double_click_on_toolbar_does_not_edit_committed_text() {
+        let mut e = editor(Tool::Text);
+        e.selection = e.display().rect;
+        let bar = e.toolbar();
+        assert_eq!(bar.place, Place::Inside);
+        for (point, color, out) in [
+            (
+                bar.button(Item::Swatch(3)).unwrap().center(),
+                ColorChoice::Swatch(3),
+                Outcome::Redraw,
+            ),
+            (
+                (bar.rect.x + 1.0, bar.rect.y + 1.0),
+                ColorChoice::Swatch(0),
+                Outcome::Nothing,
+            ),
+        ] {
+            let mut e = e.clone();
+            let (x, y) = (point.0 as i32, point.1 as i32);
+            click(&mut e, x, bar.rect.y as i32 - 10);
+            typed(&mut e, "abc");
+            key(&mut e, Key::plain(KeyCode::Enter));
+            typed(&mut e, "def");
+            key(&mut e, Key::plain(KeyCode::Esc));
+            key(&mut e, Key::plain(letter('V')));
+            assert_eq!(hit_test(e.shapes(), x as f32, y as f32, &M), Some(0));
+            assert_eq!(e.input(EditInput::DoubleClick { x, y }, &M), out);
+            e.input(EditInput::Release { x, y }, &M);
+            assert!(!e.is_typing());
+            assert_eq!(e.color_choice(), color);
+            assert_eq!(text_of(&e, 0), "abc\ndef");
+            assert_eq!(e.history.undo_len(), 1);
+        }
+    }
+
+    #[test]
+    fn double_click_on_picker_does_not_edit_committed_text() {
+        let mut e = editor(Tool::Text);
+        e.selection = e.display().rect;
+        let p = e.picker_layout();
+        for point in [
+            p.sv.center(),
+            p.hue.center(),
+            (p.rect.x + 1.0, p.rect.y + 1.0),
+        ] {
+            let mut e = e.clone();
+            let (x, y) = (point.0 as i32, point.1 as i32);
+            click(&mut e, x, y);
+            typed(&mut e, "abc");
+            key(&mut e, Key::plain(KeyCode::Esc));
+            key(&mut e, Key::plain(letter('V')));
+            button(&mut e, Item::Custom);
+            assert_eq!(hit_test(e.shapes(), x as f32, y as f32, &M), Some(0));
+            e.input(EditInput::Motion { x, y }, &M);
+            let out = e.input(EditInput::DoubleClick { x, y }, &M);
+            assert!(!e.is_typing());
+            assert!(e.picker().is_some());
+            if let Some(part) = p.part_at(x as f32, y as f32) {
+                assert!(matches!(e.drag, Drag::Picker { part: actual, .. } if actual == part));
+                assert_ne!(e.custom(), DEFAULT_CUSTOM);
+                assert_eq!(out, Outcome::Redraw);
+            } else {
+                assert!(matches!(e.drag, Drag::Held));
+                assert_eq!(out, Outcome::Nothing);
+            }
+            e.input(EditInput::Release { x, y }, &M);
+            assert_eq!(text_of(&e, 0), "abc");
+            assert_eq!(e.history.undo_len(), 1);
+        }
+    }
+
+    #[test]
+    fn double_click_outside_picker_closes_it_before_re_editing_text() {
+        let mut e = editor(Tool::Text);
+        click(&mut e, 200, 200);
+        typed(&mut e, "abc");
+        key(&mut e, Key::plain(KeyCode::Esc));
+        key(&mut e, Key::plain(letter('V')));
+        button(&mut e, Item::Custom);
+        assert!(!e.picker().unwrap().0.contains(211.0, 200.0));
+        let double_click = EditInput::DoubleClick { x: 211, y: 200 };
+        let release = EditInput::Release { x: 211, y: 200 };
+        assert_eq!(e.input(double_click, &M), Outcome::Redraw);
+        e.input(release, &M);
+        assert!(e.picker().is_none());
+        assert!(!e.is_typing());
+        assert_eq!(text_of(&e, 0), "abc");
+        assert_eq!(e.history.undo_len(), 1);
+        assert_eq!(e.input(double_click, &M), Outcome::Redraw);
+        e.input(release, &M);
+        assert_eq!(e.caret(), Some(Caret { shape: 0, index: 1 }));
+        typed(&mut e, "X");
+        key(&mut e, Key::plain(KeyCode::Esc));
+        assert_eq!(text_of(&e, 0), "aXbc");
+        assert_eq!(e.history.undo_len(), 2);
     }
 
     #[test]
