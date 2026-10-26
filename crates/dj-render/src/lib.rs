@@ -5,6 +5,7 @@ mod fonts;
 mod fx;
 mod gpu;
 mod icons;
+mod markup;
 mod music;
 mod paint;
 mod settings;
@@ -14,5 +15,6 @@ mod timer;
 mod vitals;
 
 pub use gpu::{RenderError, Renderer};
+pub use markup::{render_output, TextMetrics};
 pub use paint::{Frame, MusicFrame};
-pub use snap::{SnapFrame, SnapOverlay, SnapScene};
+pub use snap::{EditScene, SnapFrame, SnapOverlay, SnapScene};

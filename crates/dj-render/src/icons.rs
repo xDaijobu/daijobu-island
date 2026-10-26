@@ -1,7 +1,9 @@
-//! Tiny stroke icons for the feature tiles, drawn in a +-10 unit box.
+//! Tiny stroke icons for the feature tiles and the Snap toolbar, drawn in a +-10 unit
+//! box.
 
 use dj_core::features::Icon;
 use dj_core::osd::VolumeIcon;
+use dj_core::snap_edit::{Item, Tool};
 use skia_safe::{Canvas, Paint, Path, PathBuilder, Point, RRect, Rect};
 
 fn poly(pts: &[(f32, f32)], close: bool) -> Path {
@@ -273,5 +275,137 @@ pub fn draw_gear(canvas: &Canvas, cx: f32, cy: f32, size: f32, paint: &Paint) {
     }
     canvas.draw_path(&poly(&pts, true), paint);
     canvas.draw_circle((0.0, 0.0), 2.6, paint);
+    canvas.restore();
+}
+
+/// The Snap toolbar's glyphs (tools, undo/redo, copy, save, close), in the same box and
+/// stroke style as the tile icons. Swatches and sizes are drawn by the toolbar itself.
+pub fn draw_toolbar_icon(canvas: &Canvas, item: Item, cx: f32, cy: f32, size: f32, paint: &Paint) {
+    canvas.save();
+    canvas.translate((cx, cy));
+    let k = size / 22.0;
+    canvas.scale((k, k));
+    match item {
+        Item::Tool(Tool::Select) => {
+            canvas.draw_path(
+                &poly(
+                    &[
+                        (-5.0, -8.5),
+                        (-5.0, 6.0),
+                        (-1.5, 2.5),
+                        (1.5, 8.5),
+                        (4.0, 7.5),
+                        (1.0, 1.5),
+                        (5.5, 1.5),
+                    ],
+                    true,
+                ),
+                paint,
+            );
+        }
+        Item::Tool(Tool::Pen) => {
+            canvas.draw_path(
+                &poly(
+                    &[
+                        (-8.0, 8.0),
+                        (-7.0, 3.5),
+                        (3.5, -7.0),
+                        (7.0, -3.5),
+                        (-3.5, 7.0),
+                    ],
+                    true,
+                ),
+                paint,
+            );
+            line(canvas, (1.0, -4.5), (4.5, -1.0), paint);
+        }
+        Item::Tool(Tool::Line) => line(canvas, (-7.0, 7.0), (7.0, -7.0), paint),
+        Item::Tool(Tool::Arrow) => {
+            line(canvas, (-7.0, 7.0), (6.5, -6.5), paint);
+            canvas.draw_path(
+                &poly(&[(-0.5, -7.0), (7.0, -7.0), (7.0, 0.5)], false),
+                paint,
+            );
+        }
+        Item::Tool(Tool::Rect) => {
+            canvas.draw_rect(Rect::from_xywh(-7.5, -6.0, 15.0, 12.0), paint);
+        }
+        Item::Tool(Tool::Marker) => {
+            canvas.draw_path(
+                &poly(&[(-6.5, 3.0), (2.5, -6.0), (6.5, -2.0), (-2.5, 7.0)], true),
+                paint,
+            );
+            line(canvas, (-9.0, 9.0), (1.0, 9.0), paint);
+        }
+        Item::Tool(Tool::Text) => {
+            line(canvas, (-6.5, -7.0), (6.5, -7.0), paint);
+            line(canvas, (0.0, -7.0), (0.0, 7.5), paint);
+            line(canvas, (-2.5, 7.5), (2.5, 7.5), paint);
+        }
+        Item::Tool(Tool::Pixelate) => {
+            canvas.draw_rect(Rect::from_xywh(-7.5, -7.5, 15.0, 15.0), paint);
+            for t in [-2.5, 2.5] {
+                line(canvas, (t, -7.5), (t, 7.5), paint);
+                line(canvas, (-7.5, t), (7.5, t), paint);
+            }
+        }
+        Item::Tool(Tool::Step) => {
+            canvas.draw_circle((0.0, 0.0), 8.0, paint);
+            canvas.draw_path(
+                &poly(&[(-2.0, -2.0), (0.5, -4.5), (0.5, 4.5)], false),
+                paint,
+            );
+            line(canvas, (-2.0, 4.5), (3.0, 4.5), paint);
+        }
+        Item::Undo | Item::Redo => {
+            if item == Item::Redo {
+                canvas.scale((-1.0, 1.0));
+            }
+            // An arc over the top, with the head at its left end pointing down.
+            canvas.draw_arc(
+                Rect::from_xywh(-5.0, -4.5, 12.0, 13.0),
+                180.0,
+                225.0,
+                false,
+                paint,
+            );
+            canvas.draw_path(
+                &poly(&[(-8.0, -0.5), (-5.0, 3.0), (-2.0, -0.5)], false),
+                paint,
+            );
+        }
+        Item::Copy => {
+            canvas.draw_rrect(rrect(-7.5, -3.5, 10.5, 11.0, 2.0), paint);
+            canvas.draw_path(
+                &poly(
+                    &[
+                        (-3.5, -3.5),
+                        (-3.5, -7.5),
+                        (7.0, -7.5),
+                        (7.0, 3.0),
+                        (3.0, 3.0),
+                    ],
+                    false,
+                ),
+                paint,
+            );
+        }
+        Item::Save => {
+            line(canvas, (0.0, -8.0), (0.0, 3.0), paint);
+            canvas.draw_path(
+                &poly(&[(-4.0, -1.0), (0.0, 3.0), (4.0, -1.0)], false),
+                paint,
+            );
+            canvas.draw_path(
+                &poly(&[(-7.5, 3.0), (-7.5, 7.5), (7.5, 7.5), (7.5, 3.0)], false),
+                paint,
+            );
+        }
+        Item::Close => {
+            line(canvas, (-5.5, -5.5), (5.5, 5.5), paint);
+            line(canvas, (5.5, -5.5), (-5.5, 5.5), paint);
+        }
+        Item::Swatch(_) | Item::Custom | Item::Size(_) => {}
+    }
     canvas.restore();
 }

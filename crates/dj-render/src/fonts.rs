@@ -5,7 +5,7 @@ use skia_safe::{Data, Font, FontHinting, FontMgr, FontStyle, Typeface};
 use std::collections::HashMap;
 
 static GEIST_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Geist-Regular.ttf");
-static GEIST_MEDIUM: &[u8] = include_bytes!("../../../assets/fonts/Geist-Medium.ttf");
+pub(crate) static GEIST_MEDIUM: &[u8] = include_bytes!("../../../assets/fonts/Geist-Medium.ttf");
 static GEIST_SEMIBOLD: &[u8] = include_bytes!("../../../assets/fonts/Geist-SemiBold.ttf");
 static MONO_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/GeistMono-Regular.ttf");
 static MONO_MEDIUM: &[u8] = include_bytes!("../../../assets/fonts/GeistMono-Medium.ttf");
