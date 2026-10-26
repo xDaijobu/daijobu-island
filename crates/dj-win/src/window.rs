@@ -90,6 +90,8 @@ pub enum Event {
     SweepReady,
     /// Input on the Snap overlay window (see [`crate::overlay`]).
     Snap(crate::overlay::SnapInput),
+    /// Input on the Snap preview stack's window (see [`crate::previews`]).
+    Previews(crate::previews::PreviewInput),
     /// The shell moved the AppBars around (see [`crate::appbar`]): set the strip again.
     AppBarMoved,
 }
