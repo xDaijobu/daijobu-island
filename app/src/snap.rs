@@ -98,6 +98,9 @@ pub struct Shot {
     /// None if encoding failed; copy and save try again.
     png: Option<Vec<u8>>,
     pub status: ThumbStatus,
+    /// Where the last save went. The thumb's save button then reads "open" and reveals
+    /// this file instead of saving a second copy.
+    pub saved: Option<PathBuf>,
     countdown: Countdown,
 }
 
@@ -154,6 +157,7 @@ impl Snapper {
             bitmap,
             png: None,
             status: ThumbStatus::Copied,
+            saved: None,
             countdown: Countdown::start(Duration::from_secs(THUMB_SECS), now),
         };
         let result = copy_shot(&mut shot, self.clipboard.as_mut());
@@ -176,11 +180,13 @@ impl Snapper {
     pub fn save(&mut self, dir: &Path, stamp: Stamp) -> Result<PathBuf, String> {
         let shot = self.shot.as_mut().ok_or("no shot")?;
         let result = ensure_png(shot).and_then(|png| write_new(dir, stamp, png));
-        shot.status = if result.is_ok() {
-            ThumbStatus::Saved
-        } else {
-            ThumbStatus::SaveFailed
-        };
+        match &result {
+            Ok(path) => {
+                shot.status = ThumbStatus::Saved;
+                shot.saved = Some(path.clone());
+            }
+            Err(_) => shot.status = ThumbStatus::SaveFailed,
+        }
         result
     }
 
@@ -471,6 +477,7 @@ mod tests {
         let first = s.save(&target, STAMP).unwrap();
         assert_eq!(first, target.join("snap-2026-10-26_140309.png"));
         assert_eq!(s.shot().unwrap().status, ThumbStatus::Saved);
+        assert_eq!(s.shot().unwrap().saved.as_ref(), Some(&first));
         let second = s.save(&target, STAMP).unwrap();
         assert_eq!(second, target.join("snap-2026-10-26_140309-2.png"));
         let bytes = fs::read(&first).unwrap();

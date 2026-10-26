@@ -765,6 +765,7 @@ impl App {
                 width: shot.bitmap.width,
                 height: shot.bitmap.height,
                 status: shot.status,
+                saved: shot.saved.is_some(),
             });
         }
     }
@@ -775,6 +776,15 @@ impl App {
             SnapAction::Copy => {
                 if let Err(e) = self.snapper.copy() {
                     storage::log(&format!("snap: copy failed: {e}"));
+                }
+            }
+            // Once saved, the button reads "open": show the file in Explorer.
+            SnapAction::Save if self.snapper.shot().is_some_and(|s| s.saved.is_some()) => {
+                let path = self.snapper.shot().and_then(|s| s.saved.clone());
+                if let Some(path) = path {
+                    if let Err(e) = dj_sweep::Ops::reveal(&dj_sweep::WinOps, &path) {
+                        storage::log(&format!("snap: cannot open explorer: {e}"));
+                    }
                 }
             }
             SnapAction::Save => {

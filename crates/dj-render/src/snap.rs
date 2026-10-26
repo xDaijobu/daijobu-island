@@ -36,6 +36,8 @@ pub struct SnapFrame {
     pub width: u32,
     pub height: u32,
     pub status: ThumbStatus,
+    /// Saved already: the save button reads "open" (reveal in Explorer).
+    pub saved: bool,
 }
 
 /// A raster BGRA image of `b` (copied).
@@ -151,9 +153,14 @@ impl Painter {
         // Buttons: surface2 chips; the hovered one turns accent.
         let btn = self.fonts.font(&t.font_label, Weight::Medium, 10.0 * s);
         let hover = f.view.snap_hover;
+        let save = if f.snap.is_some_and(|i| i.saved) {
+            "open"
+        } else {
+            "save"
+        };
         for (r, label, action) in [
             (lay::SN_COPY, "copy", dj_core::island::SnapAction::Copy),
-            (lay::SN_SAVE, "save", dj_core::island::SnapAction::Save),
+            (lay::SN_SAVE, save, dj_core::island::SnapAction::Save),
         ] {
             let br = at(r);
             let on = hover == Some(action);
