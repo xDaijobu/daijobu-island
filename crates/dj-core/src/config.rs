@@ -19,7 +19,8 @@ pub struct Config {
     pub snap: SnapConfig,
 }
 
-/// How the island sits at the top of the screen.
+/// How the island sits at the top of the screen. Only the drawn shape differs: the pill
+/// rect, its content and its hit testing are the same in both styles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IslandStyle {
     /// A floating pill, `TOP_MARGIN` below the screen's top edge.
@@ -60,7 +61,7 @@ impl IslandStyle {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IslandConfig {
-    /// `"notch"` (default) or `"pill"`.
+    /// `"notch"` (default) or `"pill"`. Read it through `style()`.
     pub style: String,
 }
 
@@ -380,6 +381,64 @@ mod tests {
     }
 
     #[test]
+    fn island_style_names() {
+        for (s, want) in [
+            ("notch", Some(IslandStyle::Notch)),
+            ("pill", Some(IslandStyle::Pill)),
+            ("Notch", Some(IslandStyle::Notch)),
+            ("PILL", Some(IslandStyle::Pill)),
+            ("  notch  ", Some(IslandStyle::Notch)),
+            ("\tPill\n", Some(IslandStyle::Pill)),
+            ("", None),
+            ("  ", None),
+            ("floating", None),
+            ("notches", None),
+            ("no tch", None),
+        ] {
+            assert_eq!(IslandStyle::parse(s), want, "{s:?}");
+        }
+        for s in [IslandStyle::Pill, IslandStyle::Notch] {
+            assert_eq!(IslandStyle::parse(s.label()), Some(s));
+            assert_ne!(s.toggled(), s);
+            assert_eq!(s.toggled().toggled(), s);
+        }
+        assert_eq!(IslandStyle::Pill.toggled(), IslandStyle::Notch);
+        assert_eq!(IslandStyle::Notch.toggled(), IslandStyle::Pill);
+        assert_eq!(IslandStyle::default(), IslandStyle::Notch);
+        assert_eq!(IslandStyle::Notch.label(), "notch");
+        assert_eq!(IslandStyle::Pill.label(), "pill");
+    }
+
+    #[test]
+    fn island_style_defaults_to_notch_and_reads_the_island_table() {
+        assert_eq!(IslandConfig::default().style, "notch");
+        assert_eq!(IslandConfig::default().style(), IslandStyle::Notch);
+        assert_eq!(Config::default().island.style(), IslandStyle::Notch);
+        // No `[island]` table: notch.
+        let c = Config::parse("theme = \"x\"\n[timer]\nfocus_min = 50\n");
+        assert_eq!(c.island, IslandConfig::default());
+        assert_eq!(c.island.style(), IslandStyle::Notch);
+        let pill = Config::parse("[island]\nstyle = \"pill\"\n");
+        assert_eq!(pill.island.style(), IslandStyle::Pill);
+        assert_eq!(
+            Config::parse("[island]\nstyle = \" Pill \"\n")
+                .island
+                .style(),
+            IslandStyle::Pill
+        );
+        assert_eq!(Config::parse(&pill.to_toml()), pill);
+        // An unknown value means notch, and the rest of the file still reads.
+        let odd = Config::parse("theme = \"paper-zine\"\n[island]\nstyle = \"floating\"\n");
+        assert_eq!(odd.island.style(), IslandStyle::Notch);
+        assert_eq!(odd.theme, "paper-zine");
+        // An `[island]` table without `style` is notch too.
+        assert_eq!(
+            Config::parse("[island]\n").island.style(),
+            IslandStyle::Notch
+        );
+    }
+
+    #[test]
     fn osd_flyout_replacement_defaults_on_and_reads_the_osd_table() {
         assert!(Config::default().osd.replace_volume_flyout);
         assert!(Config::parse("theme = \"x\"").osd.replace_volume_flyout);
@@ -589,5 +648,17 @@ mod tests {
         // Turning the alt off writes "none" and reads back as off.
         c.snap.alt_hotkey = crate::settings::alt_config(None).to_string();
         assert_eq!(Config::parse(&c.to_toml()).snap.alt_hotkey(), None);
+        // The style chip: notch → pill and back, each read back from the file.
+        assert_eq!(c.island.style(), IslandStyle::Notch);
+        c.island.style = c.island.style().toggled().label().to_string();
+        let back = Config::parse(&c.to_toml());
+        assert_eq!(back, c);
+        assert_eq!(back.island.style(), IslandStyle::Pill);
+        assert_eq!(back.snap.save_dir, "D:/shots");
+        c.island.style = c.island.style().toggled().label().to_string();
+        assert_eq!(
+            Config::parse(&c.to_toml()).island.style(),
+            IslandStyle::Notch
+        );
     }
 }

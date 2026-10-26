@@ -3,6 +3,7 @@
 
 mod app;
 mod chime;
+mod notch;
 mod snap;
 mod storage;
 mod sweep;

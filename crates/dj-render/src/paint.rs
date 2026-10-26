@@ -1,10 +1,11 @@
-//! Draws the island: pill body, lofi texture, idle content and the home grid.
+//! Draws the island: body (pill or notch), lofi texture, idle content and the home grid.
 //! Everything is laid out in logical px and multiplied by `scale` explicitly, so
 //! grain, dither and scanlines stay exactly one device pixel.
 
 use crate::fonts::{Fonts, Weight};
 use crate::fx::Effects;
 use crate::icons::{draw_gear, draw_icon, draw_lock, draw_volume_icon};
+use crate::notch::{body_outline, body_path};
 use crate::snap::SnapFrame;
 use crate::vitals::{format_rate, ring_sweep, spark_points};
 use dj_core::color::Rgb;
@@ -166,18 +167,21 @@ impl Painter {
             ((r.y + r.h) * s).round(),
         );
         let radius = v.radius * s;
-        let rrect = RRect::new_rect_xy(rect, radius, radius);
+        // The body: the pill's rounded rect, or the notch grown around it up to the top
+        // edge. Glow and grain cover the whole body; the content layers keep `rect`.
+        let body = body_path(rect, radius, f.island_style, s);
+        let area = *body.bounds();
 
-        canvas.draw_rrect(rrect, &fill_paint(col(t.pill, 1.0)));
+        canvas.draw_path(&body, &fill_paint(col(t.pill, 1.0)));
 
         canvas.save();
-        canvas.clip_rrect(rrect, ClipOp::Intersect, true);
+        canvas.clip_path(&body, ClipOp::Intersect, true);
 
         if t.inner_glow > 0.001 {
             let tint = [t.highlight.r, t.highlight.g, t.highlight.b];
             let shader = self.fx.glow(
-                [rect.left, rect.top],
-                [rect.width(), rect.height()],
+                [area.left, area.top],
+                [area.width(), area.height()],
                 t.dither_levels.round().max(2.0),
                 (t.dither_cell * s).round().max(1.0),
                 t.inner_glow * 1.6,
@@ -186,7 +190,7 @@ impl Painter {
             if let Some(shader) = shader {
                 let mut p = Paint::default();
                 p.set_shader(shader);
-                canvas.draw_rect(rect, &p);
+                canvas.draw_rect(area, &p);
             }
         }
 
@@ -274,15 +278,14 @@ impl Painter {
             if let Some(shader) = self.fx.texture(seed, t.grain, t.scanlines) {
                 let mut p = Paint::default();
                 p.set_shader(shader);
-                canvas.draw_rect(rect, &p);
+                canvas.draw_rect(area, &p);
             }
         }
         canvas.restore();
 
         if t.hairline > 0.001 {
-            let inset = rect.with_inset((0.5, 0.5));
-            let hr = RRect::new_rect_xy(inset, (radius - 0.5).max(0.0), (radius - 0.5).max(0.0));
-            canvas.draw_rrect(hr, &stroke_paint(col(t.text, t.hairline), 1.0));
+            let outline = body_outline(rect, radius, f.island_style, s);
+            canvas.draw_path(&outline, &stroke_paint(col(t.text, t.hairline), 1.0));
         }
     }
 

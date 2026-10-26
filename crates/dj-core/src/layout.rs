@@ -197,10 +197,12 @@ pub fn sw_recycle(i: usize) -> Rect {
 /// gap (it reaches y = 0), but the pill rect, its content and its hit testing stay put.
 pub const TOP_MARGIN: f32 = 6.0;
 /// Notch style: radius of the concave shoulders where the notch meets the top edge.
+/// They stick out this far past each side of the pill.
 pub const NOTCH_SHOULDER: f32 = 8.0;
 
 /// Notch style: the box the notch shape covers for a pill rect (window-logical px):
-/// from the top edge down to the pill's bottom, widened by a shoulder on each side.
+/// from the top edge (y = 0) down to the pill's bottom, widened by a shoulder on each
+/// side. The pill rect itself, and so the content and hit testing, does not move.
 pub fn notch_bounds(pill: Rect) -> Rect {
     Rect::new(
         pill.x - NOTCH_SHOULDER,
@@ -209,6 +211,7 @@ pub fn notch_bounds(pill: Rect) -> Rect {
         pill.y + pill.h,
     )
 }
+
 /// Extra window rows below the largest pill so the AA edge is never clipped.
 const BOTTOM_SLACK: f32 = 2.0;
 
@@ -223,8 +226,13 @@ pub const HEADER: Rect = Rect::new(PAD_X, 16.0, HOME_W - 2.0 * PAD_X, 28.0);
 pub const FOOTER: Rect = Rect::new(PAD_X, 304.0, HOME_W - 2.0 * PAD_X, 20.0);
 
 /// Window size (logical) that holds the largest state; the swap chain is this size.
+/// It is a notch shoulder wider than Home on each side, so Home's notch is not clipped.
+/// The pill is centred in it, so the extra width doesn't move anything on screen.
 pub fn window_size() -> (f32, f32) {
-    (HOME_W, TOP_MARGIN + HOME_H + BOTTOM_SLACK)
+    (
+        HOME_W + 2.0 * NOTCH_SHOULDER,
+        TOP_MARGIN + HOME_H + BOTTOM_SLACK,
+    )
 }
 
 /// One rect per entry of `FEATURES`, in order. A short last row is centred.
@@ -390,7 +398,13 @@ mod tests {
             assert!(pw <= HOME_W && ph <= HOME_H);
             assert!(pw <= w && TOP_MARGIN + ph <= h);
         }
-        assert_eq!(window_size(), (HOME_W, TOP_MARGIN + HOME_H + BOTTOM_SLACK));
+        assert_eq!(
+            window_size(),
+            (
+                HOME_W + 2.0 * NOTCH_SHOULDER,
+                TOP_MARGIN + HOME_H + BOTTOM_SLACK
+            )
+        );
     }
 
     #[test]
@@ -415,9 +429,11 @@ mod tests {
             ST_ROW_AUTOSTART,
             ST_ROW_HOTKEY,
             ST_ROW_ALT,
+            ST_ROW_STYLE,
             ST_TOGGLE,
             ST_HOTKEY,
             ST_ALT,
+            ST_STYLE,
             ST_STATUS,
         ];
         for (i, a) in rects.iter().enumerate() {
@@ -426,6 +442,117 @@ mod tests {
                 assert!(apart(a, b), "{a:?} overlaps {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_style_row_lines_up_with_the_rows_above() {
+        const PITCH: f32 = 36.0;
+        let rows = [ST_ROW_AUTOSTART, ST_ROW_HOTKEY, ST_ROW_ALT, ST_ROW_STYLE];
+        for pair in rows.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert_eq!((b.x, b.w, b.h), (a.x, a.w, a.h), "{b:?}");
+            assert_eq!(b.y - a.y, PITCH, "{b:?}");
+        }
+        let chips = [ST_HOTKEY, ST_ALT, ST_STYLE];
+        for pair in chips.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert_eq!((b.x, b.w, b.h), (a.x, a.w, a.h), "{b:?}");
+            assert_eq!(b.y - a.y, PITCH, "{b:?}");
+        }
+        // Each control is centred on its row and right-aligned at x = 380.
+        for (row, ctl) in [
+            (ST_ROW_AUTOSTART, ST_TOGGLE),
+            (ST_ROW_HOTKEY, ST_HOTKEY),
+            (ST_ROW_ALT, ST_ALT),
+            (ST_ROW_STYLE, ST_STYLE),
+        ] {
+            assert_eq!(ctl.y + ctl.h / 2.0, row.y + row.h / 2.0, "{ctl:?}");
+            assert_eq!(ctl.x + ctl.w, 380.0, "{ctl:?}");
+        }
+        // The status line moved below the new row, and the panel is one row taller
+        // than the Timer panel it used to match.
+        const {
+            assert!(ST_STATUS.y >= ST_ROW_STYLE.y + ST_ROW_STYLE.h);
+            assert!(SETTINGS_H == TIMER_H + PITCH);
+            assert!(SETTINGS_W == TIMER_W);
+        }
+    }
+
+    #[test]
+    fn window_holds_the_taller_settings_panel_and_home_is_still_the_largest() {
+        let (w, h) = window_size();
+        assert!(SETTINGS_W <= w && TOP_MARGIN + SETTINGS_H <= h);
+        const { assert!(SETTINGS_W <= HOME_W && SETTINGS_H <= HOME_H) };
+    }
+
+    /// Every view size the island morphs between, as `(w, h, corner radius)`.
+    const VIEWS: [(f32, f32, f32); 12] = [
+        (IDLE_W, IDLE_H, IDLE_R),
+        (HOME_W, HOME_H, HOME_R),
+        (VITALS_W, VITALS_H, VITALS_R),
+        (SWEEP_W, SWEEP_H, SWEEP_R),
+        (MUSIC_COMPACT_W, MUSIC_COMPACT_H, MUSIC_COMPACT_R),
+        (MUSIC_EXP_W, MUSIC_EXP_H, MUSIC_EXP_R),
+        (TIMER_W, TIMER_H, TIMER_R),
+        (TIMER_COMPACT_W, TIMER_COMPACT_H, TIMER_COMPACT_R),
+        (ALERT_W, ALERT_H, ALERT_R),
+        (SNAP_W, SNAP_H, SNAP_R),
+        (SETTINGS_W, SETTINGS_H, SETTINGS_R),
+        (OSD_W, OSD_H, OSD_R),
+    ];
+
+    /// The pill rect the island uses for a view: centred, `TOP_MARGIN` down.
+    fn centred_pill(w: f32, h: f32) -> Rect {
+        let (ww, _) = window_size();
+        Rect::new((ww - w) / 2.0, TOP_MARGIN, w, h)
+    }
+
+    #[test]
+    fn notch_bounds_reach_the_top_edge_and_add_a_shoulder_each_side() {
+        let pill = centred_pill(IDLE_W, IDLE_H);
+        let n = notch_bounds(pill);
+        assert_eq!(n.y, 0.0);
+        assert_eq!(n.x, pill.x - NOTCH_SHOULDER);
+        assert_eq!(n.x + n.w, pill.x + pill.w + NOTCH_SHOULDER);
+        assert_eq!(n.w, IDLE_W + 2.0 * NOTCH_SHOULDER);
+        // Same bottom as the pill: the notch only grows up and sideways.
+        assert_eq!(n.y + n.h, pill.y + pill.h);
+        assert_eq!(n.h, TOP_MARGIN + IDLE_H);
+        // The biggest view (Home) the same way.
+        let pill = centred_pill(HOME_W, HOME_H);
+        assert_eq!(
+            notch_bounds(pill),
+            Rect::new(
+                pill.x - NOTCH_SHOULDER,
+                0.0,
+                HOME_W + 2.0 * NOTCH_SHOULDER,
+                TOP_MARGIN + HOME_H
+            )
+        );
+        // A pill that is not at TOP_MARGIN (mid-morph or a test rect) still reaches 0.
+        let n = notch_bounds(Rect::new(40.0, 20.0, 100.0, 30.0));
+        assert_eq!(n, Rect::new(32.0, 0.0, 116.0, 50.0));
+    }
+
+    #[test]
+    fn the_notch_of_every_view_fits_the_window() {
+        let (ww, wh) = window_size();
+        for (w, h, r) in VIEWS {
+            let pill = centred_pill(w, h);
+            let n = notch_bounds(pill);
+            assert!(n.x >= 0.0 && n.x + n.w <= ww, "{w}x{h}: {n:?}");
+            assert!(n.y >= 0.0 && n.y + n.h <= wh, "{w}x{h}: {n:?}");
+            // The pill is inside its notch.
+            assert!(n.contains(pill.x, pill.y), "{w}x{h}");
+            assert!(pill.x + pill.w <= n.x + n.w && pill.y + pill.h <= n.y + n.h);
+            // The shoulder curve ends above where the bottom corners start.
+            assert!(NOTCH_SHOULDER <= pill.y + pill.h - r, "{w}x{h}");
+        }
+        // Home touches both sides: nothing wider would fit.
+        let home = notch_bounds(centred_pill(HOME_W, HOME_H));
+        assert_eq!((home.x, home.x + home.w), (0.0, ww));
+        // The OSD's own rect is a centred pill too.
+        assert_eq!(osd_rect(), centred_pill(OSD_W, OSD_H));
     }
 
     #[test]
@@ -467,9 +594,15 @@ mod tests {
                 assert!(apart(a, b), "{a:?} overlaps {b:?}");
             }
         }
-        // The shot is the plan's 76 x 48, and the window size is unchanged.
+        // The shot is the plan's 76 x 48, and the window still fits Home (and its notch).
         assert_eq!((SN_SHOT.w, SN_SHOT.h), (76.0, 48.0));
-        assert_eq!(window_size(), (HOME_W, TOP_MARGIN + HOME_H + BOTTOM_SLACK));
+        assert_eq!(
+            window_size(),
+            (
+                HOME_W + 2.0 * NOTCH_SHOULDER,
+                TOP_MARGIN + HOME_H + BOTTOM_SLACK
+            )
+        );
     }
 
     #[test]

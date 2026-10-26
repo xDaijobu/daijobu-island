@@ -1,6 +1,6 @@
 //! The Settings panel's logic: the hotkey chip cycles, the controls and their hit
 //! testing, and what the panel shows. Pure; the app applies the actions (autostart,
-//! hotkey registration, saving the config).
+//! hotkey registration, the island style, saving the config).
 
 use crate::config::{IslandStyle, SnapConfig, SnapHotkey};
 use crate::layout;
@@ -114,6 +114,7 @@ pub struct SettingsView {
     /// Another app holds the key: the chip draws in the warn colour.
     pub hotkey_taken: bool,
     pub alt_taken: bool,
+    /// The island style chip (`IslandStyle::label` is its text).
     pub style: IslandStyle,
 }
 
@@ -215,6 +216,13 @@ mod tests {
                 layout::ST_ALT,
                 Some(SettingsHit::Action(SettingsAction::CycleAltHotkey)),
             ),
+            (
+                layout::ST_STYLE,
+                Some(SettingsHit::Action(SettingsAction::ToggleStyle)),
+            ),
+            // Row labels and the status line are not controls.
+            (layout::ST_ROW_STYLE, None),
+            (layout::ST_STATUS, None),
         ];
         for (r, want) in cases {
             let (x, y) = mid(r);
@@ -224,6 +232,22 @@ mod tests {
         assert_eq!(
             hit(layout::SETTINGS_W - 1.0, layout::SETTINGS_H - 1.0),
             None
+        );
+        // The style chip's corners are inside it, just past them is not.
+        let s = layout::ST_STYLE;
+        let style = Some(SettingsHit::Action(SettingsAction::ToggleStyle));
+        assert_eq!(hit(s.x, s.y), style);
+        assert_eq!(hit(s.x + s.w - 0.5, s.y + s.h - 0.5), style);
+        assert_eq!(hit(s.x - 0.5, s.y + 1.0), None);
+        assert_eq!(hit(s.x + 1.0, s.y + s.h), None);
+    }
+
+    #[test]
+    fn the_view_defaults_to_the_notch_style() {
+        assert_eq!(SettingsView::default().style, IslandStyle::Notch);
+        assert_eq!(
+            SettingsView::default().style,
+            crate::config::Config::default().island.style()
         );
     }
 
