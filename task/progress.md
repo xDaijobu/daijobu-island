@@ -19,7 +19,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 3 | **OSD volume** | ✅ merged (PR #3), live test pending | `stage-3-osd` | done ahead of Stage 2's PR · Haiku 5.5 + subagents · brief: [`stage-3-brief.md`](stage-3-brief.md) |
 | 4 | **Vitals (compact)** | ✅ merged (PR #4), live test pending | — | Haiku started, Opus 5.5 finished · lock-icon fix by the coordinator after the first live run |
 | 5 | **Vitals + Sweep**: Sweep merged into the Vitals panel (diagnose → clean), full vitals (disk I/O, top processes) | ✅ | PR #6 + `stage-5-safety-fixes` | Opus 5.5 (4 agents: sweep, wiring, render, safety review) · fixes and live test by the coordinator · [`stage-5-report.md`](stage-5-report.md) |
-| 6 | Timer / Pomodoro | 🔒 | — | |
+| 6 | **Timer / Pomodoro**: focus/break cycles, chime alert, mini timer on Music compact | 🟡 | `stage-6-timer` | brief: [`stage-6-brief.md`](stage-6-brief.md) |
 | 7 | Snap + Snap stack | 🔒 | — | |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
@@ -235,6 +235,38 @@ Home → Vitals shows the score, rings, disk I/O, top processes and "🧹 X recl
 - 2026-10-26: built by 4 parallel Opus agents. fmt, clippy -D warnings, 188 tests and the release build pass (verified by the coordinator). PR opened; live test pending.
 - 2026-10-26: merged at the user's request before the safety fixes. **Open BLOCKER:** the Temp category trusts `%TEMP%` (if unset, Windows falls back to the profile, so profile folders could be deleted permanently). Do not clean "temp & reports" until it is fixed. Also open: junction TOCTOU in `remove_rec`, `FOF_WANTNUKEWARNING` on recycle, the 14-day activity cap, the big-file confirm armed by index, and a few lows (see the PR #6 comments). Unfinished fix: local branch `wip/stage-5-safety-fixes`. `task/stage-5-report.md` is not written yet.
 - 2026-10-26: safety fixes on `stage-5-safety-fixes` (B1, M1, M2, M3 and the lows, plus a big-files budget bug found live). Live test on the user's machine passed: temp clean (2700 removed, 0 failed, 29 → 109 GB free), dev purge to the bin and restore, hide stops the scan. Report: [`stage-5-report.md`](stage-5-report.md). Known issue: big files is a partial list on large profiles.
+
+---
+
+## Stage 6: Timer / Pomodoro
+
+**Goal:** a Pomodoro you can run from the island without looking away. Start a 25/5 cycle from the Timer tile, watch it count down in the pill (or on the edge of Music compact), and get a soft chime and an alert when a session ends.
+
+### Scope
+- [ ] **Unlock Timer** in the feature registry (4 of 12 ready). Home → Timer opens the **Timer panel**; `ClickOutcome::Open` is handled.
+- [ ] **`dj-core::timer`** (pure, `forbid(unsafe)`): deadline-based state machine `Stopped | Running { ends_at } | Paused { left } | Done { finished, next }`. Time comes in as `Instant`, so it never drifts and is fully testable.
+  - Phases: focus, break, long break. Every `every`-th focus (default 4) is followed by the long break. A focus counter shows "focus 2/4".
+  - Actions: start, pause/resume, skip (ends the phase now, without the alert), reset (back to Stopped, counter cleared), continue (from Done, starts `next`), stop (from Done, back to Stopped).
+  - A remaining time is never negative. A clock that seems to go backwards (an `Instant` before the start) never adds time.
+- [ ] **Config** `[timer]` in `config.toml`: `focus_min = 25`, `break_min = 5`, `long_break_min = 15`, `every = 4`, `chime = true`. Out-of-range values (0, over 180 min) fall back to the defaults.
+- [ ] **Presets** in the panel: 25/5, 50/10, 15/3 (the long break and `every` come from the config). They can only be changed while Stopped. The chosen preset is in effect until the app restarts (not written back to config).
+- [ ] **Timer panel** 400×184 (r 32): big Doto mm:ss, a progress ring, the phase label (`focus 2/4` · `break` · `long break` · `paused`), preset chips, and start/pause, skip and reset buttons. An empty click collapses it, like Vitals.
+- [ ] **Timer compact** 172×36 (r 18), per the plan: ring 18, a `focus`/`break` label, Doto 18 mm:ss. It is the rest state while the timer runs and no music is loaded. A click opens the panel.
+- [ ] **With music:** Music compact stays the rest state (media > timer running). It gains a thin progress arc on its edge plus a small mono mm:ss. Music expanded is unchanged.
+- [ ] **Session end** ("timer done" is above media): the pill expands to a **Timer alert** (about 360×72: `focus done · break 5:00` with ▸ continue and × stop). The chime plays once (if `chime = true`), and the island waits for a click. Continue starts the next phase; × stops. The OSD still shows over it. If a panel (Home, Music expanded, Vitals, Sweep, Timer) is open, the chime plays at once, but the alert waits until the panel collapses. The Timer panel itself shows the done state inline.
+- [ ] **Chime:** a short, soft bell **synthesised in code** (sine partials with an exponential decay, about 0.8 s, 44.1 kHz mono 16-bit), built once into an in-memory WAV and played with `PlaySound(SND_MEMORY | SND_ASYNC)`. No third-party audio asset.
+- [ ] **Hidden island** (Ctrl+Alt+H): the timer keeps running and the chime still plays. The alert shows when the island is next visible.
+- [ ] **Idle CPU ≈ 0:** one `WM_TIMER` at the deadline, plus a 1 Hz redraw only while timer digits are on screen. Nothing is armed while the timer is Stopped, or while it is Paused and off screen.
+- [ ] Tests: state machine (start, pause/resume keeps the remainder, skip, reset, continue/stop, long break every 4, counter, clock going backwards), config ranges, panel/alert hit testing, the island rest state with and without music, and the chime WAV (header, length, no clipping). `build --release`, `clippy -D warnings` and `test` pass.
+
+### Acceptance
+Home → Timer → 25/5 preset → start. The pill shows the countdown (or the arc on Music compact while a song plays). Pause, resume, skip and reset all behave. At 0 the alert appears with a soft chime. ▸ starts the break, and after 4 focus sessions the long break comes up. Idle CPU stays about 0 while the timer is Stopped.
+
+### Rules for the agent
+Headless: fmt, clippy and test only, `CARGO_BUILD_JOBS=2`. Don't run the exe and don't play audio; the coordinator does the live test. No new third-party assets.
+
+### Log
+- 2026-10-26: stage defined with the user (Pomodoro, chime alert that waits for a click, mini timer on Music compact, panel presets + config).
 
 ---
 
