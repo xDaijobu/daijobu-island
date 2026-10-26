@@ -90,6 +90,8 @@ pub enum Event {
     SweepReady,
     /// Input on the Snap overlay window (see [`crate::overlay`]).
     Snap(crate::overlay::SnapInput),
+    /// The shell moved the AppBars around (see [`crate::appbar`]): set the strip again.
+    AppBarMoved,
 }
 
 pub trait Handler {
@@ -462,6 +464,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             push(Event::SweepReady);
             return LRESULT(0);
         }
+        crate::appbar::WM_APPBAR => {
+            crate::appbar::notify(wp.0);
+            return LRESULT(0);
+        }
         WM_TIMER => {
             if wp.0 == TIMER_THEMES_DEBOUNCE {
                 kill_timer(hwnd, TIMER_THEMES_DEBOUNCE);
@@ -472,6 +478,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             return LRESULT(0);
         }
         WM_DESTROY => {
+            // Closed from outside (WM_CLOSE, logoff): the top strip must not outlive us.
+            crate::appbar::release(hwnd);
             quit();
             return LRESULT(0);
         }

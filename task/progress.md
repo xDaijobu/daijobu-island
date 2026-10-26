@@ -26,6 +26,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 7d | Snap: pin + OCR | 🔒 | — | moved out of 7b |
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
 | N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
+| N2 | **Reserve top space**: the notch registers a top AppBar so maximized windows (Chrome tabs) start below it (Settings switch, default on) | ✅ | `xDaijobu/stage-n2-appbar` | user-requested · built by the coordinator · live-checked by the coordinator |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -498,6 +499,44 @@ With no `[island]` in the config, the island starts as a notch flush with the to
 - 2026-10-26: live test passed.
   - Coordinator: idle notch flush with the edge, with concave shoulders and grain over the whole body. Home → gear → Settings stays attached. The ISLAND STYLE chip toggles notch ↔ pill live and saves `[island] style`.
   - User, with the real mouse ("notch oke"): clicks on the top edge, click-through beside the panel, themes.
+
+---
+
+## Stage N2: Reserve top space (AppBar)
+
+**Goal:** the notch no longer covers the middle of Chrome's tab strip (or any maximized window's top). macOS-style "split around the notch" is impossible on Windows: there is no safe-area API, and Chrome draws its own tab strip. So the island reserves a strip along the top of the screen, and maximized and snapped windows start below it.
+
+### Scope
+- [x] **Config** `[island] reserve_top = true` (default on). It reserves only in notch style, and only while the island is visible (`IslandConfig::reserves_top`).
+- [x] **AppBar** (`dj_win::appbar`, `SHAppBarMessage`).
+  - The strip is the primary monitor's full width (Windows only reserves whole edges) and `layout::RESERVE_H` = 42 logical px × scale tall. That holds the notch in every rest state (idle, Music and Timer compact); expanded panels still hang over windows.
+  - Nothing is drawn in the strip, so the wallpaper shows beside the notch (the user's choice).
+- [x] **Lifecycle.**
+  - The strip is reserved at start.
+  - It is given back when the island is hidden, in pill style, or when the switch is off.
+  - It is set again on `ABN_POSCHANGED`, a DPI or display change, and an Explorer restart (`TaskbarCreated` re-registers).
+  - It is always given back on quit and on `WM_DESTROY` (e.g. `WM_CLOSE` from outside), so the work area never stays short.
+- [x] **Settings.** A 5th row, "RESERVE TOP SPACE", with a switch like Start with Windows. It is dimmed in pill style (the value is kept but has no effect). The panel is now 400×256.
+- [x] **Tests:**
+  - config default, `reserves_top`, and the round trip
+  - the strip holds every rest state
+  - the strip's rect at different scales and on a monitor that doesn't start at the origin
+  - the new row's rects and hit test
+  - island click → `ToggleReserve`
+
+  fmt, clippy `-D warnings`, 388 tests and `build --release` pass.
+
+### Known limits
+- A fullscreen app (F11 video, a game) still covers the whole screen.
+- A window that isn't maximized can still be dragged under the strip.
+- Desktop icons move down by the strip's height.
+- If the process is killed (not closed), the strip stays until Explorer notices the window is gone.
+
+### Log
+- 2026-10-26: requested by the user ("tab chrome / aplikasi lain otomatis kebela"). Options were AppBar, dodge on hover, and a smaller idle notch; the user chose AppBar, an empty strip, and a Settings switch that defaults to on.
+- 2026-10-26: built by the coordinator on `xDaijobu/stage-n2-appbar` from `master` (`608b179`).
+  - Live check on the user's machine (3440×1440, scale 1.0): the work area top goes 0 → 42 at start, and maximized Chrome's tabs start below the notch.
+  - The switch toggles 42 ↔ 0 live and saves `reserve_top`. Pill style gives the strip back (0) and notch takes it again (42). `WM_CLOSE` gives it back (0).
 
 ---
 

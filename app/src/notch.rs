@@ -57,6 +57,14 @@ pub fn to_pill(style: IslandStyle, pill: Rect, x: f32, y: f32) -> (f32, f32) {
     (clamp_into(x, pill.x, pill.w), clamp_into(y, pill.y, pill.h))
 }
 
+/// The strip reserved along the top of a monitor (`[island] reserve_top`), in physical
+/// desktop px `(left, top, right, bottom)`: the monitor's full width (Windows only
+/// reserves whole edges), `layout::RESERVE_H` logical px tall.
+pub fn reserve_strip(left: i32, top: i32, width: i32, scale: f32) -> Edges {
+    let h = (layout::RESERVE_H * scale).ceil() as i32;
+    (left, top, left + width, top + h)
+}
+
 /// `v` clamped into the half-open span `[start, start + len)`.
 fn clamp_into(v: f32, start: f32, len: f32) -> f32 {
     v.clamp(start, start + (len - INSET).max(0.0))
@@ -71,6 +79,21 @@ mod tests {
     fn idle() -> Rect {
         let (win_w, _) = layout::window_size();
         Rect::new((win_w - IDLE_W) / 2.0, TOP_MARGIN, IDLE_W, IDLE_H)
+    }
+
+    #[test]
+    fn the_reserved_strip_spans_the_monitor_and_holds_the_resting_notch() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let (l, t, r, b) = reserve_strip(-1920, 0, 1920, scale);
+            assert_eq!((l, t, r), (-1920, 0, 0));
+            // At least as tall as the notch's column in every rest state.
+            let col = device_edges(body_rect(IslandStyle::Notch, idle()), scale);
+            assert!(b - t >= col.3, "{scale}: {} < {}", b - t, col.3);
+            let compact = Rect::new(0.0, TOP_MARGIN, 224.0, layout::MUSIC_COMPACT_H);
+            assert!(b - t >= device_edges(compact, scale).3, "{scale}");
+        }
+        // A monitor that doesn't start at the origin keeps its own top.
+        assert_eq!(reserve_strip(0, -1080, 1920, 1.0), (0, -1080, 1920, -1038));
     }
 
     #[test]

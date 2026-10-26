@@ -64,12 +64,16 @@ impl IslandStyle {
 pub struct IslandConfig {
     /// `"notch"` (default) or `"pill"`. Read it through `style()`.
     pub style: String,
+    /// Notch style only: reserve a strip along the top of the screen (an AppBar), so
+    /// maximized windows start below the notch instead of under it.
+    pub reserve_top: bool,
 }
 
 impl Default for IslandConfig {
     fn default() -> Self {
         Self {
             style: IslandStyle::default().label().to_string(),
+            reserve_top: true,
         }
     }
 }
@@ -78,6 +82,12 @@ impl IslandConfig {
     /// An unknown value falls back to the default (notch).
     pub fn style(&self) -> IslandStyle {
         IslandStyle::parse(&self.style).unwrap_or_default()
+    }
+
+    /// Whether the top strip is reserved while the island is visible: only a notch
+    /// reserves, and only when `reserve_top` is on.
+    pub fn reserves_top(&self) -> bool {
+        self.reserve_top && self.style() == IslandStyle::Notch
     }
 }
 
@@ -414,6 +424,7 @@ mod tests {
             start_with_windows: true,
             island: IslandConfig {
                 style: "pill".into(),
+                reserve_top: false,
             },
             music: MusicConfig { signed_in: true },
             osd: OsdConfig {
@@ -476,6 +487,25 @@ mod tests {
         assert_eq!(IslandStyle::default(), IslandStyle::Notch);
         assert_eq!(IslandStyle::Notch.label(), "notch");
         assert_eq!(IslandStyle::Pill.label(), "pill");
+    }
+
+    #[test]
+    fn reserve_top_defaults_on_and_only_a_notch_reserves() {
+        let d = IslandConfig::default();
+        assert!(d.reserve_top);
+        assert!(d.reserves_top());
+        // Older configs without the key: on.
+        assert!(
+            Config::parse("[island]\nstyle = \"notch\"\n")
+                .island
+                .reserve_top
+        );
+        let off = Config::parse("[island]\nreserve_top = false\n");
+        assert!(!off.island.reserve_top && !off.island.reserves_top());
+        assert_eq!(Config::parse(&off.to_toml()), off);
+        // A pill never reserves, whatever the switch says.
+        let pill = Config::parse("[island]\nstyle = \"pill\"\nreserve_top = true\n");
+        assert!(pill.island.reserve_top && !pill.island.reserves_top());
     }
 
     #[test]

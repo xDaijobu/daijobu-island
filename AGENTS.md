@@ -37,7 +37,7 @@ When a stage unlocks a feature, flip its entry in `dj-core`'s feature registry f
 app/                 binary crate `daijobu` (window wiring, tray, storage, main loop)
 crates/dj-core/      domain: springs, themes, feature registry, layout, island state machine
 crates/dj-render/    Skia on D3D12 + DirectComposition, fonts, SkSL effects, icons, painting
-crates/dj-win/       Win32: window, message loop, tray, hotkeys, autostart, single instance
+crates/dj-win/       Win32: window, message loop, tray, hotkeys, autostart, single instance, top AppBar strip
 crates/dj-music/     YouTube Music engine: hidden WebView2, page bridge (`bridge.js`), artwork fetch
 crates/dj-vitals/    Win32 samplers for the Vitals panel: CPU, RAM, system drive, net, disk I/O, battery, uptime, top processes
 crates/dj-sweep/     Sweep (inside Vitals): category scanners, protected-path guard, clean/recycle ops, operations log

@@ -79,6 +79,8 @@ pub enum SettingsAction {
     CycleAltHotkey,
     /// Notch ↔ pill.
     ToggleStyle,
+    /// Reserve the top strip (an AppBar) on/off. It only takes effect in notch style.
+    ToggleReserve,
 }
 
 /// A control the pointer can land on, in pill-local px.
@@ -100,6 +102,8 @@ pub fn hit(x: f32, y: f32) -> Option<SettingsHit> {
         Some(SettingsHit::Action(SettingsAction::CycleAltHotkey))
     } else if layout::ST_STYLE.contains(x, y) {
         Some(SettingsHit::Action(SettingsAction::ToggleStyle))
+    } else if layout::ST_RESERVE.contains(x, y) {
+        Some(SettingsHit::Action(SettingsAction::ToggleReserve))
     } else {
         None
     }
@@ -116,6 +120,9 @@ pub struct SettingsView {
     pub alt_taken: bool,
     /// The island style chip (`IslandStyle::label` is its text).
     pub style: IslandStyle,
+    /// The "reserve top space" switch (`[island] reserve_top`). It draws dimmed in pill
+    /// style, where it has no effect.
+    pub reserve: bool,
 }
 
 impl Default for SettingsView {
@@ -127,6 +134,7 @@ impl Default for SettingsView {
             hotkey_taken: false,
             alt_taken: false,
             style: IslandStyle::default(),
+            reserve: true,
         }
     }
 }
@@ -220,8 +228,13 @@ mod tests {
                 layout::ST_STYLE,
                 Some(SettingsHit::Action(SettingsAction::ToggleStyle)),
             ),
+            (
+                layout::ST_RESERVE,
+                Some(SettingsHit::Action(SettingsAction::ToggleReserve)),
+            ),
             // Row labels and the status line are not controls.
             (layout::ST_ROW_STYLE, None),
+            (layout::ST_ROW_RESERVE, None),
             (layout::ST_STATUS, None),
         ];
         for (r, want) in cases {
@@ -245,6 +258,10 @@ mod tests {
     #[test]
     fn the_view_defaults_to_the_notch_style() {
         assert_eq!(SettingsView::default().style, IslandStyle::Notch);
+        assert_eq!(
+            SettingsView::default().reserve,
+            crate::config::Config::default().island.reserve_top
+        );
         assert_eq!(
             SettingsView::default().style,
             crate::config::Config::default().island.style()

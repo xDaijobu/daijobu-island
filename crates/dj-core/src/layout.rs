@@ -114,9 +114,9 @@ pub fn tp_chip(i: usize) -> Rect {
     )
 }
 
-/// Settings panel (opened from the gear on Home): the Timer panel's width, one row taller.
+/// Settings panel (opened from the gear on Home): the Timer panel's width, two rows taller.
 pub const SETTINGS_W: f32 = 400.0;
-pub const SETTINGS_H: f32 = 220.0;
+pub const SETTINGS_H: f32 = 256.0;
 pub const SETTINGS_R: f32 = 32.0;
 /// Panel elements, relative to the pill's top-left. The header text sits left of back.
 pub const ST_HEADER: Rect = Rect::new(20.0, 12.0, 260.0, 16.0);
@@ -126,13 +126,16 @@ pub const ST_ROW_AUTOSTART: Rect = Rect::new(20.0, 44.0, 220.0, 28.0);
 pub const ST_ROW_HOTKEY: Rect = Rect::new(20.0, 80.0, 220.0, 28.0);
 pub const ST_ROW_ALT: Rect = Rect::new(20.0, 116.0, 220.0, 28.0);
 pub const ST_ROW_STYLE: Rect = Rect::new(20.0, 152.0, 220.0, 28.0);
+pub const ST_ROW_RESERVE: Rect = Rect::new(20.0, 188.0, 220.0, 28.0);
 pub const ST_TOGGLE: Rect = Rect::new(328.0, 46.0, 52.0, 24.0);
 pub const ST_HOTKEY: Rect = Rect::new(248.0, 82.0, 132.0, 24.0);
 pub const ST_ALT: Rect = Rect::new(248.0, 118.0, 132.0, 24.0);
 /// The island style chip (`notch` / `pill`).
 pub const ST_STYLE: Rect = Rect::new(248.0, 154.0, 132.0, 24.0);
+/// The "reserve top space" switch (same size as the autostart one).
+pub const ST_RESERVE: Rect = Rect::new(328.0, 190.0, 52.0, 24.0);
 /// The `taken by another app` line.
-pub const ST_STATUS: Rect = Rect::new(20.0, 190.0, 360.0, 16.0);
+pub const ST_STATUS: Rect = Rect::new(20.0, 226.0, 360.0, 16.0);
 
 /// The gear in the Home header, left of the clock (pill-local on the Home grid).
 pub const HOME_GEAR: Rect = Rect::new(384.0, 16.0, 28.0, 28.0);
@@ -199,6 +202,11 @@ pub const TOP_MARGIN: f32 = 6.0;
 /// Notch style: radius of the concave shoulders where the notch meets the top edge.
 /// They stick out this far past each side of the pill.
 pub const NOTCH_SHOULDER: f32 = 8.0;
+
+/// Notch style with `[island] reserve_top`: the height of the strip reserved along the
+/// top of the screen (logical px). It holds the notch in every rest state (idle, Music
+/// and Timer compact), so only the expanded panels hang over other windows.
+pub const RESERVE_H: f32 = TOP_MARGIN + 36.0;
 
 /// Notch style: the box the notch shape covers for a pill rect (window-logical px):
 /// from the top edge (y = 0) down to the pill's bottom, widened by a shoulder on each
@@ -430,10 +438,12 @@ mod tests {
             ST_ROW_HOTKEY,
             ST_ROW_ALT,
             ST_ROW_STYLE,
+            ST_ROW_RESERVE,
             ST_TOGGLE,
             ST_HOTKEY,
             ST_ALT,
             ST_STYLE,
+            ST_RESERVE,
             ST_STATUS,
         ];
         for (i, a) in rects.iter().enumerate() {
@@ -447,7 +457,13 @@ mod tests {
     #[test]
     fn the_style_row_lines_up_with_the_rows_above() {
         const PITCH: f32 = 36.0;
-        let rows = [ST_ROW_AUTOSTART, ST_ROW_HOTKEY, ST_ROW_ALT, ST_ROW_STYLE];
+        let rows = [
+            ST_ROW_AUTOSTART,
+            ST_ROW_HOTKEY,
+            ST_ROW_ALT,
+            ST_ROW_STYLE,
+            ST_ROW_RESERVE,
+        ];
         for pair in rows.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             assert_eq!((b.x, b.w, b.h), (a.x, a.w, a.h), "{b:?}");
@@ -465,17 +481,29 @@ mod tests {
             (ST_ROW_HOTKEY, ST_HOTKEY),
             (ST_ROW_ALT, ST_ALT),
             (ST_ROW_STYLE, ST_STYLE),
+            (ST_ROW_RESERVE, ST_RESERVE),
         ] {
             assert_eq!(ctl.y + ctl.h / 2.0, row.y + row.h / 2.0, "{ctl:?}");
             assert_eq!(ctl.x + ctl.w, 380.0, "{ctl:?}");
         }
-        // The status line moved below the new row, and the panel is one row taller
+        // The reserve switch is the autostart switch's size.
+        assert_eq!((ST_RESERVE.w, ST_RESERVE.h), (ST_TOGGLE.w, ST_TOGGLE.h));
+        // The status line sits below the last row, and the panel is two rows taller
         // than the Timer panel it used to match.
         const {
-            assert!(ST_STATUS.y >= ST_ROW_STYLE.y + ST_ROW_STYLE.h);
-            assert!(SETTINGS_H == TIMER_H + PITCH);
+            assert!(ST_STATUS.y >= ST_ROW_RESERVE.y + ST_ROW_RESERVE.h);
+            assert!(SETTINGS_H == TIMER_H + 2.0 * PITCH);
             assert!(SETTINGS_W == TIMER_W);
         }
+    }
+
+    #[test]
+    fn the_reserved_strip_holds_every_rest_state() {
+        for h in [IDLE_H, MUSIC_COMPACT_H, TIMER_COMPACT_H] {
+            assert!(TOP_MARGIN + h <= RESERVE_H, "{h}");
+        }
+        // But not more than that: the expanded views hang over other windows.
+        assert_eq!(RESERVE_H, TOP_MARGIN + MUSIC_COMPACT_H.max(TIMER_COMPACT_H));
     }
 
     #[test]

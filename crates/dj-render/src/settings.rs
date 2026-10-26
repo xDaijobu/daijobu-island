@@ -1,13 +1,18 @@
-//! The Settings panel (400 x 220): a header, then four rows: the Start with Windows
-//! switch, the two Snap hotkey chips and the island style chip (`notch` or `pill`).
-//! Content is anchored to the pill's top-centre like the other views. A hotkey that
-//! another app holds draws its chip in the warn colour, with a status line below.
+//! The Settings panel (400 x 256): a header, then five rows: the Start with Windows
+//! switch, the two Snap hotkey chips, the island style chip (`notch` or `pill`) and the
+//! Reserve top space switch (dimmed for a pill, where it does nothing). Content is
+//! anchored to the pill's top-centre like the other views. A hotkey that another app
+//! holds draws its chip in the warn colour, with a status line below.
 
 use crate::fonts::Weight;
 use crate::music::button;
 use crate::paint::{col, draw_text, fill_paint, stroke_paint, text_width, Frame, Painter};
+use dj_core::config::IslandStyle;
 use dj_core::layout::{self as lay, Rect as LRect};
 use skia_safe::{Canvas, RRect, Rect};
+
+/// Opacity of a row that has no effect right now.
+const DIMMED: f32 = 0.4;
 
 impl Painter {
     /// The Settings panel: header with back, then one row per setting.
@@ -48,13 +53,21 @@ impl Painter {
             s,
         );
 
+        // The reserve switch only does something for a notch: dimmed for a pill.
+        let reserve_alpha = if v.style == IslandStyle::Notch {
+            1.0
+        } else {
+            DIMMED
+        };
+
         // Row labels.
         let row_font = self.fonts.font(&t.font_label, Weight::Medium, 10.0 * s);
-        for (row, text) in [
-            (lay::ST_ROW_AUTOSTART, "START WITH WINDOWS"),
-            (lay::ST_ROW_HOTKEY, "SNAP HOTKEY"),
-            (lay::ST_ROW_ALT, "SNAP ALT HOTKEY"),
-            (lay::ST_ROW_STYLE, "ISLAND STYLE"),
+        for (row, text, alpha) in [
+            (lay::ST_ROW_AUTOSTART, "START WITH WINDOWS", 1.0),
+            (lay::ST_ROW_HOTKEY, "SNAP HOTKEY", 1.0),
+            (lay::ST_ROW_ALT, "SNAP ALT HOTKEY", 1.0),
+            (lay::ST_ROW_STYLE, "ISLAND STYLE", 1.0),
+            (lay::ST_ROW_RESERVE, "RESERVE TOP SPACE", reserve_alpha),
         ] {
             let r = at(row);
             draw_text(
@@ -64,34 +77,39 @@ impl Painter {
                 r.left,
                 r.center_y() + 0.35 * 10.0 * s,
                 1.2 * s,
-                &fill_paint(col(t.text, 1.0)),
+                &fill_paint(col(t.text, alpha)),
             );
         }
 
-        // The switch: an accent track with the knob right when on.
-        let tr = at(lay::ST_TOGGLE);
-        let rad = tr.height() / 2.0;
-        let (track, edge) = if v.autostart {
-            (t.accent, t.accent)
-        } else {
-            (t.surface1, t.surface2)
-        };
-        canvas.draw_rrect(
-            RRect::new_rect_xy(tr, rad, rad),
-            &fill_paint(col(track, 1.0)),
-        );
-        canvas.draw_rrect(
-            RRect::new_rect_xy(tr.with_inset((0.5, 0.5)), rad - 0.5, rad - 0.5),
-            &stroke_paint(col(edge, 1.0), 1.0),
-        );
-        let knob_r = rad - 4.0 * s;
-        let knob_x = if v.autostart {
-            tr.right - rad
-        } else {
-            tr.left + rad
-        };
-        let knob = if v.autostart { t.pill } else { t.text_dim };
-        canvas.draw_circle((knob_x, tr.center_y()), knob_r, &fill_paint(col(knob, 1.0)));
+        // The switches: an accent track with the knob right when on.
+        for (switch, on, alpha) in [
+            (lay::ST_TOGGLE, v.autostart, 1.0),
+            (lay::ST_RESERVE, v.reserve, reserve_alpha),
+        ] {
+            let tr = at(switch);
+            let rad = tr.height() / 2.0;
+            let (track, edge) = if on {
+                (t.accent, t.accent)
+            } else {
+                (t.surface1, t.surface2)
+            };
+            canvas.draw_rrect(
+                RRect::new_rect_xy(tr, rad, rad),
+                &fill_paint(col(track, alpha)),
+            );
+            canvas.draw_rrect(
+                RRect::new_rect_xy(tr.with_inset((0.5, 0.5)), rad - 0.5, rad - 0.5),
+                &stroke_paint(col(edge, alpha), 1.0),
+            );
+            let knob_r = rad - 4.0 * s;
+            let knob_x = if on { tr.right - rad } else { tr.left + rad };
+            let knob = if on { t.pill } else { t.text_dim };
+            canvas.draw_circle(
+                (knob_x, tr.center_y()),
+                knob_r,
+                &fill_paint(col(knob, alpha)),
+            );
+        }
 
         // The chips: two hotkeys (warn when taken) and the island style (never warns).
         let chip_font = self.fonts.font(&t.font_label, Weight::Medium, 10.0 * s);
