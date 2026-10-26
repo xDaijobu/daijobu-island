@@ -86,6 +86,56 @@ pub const ME_BTN_HOME: Rect = Rect::new(258.0, 158.0, 126.0, 20.0);
 /// Sign-in view only.
 pub const ME_SIGN_IN: Rect = Rect::new(80.0, 66.0, 240.0, 36.0);
 
+/// Timer panel (opened from the Home tile or Timer compact).
+pub const TIMER_W: f32 = 400.0;
+pub const TIMER_H: f32 = 184.0;
+pub const TIMER_R: f32 = 32.0;
+/// Panel elements, relative to the pill's top-left. The header carries the phase label.
+pub const TP_HEADER: Rect = Rect::new(20.0, 12.0, 360.0, 16.0);
+pub const TP_RING: Rect = Rect::new(20.0, 36.0, 92.0, 92.0);
+pub const TP_DIGITS: Rect = Rect::new(128.0, 36.0, 252.0, 56.0);
+pub const TP_CHIP_Y: f32 = 102.0;
+pub const TP_CHIP_W: f32 = 64.0;
+pub const TP_CHIP_H: f32 = 24.0;
+pub const TP_CHIP_GAP: f32 = 8.0;
+/// Start / pause / resume (continue while Done).
+pub const TP_TOGGLE: Rect = Rect::new(20.0, 140.0, 172.0, 30.0);
+pub const TP_SKIP: Rect = Rect::new(200.0, 140.0, 86.0, 30.0);
+/// Reset (stop while Done).
+pub const TP_RESET: Rect = Rect::new(294.0, 140.0, 86.0, 30.0);
+
+/// Preset chip `i` of the Timer panel.
+pub fn tp_chip(i: usize) -> Rect {
+    Rect::new(
+        TP_DIGITS.x + i as f32 * (TP_CHIP_W + TP_CHIP_GAP),
+        TP_CHIP_Y,
+        TP_CHIP_W,
+        TP_CHIP_H,
+    )
+}
+
+/// Timer compact (plan.html: 172 x 36, ring 18, Doto 18).
+pub const TIMER_COMPACT_W: f32 = 172.0;
+pub const TIMER_COMPACT_H: f32 = 36.0;
+pub const TIMER_COMPACT_R: f32 = 18.0;
+pub const TC_RING: Rect = Rect::new(9.0, 9.0, 18.0, 18.0);
+pub const TC_LABEL_X: f32 = 36.0;
+/// Right edge of the digits.
+pub const TC_DIGITS_RIGHT: f32 = 158.0;
+
+/// Timer alert (the notification size in plan.html: 360 x 72, radius 28).
+pub const ALERT_W: f32 = 360.0;
+pub const ALERT_H: f32 = 72.0;
+pub const ALERT_R: f32 = 28.0;
+/// The `focus done · break 5:00` line.
+pub const AL_TEXT: Rect = Rect::new(24.0, 20.0, 180.0, 32.0);
+pub const AL_CONTINUE: Rect = Rect::new(212.0, 20.0, 88.0, 32.0);
+pub const AL_STOP: Rect = Rect::new(308.0, 20.0, 32.0, 32.0);
+
+/// The small timer on Music compact while a timer runs: mono mm:ss before the VU. The
+/// title gives up this much room.
+pub const MC_TIMER: Rect = Rect::new(118.0, 0.0, 42.0, 36.0);
+
 /// Category row `i` of the Sweep checklist.
 pub fn sw_row(i: usize) -> Rect {
     Rect::new(12.0, SW_TOP + i as f32 * SW_ROW_H, 376.0, SW_ROW_H)
@@ -270,6 +320,56 @@ mod tests {
             assert!(VITALS_SWEEP.x + VITALS_SWEEP.w <= VITALS_W);
             assert!(VITALS_SWEEP.y + VITALS_SWEEP.h <= VITALS_H);
         }
+    }
+
+    fn apart(a: &Rect, b: &Rect) -> bool {
+        a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y
+    }
+
+    fn inside(r: &Rect, w: f32, h: f32) -> bool {
+        r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= w && r.y + r.h <= h
+    }
+
+    #[test]
+    fn window_holds_the_timer_views_and_home_is_still_the_largest() {
+        let (w, h) = window_size();
+        for (pw, ph) in [
+            (TIMER_W, TIMER_H),
+            (TIMER_COMPACT_W, TIMER_COMPACT_H),
+            (ALERT_W, ALERT_H),
+        ] {
+            assert!(pw <= HOME_W && ph <= HOME_H);
+            assert!(pw <= w && TOP_MARGIN + ph <= h);
+        }
+        assert_eq!(window_size(), (HOME_W, TOP_MARGIN + HOME_H + BOTTOM_SLACK));
+    }
+
+    #[test]
+    fn timer_panel_controls_fit_and_do_not_overlap() {
+        let mut rects = vec![TP_HEADER, TP_RING, TP_DIGITS, TP_TOGGLE, TP_SKIP, TP_RESET];
+        rects.extend((0..crate::timer::PRESETS.len()).map(tp_chip));
+        for (i, a) in rects.iter().enumerate() {
+            assert!(inside(a, TIMER_W, TIMER_H), "{a:?}");
+            for b in &rects[i + 1..] {
+                assert!(apart(a, b), "{a:?} overlaps {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn timer_compact_and_alert_parts_fit() {
+        assert!(inside(&TC_RING, TIMER_COMPACT_W, TIMER_COMPACT_H));
+        assert!(TC_LABEL_X > TC_RING.x + TC_RING.w && TC_DIGITS_RIGHT < TIMER_COMPACT_W);
+        let parts = [AL_TEXT, AL_CONTINUE, AL_STOP];
+        for (i, a) in parts.iter().enumerate() {
+            assert!(inside(a, ALERT_W, ALERT_H), "{a:?}");
+            for b in &parts[i + 1..] {
+                assert!(apart(a, b), "{a:?} overlaps {b:?}");
+            }
+        }
+        // The mini timer on Music compact sits between the art and the VU.
+        assert!(inside(&MC_TIMER, MUSIC_COMPACT_W, MUSIC_COMPACT_H));
+        assert!(apart(&MC_TIMER, &MC_ART) && apart(&MC_TIMER, &MC_VU));
     }
 
     #[test]

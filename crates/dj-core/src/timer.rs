@@ -409,7 +409,6 @@ impl Pomodoro {
         Finished { phase, next }
     }
 
-
     pub fn view(&self, now: Instant) -> TimerView {
         TimerView {
             status: self.status(),

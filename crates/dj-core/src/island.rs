@@ -1,13 +1,14 @@
 //! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel with
-//! its Sweep view, and the OSD overlay,
-//! driven by springs. Time only enters through `step(dt)`, so everything here is
-//! deterministic.
+//! its Sweep view, the Timer views and the OSD overlay, driven by springs. Time only
+//! enters through `step(dt)`, so everything here is deterministic. The timer itself
+//! (`timer::Pomodoro`) lives in the app; the island only hears whether it is active or done.
 
 use crate::features::{Availability, FEATURES};
 use crate::layout::{self, Rect};
 use crate::osd::{Osd, OsdView, Volume};
 use crate::spring::{Spring, SpringSpec};
 use crate::theme::ResolvedTokens;
+use crate::timer::PRESETS;
 
 /// Content cross-fade spring (response 0.25 s, zeta 1.0).
 const FADE_SPEC: SpringSpec = SpringSpec::new(0.25, 1.0);
@@ -26,7 +27,17 @@ pub enum IslandState {
     /// Sweep, opened from the Vitals panel's button. Its controls are hit-tested by
     /// `sweep::SweepView`; empty clicks do nothing, so a clean is never left by accident.
     Sweep,
+    /// The Timer panel, opened from the Home tile or Timer compact. An empty click
+    /// collapses it. A finished session shows inline here.
+    TimerPanel,
+    /// The rest state while a timer runs (or is paused) and no music is loaded.
+    TimerCompact,
+    /// A session ended: waits for continue or stop. Shown over the rest states only.
+    TimerAlert,
 }
+
+/// Number of content layers (one per `IslandState`).
+const LAYERS: usize = 9;
 
 impl IslandState {
     /// Index into the per-content opacity springs.
@@ -38,8 +49,47 @@ impl IslandState {
             IslandState::MusicExpanded => 3,
             IslandState::Vitals => 4,
             IslandState::Sweep => 5,
+            IslandState::TimerPanel => 6,
+            IslandState::TimerCompact => 7,
+            IslandState::TimerAlert => 8,
         }
     }
+
+    /// The states the island rests in. Facts that change the rest state (a track, the
+    /// timer) move the island only from one of these; an open panel stays put.
+    fn is_rest(self) -> bool {
+        matches!(
+            self,
+            IslandState::Idle
+                | IslandState::MusicCompact
+                | IslandState::TimerCompact
+                | IslandState::TimerAlert
+        )
+    }
+}
+
+/// What the app knows about the timer, pushed into the island on every change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimerUi {
+    /// Running or paused.
+    pub active: bool,
+    /// A session ended and nobody has answered the alert yet.
+    pub done: bool,
+}
+
+/// A control in the Timer panel or the alert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerAction {
+    /// Start, pause or resume.
+    Toggle,
+    Skip,
+    Reset,
+    /// Preset chip `i` of `timer::PRESETS`.
+    Preset(usize),
+    /// Start the next phase (from Done).
+    Continue,
+    /// Back to Stopped (from Done).
+    Stop,
 }
 
 /// What the app knows about Music, pushed into the island on every change.
@@ -91,6 +141,10 @@ pub enum ClickOutcome {
         x: f32,
         y: f32,
     },
+    /// A Timer panel or alert control. The app applies it to the Pomodoro and pushes
+    /// the new `TimerUi`. Controls that don't apply right now (a preset while running)
+    /// still land here, so they never collapse the panel.
+    Timer(TimerAction),
 }
 
 /// Opacity of each content layer, 0..1. At most one is 1 once settled.
@@ -102,6 +156,9 @@ pub struct Layers {
     pub expanded: f32,
     pub vitals: f32,
     pub sweep: f32,
+    pub timer: f32,
+    pub timer_compact: f32,
+    pub alert: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -125,12 +182,13 @@ pub struct Island {
     h: Spring,
     r: Spring,
     /// One opacity spring per content layer, indexed by `IslandState::layer`.
-    layers: [Spring; 6],
+    layers: [Spring; LAYERS],
     tiles: Vec<Rect>,
     hover: Option<usize>,
     shake: Option<(usize, f32)>,
     hint: Option<(usize, f32)>,
     music: MusicUi,
+    timer: TimerUi,
     osd: Osd,
     /// True while the user drags the OSD bar.
     dragging: bool,
@@ -147,19 +205,13 @@ impl Island {
             w: Spring::new(layout::IDLE_W, spec, 0.02),
             h: Spring::new(layout::IDLE_H, spec, 0.02),
             r: Spring::new(layout::IDLE_R * tokens.radius_scale, spec, 0.02),
-            layers: [
-                fade(true),
-                fade(false),
-                fade(false),
-                fade(false),
-                fade(false),
-                fade(false),
-            ],
+            layers: std::array::from_fn(|i| fade(i == IslandState::Idle.layer())),
             tiles: layout::home_tiles(),
             hover: None,
             shake: None,
             hint: None,
             music: MusicUi::default(),
+            timer: TimerUi::default(),
             osd: Osd::new(),
             dragging: false,
             expanding: true,
@@ -190,15 +242,57 @@ impl Island {
             ),
             IslandState::Vitals => (layout::VITALS_W, layout::VITALS_H, layout::VITALS_R),
             IslandState::Sweep => (layout::SWEEP_W, layout::SWEEP_H, layout::SWEEP_R),
+            IslandState::TimerPanel => (layout::TIMER_W, layout::TIMER_H, layout::TIMER_R),
+            IslandState::TimerCompact => (
+                layout::TIMER_COMPACT_W,
+                layout::TIMER_COMPACT_H,
+                layout::TIMER_COMPACT_R,
+            ),
+            IslandState::TimerAlert => (layout::ALERT_W, layout::ALERT_H, layout::ALERT_R),
         }
     }
 
-    /// The state the island rests in when nothing is being opened.
+    /// The state the island rests in when nothing is being opened, by activity
+    /// priority (plan.html): timer done > media > timer running > idle.
     fn rest_state(&self) -> IslandState {
-        if self.music.has_track {
+        if self.timer.done {
+            IslandState::TimerAlert
+        } else if self.music.has_track {
             IslandState::MusicCompact
+        } else if self.timer.active {
+            IslandState::TimerCompact
         } else {
             IslandState::Idle
+        }
+    }
+
+    /// Moves to the rest state if the island is resting now. Open panels stay put and
+    /// pick the new rest state up when they collapse.
+    fn settle_rest(&mut self, tokens: &ResolvedTokens) {
+        let rest = self.rest_state();
+        if self.state.is_rest() && self.state != rest {
+            self.set_state(rest, tokens);
+        }
+    }
+
+    pub fn timer_ui(&self) -> TimerUi {
+        self.timer
+    }
+
+    /// Pushes new timer facts. A finished session shows the alert over the rest states;
+    /// over an open panel (Home, Music, Vitals, Sweep, Timer) it waits for the collapse.
+    pub fn set_timer(&mut self, ui: TimerUi, tokens: &ResolvedTokens) {
+        if ui == self.timer {
+            return;
+        }
+        self.timer = ui;
+        self.settle_rest(tokens);
+    }
+
+    /// Opens the Timer panel (from the Home tile or Timer compact).
+    pub fn open_timer(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::TimerPanel {
+            self.set_state(IslandState::TimerPanel, tokens);
         }
     }
 
@@ -305,7 +399,9 @@ impl Island {
         (x - (win_w - w) / 2.0, y - layout::TOP_MARGIN)
     }
 
-    /// Collapses to the rest state: compact when a track is loaded, otherwise Idle.
+    /// Collapses to the rest state (see `rest_state`): the timer alert when a session
+    /// ended, Music compact when a track is loaded, Timer compact while a timer runs,
+    /// otherwise Idle.
     pub fn collapse(&mut self, tokens: &ResolvedTokens) {
         let rest = self.rest_state();
         if self.state != rest {
@@ -314,23 +410,19 @@ impl Island {
     }
 
     /// Pushes new Music facts. Only presence changes move the island: a track
-    /// appearing from Idle shows the compact view, and a track disappearing from a
-    /// Music view returns to Idle. Other state changes leave the view alone.
+    /// appearing or disappearing moves a resting island to its new rest state, and a
+    /// track disappearing from the expanded view collapses it. Other state changes
+    /// leave the view alone.
     pub fn set_music(&mut self, ui: MusicUi, tokens: &ResolvedTokens) {
         let had_track = self.music.has_track;
         self.music = ui;
         if ui.has_track == had_track {
             return;
         }
-        if ui.has_track {
-            if self.state == IslandState::Idle {
-                self.set_state(IslandState::MusicCompact, tokens);
-            }
-        } else if matches!(
-            self.state,
-            IslandState::MusicCompact | IslandState::MusicExpanded
-        ) {
-            self.set_state(IslandState::Idle, tokens);
+        if !ui.has_track && self.state == IslandState::MusicExpanded {
+            self.collapse(tokens);
+        } else {
+            self.settle_rest(tokens);
         }
     }
 
@@ -394,6 +486,31 @@ impl Island {
                 let (lx, ly) = Self::view_local(x, y, layout::SWEEP_W);
                 ClickOutcome::Sweep { x: lx, y: ly }
             }
+            IslandState::TimerCompact => {
+                self.open_timer(tokens);
+                ClickOutcome::Expanded
+            }
+            IslandState::TimerPanel => {
+                let (lx, ly) = Self::view_local(x, y, layout::TIMER_W);
+                match Self::timer_panel_action(lx, ly, self.timer.done) {
+                    Some(a) => ClickOutcome::Timer(a),
+                    None => {
+                        self.collapse(tokens);
+                        ClickOutcome::Collapsed
+                    }
+                }
+            }
+            // The alert waits for an answer: only its two buttons respond.
+            IslandState::TimerAlert => {
+                let (lx, ly) = Self::view_local(x, y, layout::ALERT_W);
+                if layout::AL_CONTINUE.contains(lx, ly) {
+                    ClickOutcome::Timer(TimerAction::Continue)
+                } else if layout::AL_STOP.contains(lx, ly) {
+                    ClickOutcome::Timer(TimerAction::Stop)
+                } else {
+                    ClickOutcome::Ignored
+                }
+            }
             IslandState::Home => match self.tile_at(x, y) {
                 Some(i) if FEATURES[i].availability == Availability::Locked => {
                     self.shake = Some((i, 0.0));
@@ -407,6 +524,31 @@ impl Island {
                 }
             },
         }
+    }
+
+    /// The Timer panel control at view-local `(x, y)`. While a session is done, the
+    /// start button continues and reset stops, like the alert.
+    fn timer_panel_action(x: f32, y: f32, done: bool) -> Option<TimerAction> {
+        if layout::TP_TOGGLE.contains(x, y) {
+            return Some(if done {
+                TimerAction::Continue
+            } else {
+                TimerAction::Toggle
+            });
+        }
+        if layout::TP_SKIP.contains(x, y) {
+            return Some(TimerAction::Skip);
+        }
+        if layout::TP_RESET.contains(x, y) {
+            return Some(if done {
+                TimerAction::Stop
+            } else {
+                TimerAction::Reset
+            });
+        }
+        (0..PRESETS.len())
+            .find(|&i| layout::tp_chip(i).contains(x, y))
+            .map(TimerAction::Preset)
     }
 
     fn music_click(&mut self, x: f32, y: f32, tokens: &ResolvedTokens) -> ClickOutcome {
@@ -515,6 +657,9 @@ impl Island {
                 expanded: v(3),
                 vitals: v(4),
                 sweep: v(5),
+                timer: v(6),
+                timer_compact: v(7),
+                alert: v(8),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -618,15 +763,15 @@ mod tests {
         i.click(cx, cy, &t);
         settle(&mut i, &t);
         let p = i.pill_rect();
-        let tile = layout::home_tiles()[3];
+        let tile = layout::home_tiles()[4];
         let out = i.click(p.x + tile.x + 5.0, p.y + tile.y + 5.0, &t);
-        assert_eq!(out, ClickOutcome::Locked(3));
+        assert_eq!(out, ClickOutcome::Locked(4));
         assert_eq!(i.state(), IslandState::Home);
         assert!(i.is_animating());
         i.step(0.05, &t);
         let v = i.view();
-        assert_eq!(v.shake.map(|s| s.0), Some(3));
-        assert_eq!(v.hint.map(|h| h.0), Some(3));
+        assert_eq!(v.shake.map(|s| s.0), Some(4));
+        assert_eq!(v.hint.map(|h| h.0), Some(4));
         settle(&mut i, &t);
         assert!(i.view().shake.is_none() && i.view().hint.is_none());
     }
@@ -1104,5 +1249,216 @@ mod tests {
         i.release();
         settle(&mut i, &t);
         assert_eq!(i.view().osd.alpha, 0.0);
+    }
+
+    // ---- Timer ----
+
+    const RUNNING: TimerUi = TimerUi {
+        active: true,
+        done: false,
+    };
+    const DONE: TimerUi = TimerUi {
+        active: false,
+        done: true,
+    };
+
+    fn timer_index() -> usize {
+        FEATURES.iter().position(|f| f.id == "timer").unwrap()
+    }
+
+    /// Window-logical centre of `r`, for a view of width `w` anchored centre-top.
+    fn view_at(w: f32, r: Rect) -> (f32, f32) {
+        let (win_w, _) = layout::window_size();
+        (
+            (win_w - w) / 2.0 + r.x + r.w / 2.0,
+            layout::TOP_MARGIN + r.y + r.h / 2.0,
+        )
+    }
+
+    fn size(i: &Island) -> (f32, f32) {
+        let r = i.pill_rect();
+        (r.w, r.h)
+    }
+
+    #[test]
+    fn timer_tile_reports_open_and_the_panel_collapses_on_an_empty_click() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        settle(&mut i, &t);
+        let tile = layout::home_tiles()[timer_index()];
+        let p = i.pill_rect();
+        let out = i.click(p.x + tile.x + 5.0, p.y + tile.y + 5.0, &t);
+        assert_eq!(out, ClickOutcome::Open(timer_index()));
+        i.open_timer(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::TimerPanel);
+        assert_eq!(size(&i), (layout::TIMER_W, layout::TIMER_H));
+        let l = i.view().layers;
+        assert_eq!(
+            (l.home, l.timer, l.timer_compact, l.alert),
+            (0.0, 1.0, 0.0, 0.0)
+        );
+        // The ring is not a control: collapses. Stopped, so back to Idle.
+        let (x, y) = view_at(layout::TIMER_W, layout::TP_RING);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn timer_panel_controls_report_their_actions() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.open_timer(&t);
+        settle(&mut i, &t);
+        let w = layout::TIMER_W;
+        let cases = [
+            (layout::TP_TOGGLE, TimerAction::Toggle),
+            (layout::TP_SKIP, TimerAction::Skip),
+            (layout::TP_RESET, TimerAction::Reset),
+            (layout::tp_chip(0), TimerAction::Preset(0)),
+            (layout::tp_chip(1), TimerAction::Preset(1)),
+            (layout::tp_chip(2), TimerAction::Preset(2)),
+        ];
+        for (r, want) in cases {
+            let (x, y) = view_at(w, r);
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Timer(want), "{r:?}");
+        }
+        assert_eq!(i.state(), IslandState::TimerPanel);
+        // Done inline: start continues and reset stops; the panel stays open.
+        i.set_timer(DONE, &t);
+        assert_eq!(i.state(), IslandState::TimerPanel);
+        let (x, y) = view_at(w, layout::TP_TOGGLE);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Timer(TimerAction::Continue)
+        );
+        let (x, y) = view_at(w, layout::TP_RESET);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Timer(TimerAction::Stop));
+    }
+
+    #[test]
+    fn running_timer_rests_in_timer_compact_without_music() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_timer(RUNNING, &t);
+        assert_eq!(i.state(), IslandState::TimerCompact);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::TIMER_COMPACT_W, layout::TIMER_COMPACT_H));
+        assert_eq!(i.view().layers.timer_compact, 1.0);
+        // A click on the compact opens the panel; an empty click comes back.
+        let (cx, cy) = center(&i);
+        assert_eq!(i.click(cx, cy, &t), ClickOutcome::Expanded);
+        assert_eq!(i.state(), IslandState::TimerPanel);
+        settle(&mut i, &t);
+        let (x, y) = view_at(layout::TIMER_W, layout::TP_RING);
+        i.click(x, y, &t);
+        assert_eq!(i.state(), IslandState::TimerCompact);
+        // Stopping the timer returns to Idle.
+        i.set_timer(TimerUi::default(), &t);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn music_outranks_a_running_timer_and_hands_back_when_it_leaves() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.set_timer(RUNNING, &t);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+        i.set_music(MusicUi::default(), &t);
+        assert_eq!(i.state(), IslandState::TimerCompact);
+        i.set_music(with_track(), &t);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+        // The expanded player losing its track collapses to the timer.
+        i.open_music(&t);
+        i.set_music(MusicUi::default(), &t);
+        assert_eq!(i.state(), IslandState::TimerCompact);
+    }
+
+    #[test]
+    fn done_shows_the_alert_over_the_rest_states() {
+        let t = tokens();
+        for music in [false, true] {
+            let mut i = Island::new(&t);
+            if music {
+                i.set_music(with_track(), &t);
+            }
+            i.set_timer(RUNNING, &t);
+            i.set_timer(DONE, &t);
+            assert_eq!(i.state(), IslandState::TimerAlert, "music {music}");
+            settle(&mut i, &t);
+            assert_eq!(size(&i), (layout::ALERT_W, layout::ALERT_H));
+            assert_eq!(i.view().layers.alert, 1.0);
+            // A track change does not knock the alert off.
+            i.set_music(MusicUi::default(), &t);
+            i.set_music(with_track(), &t);
+            assert_eq!(i.state(), IslandState::TimerAlert);
+        }
+    }
+
+    #[test]
+    fn alert_waits_for_continue_or_stop() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_timer(DONE, &t);
+        settle(&mut i, &t);
+        let w = layout::ALERT_W;
+        let (x, y) = view_at(w, layout::AL_TEXT);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        assert!(!i.hover(x, y));
+        let (x, y) = view_at(w, layout::AL_STOP);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Timer(TimerAction::Stop));
+        let (x, y) = view_at(w, layout::AL_CONTINUE);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Timer(TimerAction::Continue)
+        );
+        // The app continues the timer and pushes the new facts.
+        i.set_timer(RUNNING, &t);
+        assert_eq!(i.state(), IslandState::TimerCompact);
+        i.set_timer(DONE, &t);
+        i.set_timer(TimerUi::default(), &t);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn done_over_an_open_panel_waits_for_the_collapse() {
+        let t = tokens();
+        type Open = fn(&mut Island, &ResolvedTokens);
+        let panels: [(IslandState, Open); 5] = [
+            (IslandState::Home, Island::expand),
+            (IslandState::MusicExpanded, Island::open_music),
+            (IslandState::Vitals, Island::open_vitals),
+            (IslandState::Sweep, Island::open_sweep),
+            (IslandState::TimerPanel, Island::open_timer),
+        ];
+        for (state, open) in panels {
+            let mut i = Island::new(&t);
+            i.set_timer(RUNNING, &t);
+            open(&mut i, &t);
+            i.set_timer(DONE, &t);
+            assert_eq!(i.state(), state);
+            i.collapse(&t);
+            assert_eq!(i.state(), IslandState::TimerAlert, "after {state:?}");
+        }
+    }
+
+    #[test]
+    fn osd_over_the_alert_returns_to_the_alert() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_timer(DONE, &t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.5), &t);
+        settle_pinned(&mut i, &t);
+        assert_eq!(size(&i), (layout::OSD_W, layout::OSD_H));
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::ALERT_W, layout::ALERT_H));
+        assert_eq!(i.view().layers.alert, 1.0);
     }
 }
