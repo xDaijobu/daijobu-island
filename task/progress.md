@@ -24,6 +24,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 7b | Snap: annotations, pin, OCR | 🔒 | — | after 7a |
 | 7c | Snap stack: floating previews, countdown, multi-select, OLE drag-out | 🔒 | — | after 7b |
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
+| N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | 🔵 | `xDaijobu/stage-n-notch` | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -353,6 +354,55 @@ Headless: fmt, clippy, test and release only. Don't run the exe, and don't touch
 ### Log
 - 2026-10-26: defined with the user (minimal: auto-start + Snap hotkeys; press-to-record later).
 - 2026-10-26: built by one Sonnet 5.5 agent (303 tests). Live test passed: gear → panel, the autostart toggle (Run key + config), hotkey chips applied live (the user pressed the keys), then restored to PrtSc + Ctrl+Space.
+
+---
+
+## Stage N: Notch style
+
+**Goal:** the island looks like a hardware notch (iPhone 13 / MacBook) attached to the top edge of the screen, not a pill floating under it. It is a choice in Settings, and notch is the default.
+
+### Scope
+- [x] **Config** `[island] style = "notch" | "pill"`, default `notch`. An unknown value falls back to notch.
+- [x] **Shape (notch).**
+  - The body reaches the top edge (y = 0) with a flat top.
+  - Where it meets the edge there are concave shoulders of 8 px (× scale) on each side.
+  - The sides are straight and the bottom corners use the view's animated radius.
+  - It grows downward and sideways with the spring morph and stays attached to the edge.
+  - The colour is the theme's pill colour (Paper Zine gives a light notch).
+  - The hairline outlines the sides, shoulders and bottom, never the top edge.
+- [x] **Nothing else moves.** The pill rect, every view's content and dj-core's hit testing are unchanged. Only the drawn body grows into the 6 px gap above the pill and out by the shoulders (`layout::notch_bounds`). Pill style renders exactly as before.
+- [x] **Click-through.** In notch style the window region is the pill's column from the top edge down, plus a strip as high as a shoulder, so the area beside the pill below the shoulders stays click-through. A click, hover or drag on the strip above the pill or on a shoulder acts on the nearest point of the pill.
+- [x] **Settings.** A 4th row, "ISLAND STYLE", with a chip (`notch` / `pill`). A click toggles it live, with no restart, and saves the config. The panel grows from 400×184 to 400×220.
+- [x] **No reserved screen space.** It stays an overlay; Windows can only reserve a full-width strip (AppBar), so that was rejected.
+- [x] Idle CPU ≈ 0 (no new timers).
+- [x] **Tests:**
+  - style parsing and defaults
+  - `notch_bounds`
+  - the Settings rects and the hit test for the new chip
+  - the notch path: filled at the top edge and the shoulders, empty inside the shoulder curve, degenerate morph frames
+  - the neck/shoulder clamp in the app
+
+  `fmt`, `clippy -D warnings`, `test` and `build --release` pass.
+
+### Acceptance
+With no `[island]` in the config, the island starts as a notch flush with the top of the screen, with smooth concave shoulders. Expanding it (Home, Music, Vitals, Timer, Settings, the snap thumb, the OSD) grows the notch downward while it stays attached. Clicking the strip above the content works like clicking the island. Settings → ISLAND STYLE toggles between notch and pill at once, and the choice survives a restart. Every theme looks right, including Paper Zine.
+
+### Log
+- 2026-10-26: requested by the user while Stage 7b runs, and built in parallel with it ("langsung aj diterapin", "paksa spawn subagent 4 biji").
+  - Decided: a Settings choice rather than a replacement, default notch, theme pill colour (forced black was rejected), no AppBar.
+  - Approach: the pill rect stays put and only the body shape grows to the edge, so the layout and hit testing are untouched.
+  - The coordinator wrote the shared skeleton (`d74d2bc`). Four Opus subagents filled in:
+    - dj-core tests
+    - dj-render shape
+    - the dj-render Settings row and docs
+    - the app region and neck clamp
+- 2026-10-26: integrated by the coordinator.
+  - The dj-core agent widened the window by 16 px (520 → 536) so Home's shoulders fit. Accepted: the swap chain is still sized once.
+  - The coordinator narrowed the click-through region from the whole `notch_bounds` box to the column plus the shoulder strip (`dj_win::window::set_hit_rects`, `CombineRgn`).
+  - fmt, clippy `-D warnings`, 328 tests (was 303) and `build --release` pass. Report: [`stage-n-report.md`](stage-n-report.md).
+- 2026-10-26: live test passed.
+  - Coordinator: idle notch flush with the edge, with concave shoulders and grain over the whole body. Home → gear → Settings stays attached. The ISLAND STYLE chip toggles notch ↔ pill live and saves `[island] style`.
+  - User, with the real mouse ("notch oke"): clicks on the top edge, click-through beside the panel, themes.
 
 ---
 

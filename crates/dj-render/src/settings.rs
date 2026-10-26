@@ -1,5 +1,6 @@
-//! The Settings panel (400 x 184): the Start with Windows switch and the two Snap hotkey
-//! chips. Content is anchored to the pill's top-centre like the other views. A key that
+//! The Settings panel (400 x 220): a header, then four rows: the Start with Windows
+//! switch, the two Snap hotkey chips and the island style chip (`notch` or `pill`).
+//! Content is anchored to the pill's top-centre like the other views. A hotkey that
 //! another app holds draws its chip in the warn colour, with a status line below.
 
 use crate::fonts::Weight;
@@ -53,6 +54,7 @@ impl Painter {
             (lay::ST_ROW_AUTOSTART, "START WITH WINDOWS"),
             (lay::ST_ROW_HOTKEY, "SNAP HOTKEY"),
             (lay::ST_ROW_ALT, "SNAP ALT HOTKEY"),
+            (lay::ST_ROW_STYLE, "ISLAND STYLE"),
         ] {
             let r = at(row);
             draw_text(
@@ -91,7 +93,7 @@ impl Painter {
         let knob = if v.autostart { t.pill } else { t.text_dim };
         canvas.draw_circle((knob_x, tr.center_y()), knob_r, &fill_paint(col(knob, 1.0)));
 
-        // The hotkey chips.
+        // The chips: two hotkeys (warn when taken) and the island style (never warns).
         let chip_font = self.fonts.font(&t.font_label, Weight::Medium, 10.0 * s);
         let chips = [
             (lay::ST_HOTKEY, v.hotkey.label(), v.hotkey_taken),
@@ -100,6 +102,7 @@ impl Painter {
                 dj_core::settings::alt_label(v.alt),
                 v.alt_taken,
             ),
+            (lay::ST_STYLE, v.style.label(), false),
         ];
         for (chip, text, taken) in chips {
             let r = at(chip);

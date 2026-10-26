@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint, SetWindowRgn, HGDIOBJ,
-    MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint, SetWindowRgn,
+    HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
@@ -213,10 +213,25 @@ pub fn place(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
 /// Click-through outside the pill: clip the window to `(l, t, r, b)` (client px).
 /// `HTTRANSPARENT` doesn't work across processes, a window region does.
 pub fn set_hit_region(hwnd: HWND, l: i32, t: i32, r: i32, b: i32) {
-    // SAFETY: on success the system takes ownership of the region; on failure we
-    // free it ourselves.
+    set_hit_rects(hwnd, &[(l, t, r, b)]);
+}
+
+/// Like [`set_hit_region`], for the union of several `(l, t, r, b)` rects (client px).
+/// An empty list leaves the region as it is.
+pub fn set_hit_rects(hwnd: HWND, rects: &[(i32, i32, i32, i32)]) {
+    let Some(&(l, t, r, b)) = rects.first() else {
+        return;
+    };
+    // SAFETY: every region made here is either combined into `rgn` and freed, or is
+    // `rgn` itself. On success the system takes ownership of `rgn`; on failure we free
+    // it ourselves.
     unsafe {
         let rgn = CreateRectRgn(l, t, r, b);
+        for &(l, t, r, b) in &rects[1..] {
+            let part = CreateRectRgn(l, t, r, b);
+            CombineRgn(Some(rgn), Some(rgn), Some(part), RGN_OR);
+            let _ = DeleteObject(HGDIOBJ(part.0));
+        }
         if SetWindowRgn(hwnd, Some(rgn), false) == 0 {
             let _ = DeleteObject(HGDIOBJ(rgn.0));
         }
