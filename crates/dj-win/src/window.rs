@@ -35,6 +35,8 @@ pub const WM_WAKE: u32 = WM_APP + 6;
 pub const WM_VITALS: u32 = WM_APP + 7;
 /// Posted by the sweep worker thread: scan, clean or quick-action results are queued.
 pub const WM_SWEEP: u32 = WM_APP + 8;
+/// Posted by the keyboard hook: plain PrtSc was pressed (and kept from Windows).
+pub const WM_PRINT_SCREEN: u32 = WM_APP + 9;
 /// Not exported by the windows crate.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const TIMER_THEMES_DEBOUNCE: usize = 0xD001;
@@ -76,6 +78,8 @@ pub enum Event {
     DefaultDeviceChanged,
     /// A volume key was pressed (virtual-key code). Its default action is swallowed.
     VolumeKey(u32),
+    /// Plain PrtSc, taken by the keyboard hook before Windows' screen capture sees it.
+    PrintScreen,
     /// The Music engine has queued messages (drain them with its `poll`).
     Music,
     /// Another thread has results ready (see [`wake`]).
@@ -269,6 +273,7 @@ pub fn quit() {
 
 pub const MOD_CTRL_ALT: u32 = MOD_CONTROL.0 | MOD_ALT.0;
 pub const MOD_CTRL_SHIFT: u32 = MOD_CONTROL.0 | MOD_SHIFT.0;
+pub const MOD_CTRL: u32 = MOD_CONTROL.0;
 /// No modifiers (PrtSc on its own).
 pub const MOD_NONE: u32 = 0;
 
@@ -428,6 +433,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         WM_VOLUME_KEY => {
             push(Event::VolumeKey(wp.0 as u32));
+            return LRESULT(0);
+        }
+        WM_PRINT_SCREEN => {
+            push(Event::PrintScreen);
             return LRESULT(0);
         }
         WM_VITALS => {

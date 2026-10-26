@@ -3,8 +3,8 @@
 
 use crate::chime::SystemChime;
 use crate::snap::{
-    self as snapper, Snapper, SystemClipboard, SystemScreen, HOTKEY_SNAP, HOTKEY_SNAP_ESC,
-    START_DELAY_MS, TIMER_SNAP_START, TIMER_SNAP_THUMB, VK_ESCAPE,
+    self as snapper, Snapper, SystemClipboard, SystemScreen, HOTKEY_SNAP, HOTKEY_SNAP_ALT,
+    HOTKEY_SNAP_ESC, START_DELAY_MS, TIMER_SNAP_START, TIMER_SNAP_THUMB, VK_ESCAPE,
 };
 use crate::storage;
 use crate::sweep::{Job, Msg, ScanId, Sweeper};
@@ -257,11 +257,11 @@ impl App {
             Err(e) => storage::log(&format!("volume endpoint: {e}")),
         }
         // Without an endpoint the keys would be swallowed and do nothing, so the flyout stays.
-        if self.config.osd.replace_volume_flyout
-            && self.mixer.is_some()
-            && !hook::install(self.hwnd)
-        {
-            storage::log("cannot install the volume key hook");
+        if self.config.osd.replace_volume_flyout && self.mixer.is_some() {
+            hook::set_volume_keys(true);
+            if !hook::install(self.hwnd) {
+                storage::log("cannot install the volume key hook");
+            }
         }
     }
 
@@ -536,44 +536,53 @@ impl App {
 
     // ---- Snap ----
 
-    /// Registers `[snap] hotkey`, falling back to Ctrl+Shift+S. Every failure and its
-    /// reason goes to the log.
+    /// Sets up `[snap] hotkey` and `[snap] alt_hotkey`. PrtSc goes through the keyboard
+    /// hook, which keeps it from Windows' own screen capture (that one doesn't use
+    /// `RegisterHotKey`, so registering PrtSc alone would not win). If the hook can't be
+    /// installed, PrtSc is registered as a plain hotkey instead. Every failure goes to
+    /// the log.
     fn register_snap_hotkey(&mut self) {
-        let raw = self.config.snap.hotkey.clone();
-        if SnapHotkey::parse(&raw).is_none() {
-            storage::log(&format!("snap: unknown hotkey {raw:?}, using PrtSc"));
+        let snap = self.config.snap.clone();
+        if SnapHotkey::parse(&snap.hotkey).is_none() {
+            storage::log(&format!(
+                "snap: unknown hotkey {:?}, using PrtSc",
+                snap.hotkey
+            ));
         }
-        let want = self.config.snap.hotkey();
-        let mut reasons = Vec::new();
-        for key in want.candidates() {
-            let (mods, vk) = snapper::hotkey_keys(key);
-            match window::try_register_hotkey(self.hwnd, HOTKEY_SNAP, mods, vk) {
-                Ok(()) => {
-                    if key != want {
-                        storage::log(&format!(
-                            "snap: {} is not available ({}), using {}",
-                            want.label(),
-                            reasons.join("; "),
-                            key.label()
-                        ));
-                    }
-                    return;
-                }
-                Err(e) => {
-                    let hint = if key == SnapHotkey::PrtSc {
-                        " (Windows' \"Use the Print screen key to open screen capture\" \
-                         setting may hold it)"
-                    } else {
-                        ""
-                    };
-                    reasons.push(format!("{}: {}{hint}", key.label(), e.trim()));
+        let main = snap.hotkey();
+        let hooked = main == SnapHotkey::PrtSc && {
+            hook::set_print_screen(true);
+            let ok = hook::install(self.hwnd);
+            if !ok {
+                hook::set_print_screen(false);
+                storage::log("snap: cannot install the keyboard hook for PrtSc");
+            }
+            ok
+        };
+        if !hooked {
+            self.register_snap_key(HOTKEY_SNAP, main);
+        }
+        match snap.alt_hotkey() {
+            Some(alt) => self.register_snap_key(HOTKEY_SNAP_ALT, alt),
+            None => {
+                let off = snap.alt_hotkey.trim();
+                if !off.is_empty() && !off.eq_ignore_ascii_case("none") {
+                    storage::log(&format!("snap: alt_hotkey {off:?} not used"));
                 }
             }
         }
-        storage::log(&format!(
-            "snap: no hotkey registered ({})",
-            reasons.join("; ")
-        ));
+    }
+
+    /// Registers one Snap shortcut under `id`, logging why if another app holds it.
+    fn register_snap_key(&mut self, id: i32, key: SnapHotkey) {
+        let (mods, vk) = snapper::hotkey_keys(key);
+        if let Err(e) = window::try_register_hotkey(self.hwnd, id, mods, vk) {
+            storage::log(&format!(
+                "snap: {} is not available: {}",
+                key.label(),
+                e.trim()
+            ));
+        }
     }
 
     /// PrtSc or the Home tile. Any open panel collapses first (so it isn't in the
@@ -1264,6 +1273,7 @@ impl App {
     fn quit(&mut self) {
         self.end_snap(false);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
+        window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ALT);
         self.engine = None;
         hook::uninstall();
         self.mixer = None; // unregisters the audio callbacks
@@ -1379,7 +1389,9 @@ impl Handler for App {
             }
             Event::Hotkey(HOTKEY_TOGGLE) => self.set_visible(!self.visible),
             Event::Hotkey(HOTKEY_THEME) => self.cycle_theme(),
-            Event::Hotkey(HOTKEY_SNAP) => self.request_snap(),
+            Event::Hotkey(HOTKEY_SNAP | HOTKEY_SNAP_ALT) | Event::PrintScreen => {
+                self.request_snap()
+            }
             Event::Hotkey(HOTKEY_SNAP_ESC) => self.end_snap(false),
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
