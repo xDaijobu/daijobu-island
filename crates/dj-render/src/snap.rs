@@ -465,7 +465,7 @@ fn draw_edit(
         &fill_paint(Color::from_argb((DIM * 255.0) as u8, 0, 0, 0)),
     );
     canvas.restore();
-    draw_markup(
+    let _ = draw_markup(
         canvas,
         e.shapes(),
         e.draft(),

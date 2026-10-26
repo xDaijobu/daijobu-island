@@ -145,3 +145,56 @@ To drive the overlay without the real mouse (as in 7a), post client-px mouse mes
 - **Global hotkeys still win.** If `[snap] hotkey` / `alt_hotkey` is Ctrl+Shift+S or Ctrl+Alt+S, that combination never reaches the editor while the overlay is up (plain Ctrl+S still saves).
 - **Very narrow monitors** (under 531 logical px) clip the two-row toolbar at the monitor's edge.
 - **The shared target dir** can mix crates between worktrees (see above).
+
+## Follow-up verification on master (2026-10-26)
+
+Base: `master` at `f7f9215` (includes 7b, N and N2), plus the uncommitted fixes below. The original verdict/results above describe the earlier stage delivery, not live verification. This follow-up is also **headless**: no app launch, GUI input, real screen capture or real clipboard writes. Desktop-control tools were unavailable, so the live test script remains pending.
+
+### Confirmed regressions fixed
+
+- **Pixelate raster failure:** a failed pixelate image creation previously returned `None`, which the shared painter silently skipped; output could still be returned as successful with underlying pixels exposed. `draw_shape`/`draw_markup` now return an error while restoring the canvas/cache state. The overlay covers the failed pixelate rectangle with opaque black, clipped to the selection, and still paints other shapes. Output propagates the error to the existing `Snapper::end` failure path instead of copying/saving an unredacted result. Normal pixelate rendering is unchanged.
+- **Double-click through toolbar/picker:** the Select tool's committed-text fast path now runs only with the picker closed and pointer outside the entire toolbar. Controls, padding and the picker-dismissal click go through the existing `press()` priority rules; normal text re-edit still works.
+
+Five new deterministic regressions were run against the old behavior and failed, then passed after the fixes:
+
+```text
+pixelate_failure_refuses_output
+pixelate_failure_covers_preview_and_restores_canvas
+double_click_on_toolbar_does_not_edit_committed_text
+double_click_on_picker_does_not_edit_committed_text
+double_click_outside_picker_closes_it_before_re_editing_text
+```
+
+Pixelate failure is injected at the cache/raster boundary in test builds, not reproduced by exhausting real machine memory. The output test exercises the same render implementation as `render_output`; the preview test checks opaque coverage, clipping and canvas restoration. Existing fake-clipboard tests cover Ctrl+C, Ctrl+S, annotated PNG/DIB output, cancellation and text commit/re-edit. They do not exercise native keyboard focus or real clipboard consumers.
+
+### Fresh validation
+
+Used MSVC/SDK configuration from `dj-build-env.sh`, overriding the shared target with this checkout's **`target/verify-7b`** and `CARGO_BUILD_JOBS=2`. No shared-target cleanup and no running process was stopped.
+
+```sh
+source C:/Users/UseR/orca/workspaces/daijobu-island/dj-build-env.sh
+export CARGO_TARGET_DIR=C:/Users/UseR/orca/projects/daijobu-island/target/verify-7b
+export CARGO_BUILD_JOBS=2
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --release
+```
+
+- fmt/check and clippy: passed.
+- Workspace tests: **393 passed, 0 failed**. dj-core 244, dj-render 33, app 39, dj-capture 8, dj-win 8, dj-sweep 35, dj-vitals 26, dj-music 0. Five more than the merged N2 baseline (388). Test binaries were also run directly to confirm counts because command output summarized Cargo results.
+- Release build: passed, including final executable at `target/verify-7b/release/daijobu.exe`. Not launched; the ordinary shared `target/release/daijobu.exe` was not replaced and is not this verification artifact.
+- `git diff --check`: passed. No new dependencies, unsafe blocks, runtime timers or 7c implementation. Changes remain uncommitted for review.
+
+### Review / live checks still required
+
+- Run the existing 22-step live script, especially Ctrl+C after typing, double-clicks over toolbar/picker text overlaps, pixelate output pasted into Paint, and Ctrl+S output. No live or GPU correctness claim is made by these CPU/unit tests.
+- Potential pre-existing lost-capture case remains unverified: overlay handling has no `WM_CAPTURECHANGED`/`WM_CANCELMODE` recovery, while active editor drags intentionally suppress non-Esc keys. Losing a mouse release could leave Ctrl+C ignored until Esc aborts the drag. Confirm with a bounded real-input test before choosing a platform-level fix; this session did not change input capture semantics.
+- Stage 7c planning is in `task/progress.md` and `task/stage-7c-brief.md`; OLE is deferred to 7c-2. This is not a claim that 7c has started or that 7b live acceptance passed.
+
+### Startup-only smoke test (2026-10-26, subsequent user request)
+
+The user subsequently requested an app launch. Started `target/verify-7b/release/daijobu.exe`, PID 48364, and left it running for user inspection. Process inspection found a `Daijobu Island` main window and `Responding = True`. Two 5-second samples consumed 31.25 ms then 0 ms CPU; final working set was approximately 117.3 MiB. No crash was observed during those checks.
+
+The only new app-log line was `snap: Ctrl+Space is not available: Hot key is already registered.` The conflicting owner was not identified and no other application's hotkey/settings were changed. This verifies startup/process responsiveness only: no screenshots or automated GUI actions were available, and capture, typing, double-click, copy/paste and saved-image behavior remain unverified live.

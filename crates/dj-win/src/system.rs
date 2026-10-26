@@ -158,6 +158,8 @@ pub fn local_time() -> (u32, u32, u32) {
 }
 
 static TOPMOST_HWND: AtomicIsize = AtomicIsize::new(0);
+/// A second window that stays on top with the island (the Snap preview stack); 0 if none.
+static COMPANION_HWND: AtomicIsize = AtomicIsize::new(0);
 
 // SAFETY: only ever invoked by the system as a WINEVENTPROC; it ignores all arguments.
 unsafe extern "system" fn foreground_changed(
@@ -169,21 +171,32 @@ unsafe extern "system" fn foreground_changed(
     _thread: u32,
     _time: u32,
 ) {
-    let ours = HWND(TOPMOST_HWND.load(Ordering::Relaxed) as *mut _);
-    // SAFETY: the handle is our own window; only the z-order is touched.
-    unsafe {
-        if IsWindowVisible(ours).as_bool() {
-            let _ = SetWindowPos(
-                ours,
-                Some(HWND_TOPMOST),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
+    for raw in [&TOPMOST_HWND, &COMPANION_HWND].map(|h| h.load(Ordering::Relaxed)) {
+        if raw == 0 {
+            continue;
+        }
+        let ours = HWND(raw as *mut _);
+        // SAFETY: the handle is one of our own windows; only the z-order is touched.
+        unsafe {
+            if IsWindowVisible(ours).as_bool() {
+                let _ = SetWindowPos(
+                    ours,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
         }
     }
+}
+
+/// Keeps `hwnd` topmost along with the island (see [`install_topmost_hook`]); `None`
+/// before that window is destroyed.
+pub fn set_topmost_companion(hwnd: Option<HWND>) {
+    COMPANION_HWND.store(hwnd.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
 }
 
 /// Re-asserts topmost whenever the foreground window changes.

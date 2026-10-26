@@ -3,6 +3,8 @@
 
 use crate::chime::SystemChime;
 use crate::notch::{self, Edges};
+use crate::preview_store::Store;
+use crate::previews::{self, Model, Previews, TIMER_SNAP_STACK};
 use crate::snap::{
     self as snapper, End, RoughMeasure, Snapper, SystemClipboard, SystemScreen, HOTKEY_SNAP,
     HOTKEY_SNAP_ALT, HOTKEY_SNAP_ESC, START_DELAY_MS, TIMER_SNAP_START, TIMER_SNAP_THUMB,
@@ -22,6 +24,7 @@ use dj_core::osd::Volume;
 use dj_core::settings::{self, SettingsAction, SettingsView};
 use dj_core::snap::{loupe_label, pixel_at, size_label, IRect, Loupe, Stamp};
 use dj_core::snap_edit::{CursorKind, EditInput, Key, KeyCode, Outcome, Rgba, TextMeasure};
+use dj_core::snap_stack::Stack;
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::vitals::Vitals;
@@ -59,6 +62,19 @@ const VK_VOLUME_UP: u32 = 0xAF;
 const FIRST_DT: f32 = 1.0 / 120.0;
 const MAX_DT: f32 = 0.05;
 const REGION_PAD: i32 = 2;
+
+/// The local time now, for a saved snap's file name.
+fn local_stamp() -> Stamp {
+    let (year, month, day, hour, minute, second) = system::local_datetime();
+    Stamp {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+    }
+}
 
 /// The Snap overlay while a snap is in progress: its window and its renderer.
 struct Overlay {
@@ -137,6 +153,10 @@ pub struct App {
     snap_frame: Option<SnapFrame>,
     /// Another app holds the Snap hotkey / the alt hotkey (the Settings chips go warn).
     snap_taken: (bool, bool),
+    /// The Snap preview stack below the island.
+    previews: Previews,
+    /// The island window's desktop position (device px).
+    win_pos: (i32, i32),
 }
 
 impl App {
@@ -171,6 +191,19 @@ impl App {
             hwnd,
             config.sweep.roots(&profile),
             storage::operations_log_path(),
+        );
+        let raw = hwnd.0 as isize;
+        let previews = Previews::new(
+            Model::new(
+                Stack::new(Duration::from_secs(config.snap.preview_secs())),
+                Store::new(Box::new(move || window::wake(raw))),
+                Box::new(SystemClipboard { owner: raw }),
+                Store::reveal,
+                config.snap.save_dir(&profile),
+                local_stamp,
+            ),
+            hwnd,
+            &tokens,
         );
         let mut app = Self {
             hwnd,
@@ -224,6 +257,8 @@ impl App {
             snap_frame: None,
             snap_taken: (false, false),
             reserved: None,
+            previews,
+            win_pos: (0, 0),
         };
         app.relayout();
         app.install_shell_integration();
@@ -723,9 +758,13 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        // The preview stack must not be in the shot: hidden, and gone from the composed
+        // desktop, before the freeze.
+        self.previews.hide_for_capture(Instant::now());
         let (vx, vy, vw, vh) = overlay::virtual_screen();
         if vw <= 0 || vh <= 0 {
             storage::log("snap: no virtual screen");
+            self.previews.set_allowed(self.visible, Instant::now());
             return;
         }
         let desktop = IRect::new(vx, vy, vw, vh);
@@ -738,6 +777,7 @@ impl App {
             Ok(session) => &session.frames,
             Err(e) => {
                 storage::log(&format!("snap: cannot capture the screen: {e}"));
+                self.previews.set_allowed(self.visible, Instant::now());
                 return;
             }
         };
@@ -746,6 +786,7 @@ impl App {
             Err(e) => {
                 storage::log(&format!("snap: cannot create the overlay: {e}"));
                 self.snapper.end(End::Cancel, Instant::now());
+                self.previews.set_allowed(self.visible, Instant::now());
                 return;
             }
         };
@@ -756,6 +797,7 @@ impl App {
                     storage::log(&format!("snap: overlay renderer: {e}"));
                     overlay::destroy(hwnd);
                     self.snapper.end(End::Cancel, Instant::now());
+                    self.previews.set_allowed(self.visible, Instant::now());
                     return;
                 }
             };
@@ -954,18 +996,7 @@ impl App {
         let profile = std::env::var_os("USERPROFILE")
             .map(PathBuf::from)
             .unwrap_or_default();
-        let (year, month, day, hour, minute, second) = system::local_datetime();
-        (
-            self.config.snap.save_dir(&profile),
-            Stamp {
-                year,
-                month,
-                day,
-                hour,
-                minute,
-                second,
-            },
-        )
+        (self.config.snap.save_dir(&profile), local_stamp())
     }
 
     /// Closes the overlay (its GPU side goes first), then ends the session: a copy or a
@@ -992,9 +1023,21 @@ impl App {
             self.config.snap.annotate = AnnotateConfig::from_prefs(&prefs);
             storage::save_config(&self.config);
         }
+        let now = Instant::now();
         if ended.taken {
             self.show_thumb();
+            // The same shot (shared, not copied) becomes the stack's newest card.
+            let card = self.snapper.payload().zip(
+                self.snapper
+                    .shot()
+                    .map(|s| (previews::first_status(s.status), s.saved.clone())),
+            );
+            if let Some((payload, (status, saved))) = card {
+                self.previews.set_anchor(self.stack_anchor(), now);
+                self.previews.add(payload, status, saved, now);
+            }
         }
+        self.previews.set_allowed(self.visible, now);
     }
 
     /// The fresh shot goes into the island's thumb with a new countdown.
@@ -1049,8 +1092,14 @@ impl App {
             }
             SnapAction::Save => {
                 let (dir, stamp) = self.save_target();
-                if let Err(e) = self.snapper.save(&dir, stamp) {
-                    storage::log(&format!("snap: save failed: {e}"));
+                match self.snapper.save(&dir, stamp) {
+                    // The stack's card for this shot reads "open" for the same file.
+                    Ok(path) => {
+                        if let Some(bitmap) = self.snapper.shot().map(|s| s.bitmap.clone()) {
+                            self.previews.mark_saved(&bitmap, &path);
+                        }
+                    }
+                    Err(e) => storage::log(&format!("snap: save failed: {e}")),
                 }
             }
             // The island has gone to its rest state already.
@@ -1213,6 +1262,7 @@ impl App {
         let (w, h) = ((lw * scale).ceil() as i32, (lh * scale).ceil() as i32);
         let (x, y) = window::top_center(&mon, w);
         window::place(self.hwnd, x, y, w, h);
+        self.win_pos = (x, y);
         if (w, h) != self.win_px || self.renderer.is_none() {
             self.renderer = None; // drop the old swap chain first
             self.win_px = (w, h);
@@ -1222,8 +1272,26 @@ impl App {
         }
         self.scale = scale;
         self.dirty = true;
-        // The monitor or its DPI may have changed: the strip's size goes with it.
+        // The monitor or its DPI may have changed: the strip's size goes with it, and the
+        // preview stack is made again at the new scale under the island.
         self.sync_appbar(true);
+        let now = Instant::now();
+        self.previews.relayout(self.stack_anchor(), now);
+    }
+
+    /// The island itself needs a frame: it moves, crossfades a theme, or changed.
+    fn island_due(&self) -> bool {
+        self.visible && (self.dirty || self.island.is_animating() || self.anim.animating())
+    }
+
+    /// The island's centre and lower edge, desktop px: the Snap preview stack hangs
+    /// below it and follows it as panels open and close.
+    fn stack_anchor(&self) -> (i32, i32) {
+        let pill = self.island.pill_rect();
+        (
+            self.win_pos.0 + self.win_px.0 / 2,
+            self.win_pos.1 + ((pill.y + pill.h) * self.scale).ceil() as i32,
+        )
     }
 
     fn create_renderer(&self, w: i32, h: i32) -> Option<Renderer> {
@@ -1287,6 +1355,9 @@ impl App {
         self.sync_vu_timer();
         // A hidden island gives the screen back.
         self.sync_appbar(false);
+        // The preview stack hides with the island (its countdowns pause).
+        self.previews
+            .set_allowed(visible && self.overlay.is_none(), Instant::now());
     }
 
     // ---- YouTube Music ----
@@ -1503,6 +1574,7 @@ impl App {
                 running: self.engine.is_some(),
                 signed_in: self.session.signed_in,
             },
+            previews: self.previews.can_focus(),
         };
         match tray::show_menu(self.hwnd, &spec) {
             Some(MenuCommand::ToggleVisible) => self.set_visible(!self.visible),
@@ -1521,6 +1593,7 @@ impl App {
             Some(MenuCommand::MusicShow) => self.ensure_engine(true),
             Some(MenuCommand::MusicSignOut) => self.sign_out(),
             Some(MenuCommand::MusicStop) => self.stop_engine(),
+            Some(MenuCommand::SnapPreviews) => self.previews.focus_keyboard(Instant::now()),
             Some(MenuCommand::Quit) => self.quit(),
             None => {}
         }
@@ -1531,6 +1604,7 @@ impl App {
         appbar::release(self.hwnd);
         self.reserved = None;
         self.end_snap(End::Cancel);
+        self.previews.shutdown();
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ALT);
         self.engine = None;
@@ -1666,6 +1740,7 @@ impl Handler for App {
             Event::Hotkey(HOTKEY_SNAP_ESC) => self.snap_escape(),
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
+            Event::Previews(input) => self.previews.input(input, Instant::now()),
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
             Event::DpiChanged => self.relayout(),
@@ -1719,9 +1794,21 @@ impl Handler for App {
                     self.dirty = true;
                 }
             }
+            Event::Timer(TIMER_SNAP_STACK) => self.previews.timer(Instant::now()),
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
-            Event::Wake => self.drain_art(),
+            Event::Wake => {
+                self.drain_art();
+                // A card saved the thumb's shot: the thumb reads "open" too.
+                let saved = self.previews.drain(Instant::now());
+                if !saved.is_empty() {
+                    for (bitmap, path) in &saved {
+                        self.snapper.mark_saved(bitmap, path);
+                    }
+                    self.update_snap_frame();
+                    self.dirty = true;
+                }
+            }
             Event::TaskbarCreated => {
                 if let Some(icon) = self.icon {
                     tray::add(self.hwnd, icon, "Daijobu Island");
@@ -1746,7 +1833,7 @@ impl Handler for App {
         if let Some(ov) = &self.overlay {
             return ov.dirty;
         }
-        self.visible && (self.dirty || self.island.is_animating() || self.anim.animating())
+        self.island_due() || self.previews.wants_frame()
     }
 
     fn frame(&mut self) {
@@ -1759,8 +1846,23 @@ impl Handler for App {
             .last_frame
             .map_or(FIRST_DT, |t| (now - t).as_secs_f32().min(MAX_DT));
         self.last_frame = Some(now);
+        let island_due = self.island_due();
+        let theming = self.anim.animating();
         self.anim.step(dt);
         self.island.step(dt, self.anim.current());
+        // The preview stack follows the island's edge and its theme, and draws only when
+        // it has something new (a ring tick or a spring can come without the island).
+        if theming {
+            self.previews.set_tokens(self.anim.current());
+        }
+        self.previews.set_anchor(self.stack_anchor(), now);
+        self.previews.frame(dt, now);
+        if !island_due {
+            if !self.wants_frame() {
+                self.last_frame = None;
+            }
+            return;
+        }
         self.dirty = false;
 
         // The region must cover both this frame's body and the previous one, or the
@@ -1829,10 +1931,12 @@ impl Handler for App {
                 self.last_frame = None;
             }
         }
-        if !self.wants_frame() {
+        if !self.island_due() {
             // Settled: one final tight region, and the next animation restarts its clock.
             self.set_region(rect);
-            self.last_frame = None;
+            if !self.wants_frame() {
+                self.last_frame = None;
+            }
         }
         // The thumb has faded out: drop its small copy of the shot.
         if self.snap_frame.is_some() && !self.island.snap_shown() && view.layers.snap <= 0.0 {

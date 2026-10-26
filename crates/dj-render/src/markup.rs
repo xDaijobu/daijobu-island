@@ -90,10 +90,16 @@ impl TextMeasure for TextMetrics {
 #[derive(Default)]
 pub(crate) struct PixelCache {
     entries: Vec<(IRect, i32, Image, bool)>,
+    #[cfg(test)]
+    fail_next_raster: bool,
 }
 
 impl PixelCache {
     fn get(&mut self, frames: &[MonitorFrame], rect: IRect, block: i32) -> Option<Image> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_raster) {
+            return None;
+        }
         if let Some(e) = self
             .entries
             .iter_mut()
@@ -125,14 +131,16 @@ pub(crate) fn draw_markup(
     frames: &[MonitorFrame],
     cache: &mut PixelCache,
     metrics: &TextMetrics,
-) {
+) -> Result<(), &'static str> {
     canvas.save();
     canvas.clip_rect(frect(clip), ClipOp::Intersect, false);
+    let mut result = Ok(());
     for s in shapes.iter().chain(draft) {
-        draw_shape(canvas, s, frames, cache, metrics);
+        result = result.and(draw_shape(canvas, s, frames, cache, metrics));
     }
     canvas.restore();
     cache.sweep();
+    result
 }
 
 /// A freehand stroke, smoothed through the midpoints. One point is a dot.
@@ -164,7 +172,7 @@ fn draw_shape(
     frames: &[MonitorFrame],
     cache: &mut PixelCache,
     metrics: &TextMetrics,
-) {
+) -> Result<(), &'static str> {
     let ink = color(s.color, 1.0);
     let w = s.width();
     match &s.kind {
@@ -214,7 +222,7 @@ fn draw_shape(
             let ir = r.to_irect();
             let block = s.block();
             if ir.is_empty() {
-                return;
+                return Ok(());
             }
             if let Some(img) = cache.get(frames, ir, block) {
                 // Each cell becomes a `block` px square, nearest sampled, from the box's
@@ -230,6 +238,11 @@ fn draw_shape(
                     None,
                 );
                 canvas.restore();
+            } else {
+                let mut cover = fill_paint(Color::BLACK);
+                cover.set_anti_alias(false);
+                canvas.draw_rect(frect(ir), &cover);
+                return Err("cannot render pixelate");
             }
         }
         ShapeKind::Step { at, n } => {
@@ -248,6 +261,7 @@ fn draw_shape(
             );
         }
     }
+    Ok(())
 }
 
 /// The copied/saved image: the crop of `rect` with the markup drawn over it, on a CPU
@@ -257,6 +271,15 @@ pub fn render_output(
     frames: &[MonitorFrame],
     rect: IRect,
     shapes: &[Shape],
+) -> Result<Bitmap, String> {
+    render_output_with_cache(frames, rect, shapes, &mut PixelCache::default())
+}
+
+fn render_output_with_cache(
+    frames: &[MonitorFrame],
+    rect: IRect,
+    shapes: &[Shape],
+    cache: &mut PixelCache,
 ) -> Result<Bitmap, String> {
     let base = crop(frames, rect);
     if shapes.is_empty() || base.width == 0 || base.height == 0 {
@@ -272,8 +295,7 @@ pub fn render_output(
         let img = raster(&base).ok_or("cannot wrap the crop")?;
         canvas.draw_image(&img, (0, 0), None);
         canvas.translate((-rect.x as f32, -rect.y as f32));
-        let mut cache = PixelCache::default();
-        draw_markup(canvas, shapes, None, rect, frames, &mut cache, &metrics);
+        draw_markup(canvas, shapes, None, rect, frames, cache, &metrics)?;
     }
     let mut out = Bitmap {
         width: base.width,
@@ -410,6 +432,69 @@ mod tests {
     }
 
     #[test]
+    fn pixelate_failure_refuses_output() {
+        let f = frames();
+        let rect = IRect::new(-50, 0, 150, 100);
+        let p = shape(
+            ShapeKind::Pixelate(FRect::new(-41.0, 5.0, 36.0, 24.0)),
+            SWATCHES[0],
+        );
+        let mut cache = PixelCache {
+            fail_next_raster: true,
+            ..PixelCache::default()
+        };
+        assert!(matches!(
+            render_output_with_cache(&f, rect, &[p], &mut cache),
+            Err(e) if e == "cannot render pixelate"
+        ));
+    }
+
+    #[test]
+    fn pixelate_failure_covers_preview_and_restores_canvas() {
+        let f = frames();
+        let p = shape(
+            ShapeKind::Pixelate(FRect::new(0.0, 0.0, 40.0, 40.0)),
+            SWATCHES[0],
+        );
+        let mut surface = surfaces::raster_n32_premul((64, 64)).unwrap();
+        let canvas = surface.canvas();
+        canvas.clear(Color::WHITE);
+        let mut cache = PixelCache {
+            fail_next_raster: true,
+            ..PixelCache::default()
+        };
+        assert_eq!(
+            draw_markup(
+                canvas,
+                &[p],
+                None,
+                IRect::new(5, 5, 20, 20),
+                &f,
+                &mut cache,
+                &TextMetrics::new().unwrap(),
+            ),
+            Err("cannot render pixelate")
+        );
+        canvas.draw_rect(
+            Rect::from_xywh(40.0, 40.0, 10.0, 10.0),
+            &fill_paint(Color::RED),
+        );
+        let mut out = Bitmap::black(64, 64);
+        let info = ImageInfo::new((64, 64), ColorType::BGRA8888, AlphaType::Premul, None);
+        let stride = out.stride();
+        assert!(surface.read_pixels(&info, &mut out.pixels, stride, (0, 0)));
+        for y in 5..25 {
+            for x in 5..25 {
+                assert_eq!(px(&out, x, y), [0, 0, 0, 255]);
+            }
+        }
+        assert_eq!(px(&out, 4, 5), [255, 255, 255, 255]);
+        assert_eq!(px(&out, 25, 5), [255, 255, 255, 255]);
+        assert_eq!(px(&out, 45, 45), [0, 0, 255, 255]);
+        assert!(cache.entries.is_empty());
+    }
+
+    #[test]
     fn markup_is_clipped_to_the_selection() {
         let f = frames();
         // A line that runs far outside the crop on both sides.
@@ -426,7 +511,7 @@ mod tests {
         canvas.clear(Color::BLACK);
         let metrics = TextMetrics::new().unwrap();
         let mut cache = PixelCache::default();
-        draw_markup(canvas, &[l], None, rect, &f, &mut cache, &metrics);
+        draw_markup(canvas, &[l], None, rect, &f, &mut cache, &metrics).unwrap();
         let img = surface.image_snapshot();
         let info = ImageInfo::new((1, 1), ColorType::BGRA8888, AlphaType::Premul, None);
         let read = |x: i32, y: i32| {
