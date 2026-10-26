@@ -313,8 +313,6 @@ impl Snapper {
     /// The current shot's image and PNG for a preview card: clones of the `Arc`s, so
     /// nothing is copied and the bytes are counted once. None without a shot. The card
     /// keeps them after the thumb goes (`dismiss`), and the thumb after the card does.
-    // Used by the preview stack's controller (Stage 7c, part F).
-    #[allow(dead_code)]
     pub fn payload(&self) -> Option<Payload> {
         let shot = self.shot.as_ref()?;
         Some(Payload {

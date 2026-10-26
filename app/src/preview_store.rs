@@ -23,9 +23,6 @@
 //! Dropping the `Store` never blocks: the thread is not joined. It finishes the job in
 //! hand, skips the queue and exits.
 
-// Until the stack's controller (Stage 7c, part F) uses it all.
-#![allow(dead_code)]
-
 use crate::snap::{put_image, write_new, Clipboard};
 use dj_core::snap::{Bitmap, Stamp};
 use dj_sweep::Ops;
