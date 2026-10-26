@@ -112,7 +112,7 @@ impl Timer {
 
 /// Rounded-up milliseconds plus slack, clamped to what `SetTimer` takes.
 fn ms(d: Duration) -> u32 {
-    let whole = d.as_millis() as u64 + u64::from(d.subsec_nanos() % 1_000_000 > 0);
+    let whole = d.as_millis() as u64 + u64::from(!d.subsec_nanos().is_multiple_of(1_000_000));
     (whole + SLACK_MS).min(u64::from(u32::MAX / 2)) as u32
 }
 
@@ -242,6 +242,10 @@ mod tests {
         t.apply(TimerAction::Toggle, now);
         assert!(!t.apply(TimerAction::Preset(0), now));
         assert!(t.apply(TimerAction::Reset, now));
-        assert_eq!(t.view(now).digits, "50:00", "the preset stays until restart");
+        assert_eq!(
+            t.view(now).digits,
+            "50:00",
+            "the preset stays until restart"
+        );
     }
 }
