@@ -2,7 +2,7 @@
 
 <p align="center">
   A lofi dynamic island for Windows 11.<br>
-  Rust, Skia and plain Win32. No webview.
+  Rust, Skia and plain Win32. WebView2 only for the YouTube Music engine.
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 
 ## Status
 
-Early development. The app shell, Music (YouTube Music), the volume OSD and Vitals are in. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
+Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals with Sweep, and the Timer are in. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
 
 | Stage | | |
 |---|---|---|
@@ -33,12 +33,14 @@ Early development. The app shell, Music (YouTube Music), the volume OSD and Vita
 | 2 | Music: YouTube Music playing headless, the island as the player | ✅ merged, testing |
 | 2b | Music library: search, playlists, queue inside the island | locked |
 | 3 | Volume OSD replacing the Windows flyout | ✅ merged, testing |
-| 4 | Vitals: health score, CPU/RAM/disk/net rings | 🔵 in review |
-| 5 | Timer / pomodoro | locked |
-| 6–7 | Screenshots with a floating preview stack, clipboard history | locked |
-| 8–10 | Notifications, lyrics, `dj` CLI | locked |
-| 11 | Window tiling, scenes, restore-after-reboot | locked |
-| 12–13 | Disk cleanup, file shelf, ambient sounds | locked |
+| 4 | Vitals: health score, CPU/RAM/disk/net rings | ✅ merged, testing |
+| 5 | Vitals + Sweep: disk I/O, top processes, safe disk cleanup | ✅ done |
+| 6 | Timer / pomodoro | ✅ done |
+| 7a–7c | Screenshots: capture, annotate, floating preview stack | 🟡 7a in progress |
+| 8 | Clipboard history | locked |
+| 9–11 | Notifications, lyrics, `dj` CLI | locked |
+| 12 | Window tiling, scenes, restore-after-reboot | locked |
+| 13 | File shelf, ambient sounds | locked |
 
 ## Where it's going
 
@@ -94,15 +96,19 @@ The tray icon has the same controls, plus *Start with Windows*. Settings live in
 - **Rendering:** Skia's GPU backend on Direct3D 12, presenting through a premultiplied-alpha composition swap chain. Grain and dither are SkSL shaders.
 - **Motion:** damped springs (stiffness and damping derived from response and damping ratio) that can be interrupted mid-flight.
 - **Idle cost:** none. When nothing moves, the message loop blocks and nothing is drawn.
+- **Music:** the only place a webview is used. YouTube Music runs in a hidden WebView2 (its window only shows for sign-in and browsing), and the island is its player. The engine starts only when you use Music; the island itself is still drawn with Skia.
 
 ```
 app/              the daijobu binary
 crates/dj-core    springs, themes, feature registry, island state (no unsafe, no Win32)
 crates/dj-render  Skia + D3D12 + DirectComposition
-crates/dj-win     window, tray, hotkeys, autostart
+crates/dj-win     window, tray, hotkeys, autostart, sound
+crates/dj-music   YouTube Music engine (hidden WebView2)
+crates/dj-vitals  CPU, RAM, disk, net, disk I/O, battery, top processes
+crates/dj-sweep   disk cleanup: scanners, protected-path guard, recycle, operations log
 ```
 
-More crates (media, capture, clipboard, tiling, …) are added as their stages start. [`AGENTS.md`](AGENTS.md) describes the conventions and the stage-by-stage workflow.
+More crates (capture, clipboard, tiling, …) are added as their stages start. [`AGENTS.md`](AGENTS.md) describes the conventions and the stage-by-stage workflow.
 
 ## Privacy
 
