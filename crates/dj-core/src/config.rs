@@ -263,12 +263,21 @@ pub struct SnapConfig {
     /// Where **save** writes. A leading `~` is the user profile; a relative or blank
     /// path falls back to the default.
     pub save_dir: String,
+    /// How long a preview card stays in the Snap stack, in active seconds. Signed and
+    /// read leniently (any non-integer counts as the default), so a stray value only
+    /// resets this field, not the whole file. Read it through `preview_secs()`.
+    #[serde(deserialize_with = "lenient_int")]
+    pub preview_seconds: i64,
     /// `[snap.annotate]`: the editor's tool, colour and size, remembered across snaps.
     pub annotate: AnnotateConfig,
 }
 
 /// The default `[snap] save_dir`.
 pub const SNAP_SAVE_DIR: &str = "~/Pictures/Daijobu";
+/// The default `[snap] preview_seconds`.
+pub const PREVIEW_SECS: i64 = 10;
+/// The range `[snap] preview_seconds` accepts (seconds).
+pub const PREVIEW_SECS_RANGE: std::ops::RangeInclusive<i64> = 3..=60;
 
 impl Default for SnapConfig {
     fn default() -> Self {
@@ -276,9 +285,25 @@ impl Default for SnapConfig {
             hotkey: SnapHotkey::PrtSc.label().to_string(),
             alt_hotkey: SnapHotkey::CtrlSpace.label().to_string(),
             save_dir: SNAP_SAVE_DIR.to_string(),
+            preview_seconds: PREVIEW_SECS,
             annotate: AnnotateConfig::default(),
         }
     }
+}
+
+/// An integer field that never fails the file: a value of any other type (a string, a
+/// float, a table, ...) reads as `PREVIEW_SECS`, the one field this is used for.
+fn lenient_int<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Int(i64),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Lenient::deserialize(d)? {
+        Lenient::Int(v) => v,
+        Lenient::Other(_) => PREVIEW_SECS,
+    })
 }
 
 /// `[snap.annotate]`. Written by the app when the overlay closes, if they changed.
@@ -343,6 +368,15 @@ impl AnnotateConfig {
 impl SnapConfig {
     pub fn hotkey(&self) -> SnapHotkey {
         SnapHotkey::parse(&self.hotkey).unwrap_or(SnapHotkey::PrtSc)
+    }
+
+    /// Seconds a preview card counts down: `preview_seconds` when it is in 3..=60, else 10.
+    pub fn preview_secs(&self) -> u64 {
+        if PREVIEW_SECS_RANGE.contains(&self.preview_seconds) {
+            self.preview_seconds as u64
+        } else {
+            PREVIEW_SECS as u64
+        }
     }
 
     /// The second shortcut, unless it is off, unknown or the same as `hotkey`.
@@ -443,6 +477,7 @@ mod tests {
                 hotkey: "Ctrl+Shift+S".into(),
                 alt_hotkey: "none".into(),
                 save_dir: "D:/shots".into(),
+                preview_seconds: 25,
                 annotate: AnnotateConfig {
                     tool: "pixelate".into(),
                     color: "custom".into(),
@@ -626,6 +661,79 @@ mod tests {
             Path::new("D:/shots")
         );
         assert_eq!(c.theme, "paper-zine");
+        assert_eq!(Config::parse(&c.to_toml()), c);
+    }
+
+    #[test]
+    fn snap_preview_seconds_defaults_to_ten_and_reads_the_snap_table() {
+        assert_eq!(SnapConfig::default().preview_seconds, 10);
+        assert_eq!(SnapConfig::default().preview_secs(), 10);
+        // No key, no `[snap]` table, or an older config: ten.
+        assert_eq!(Config::parse("theme = \"x\"").snap.preview_secs(), 10);
+        assert_eq!(
+            Config::parse("[snap]\nhotkey = \"Ctrl+Alt+S\"\n")
+                .snap
+                .preview_secs(),
+            10
+        );
+        let c = Config::parse("[snap]\npreview_seconds = 25\n[timer]\nfocus_min = 50\n");
+        assert_eq!(c.snap.preview_secs(), 25);
+        assert_eq!(c.timer.focus_min, 50);
+        // Both ends of 3..=60 are valid.
+        for ok in [3, 4, 10, 59, 60] {
+            let c = Config::parse(&format!("[snap]\npreview_seconds = {ok}\n"));
+            assert_eq!(c.snap.preview_secs(), ok as u64, "{ok}");
+        }
+    }
+
+    #[test]
+    fn snap_preview_seconds_out_of_range_or_wrong_type_falls_back_to_ten() {
+        for bad in [
+            "2", "0", "61", "-5", "3600", "\"12\"", "\"soon\"", "10.5", "true", "[1]",
+        ] {
+            let c = Config::parse(&format!(
+                "theme = \"paper-zine\"\n[snap]\nhotkey = \"Ctrl+Alt+S\"\npreview_seconds = {bad}\nsave_dir = \"D:/shots\"\n[timer]\nfocus_min = 50\n"
+            ));
+            assert_eq!(c.snap.preview_secs(), 10, "{bad}");
+            // The rest of the file still reads.
+            assert_eq!(c.theme, "paper-zine", "{bad}");
+            assert_eq!(c.snap.hotkey(), SnapHotkey::CtrlAltS, "{bad}");
+            assert_eq!(c.snap.save_dir, "D:/shots", "{bad}");
+            assert_eq!(c.timer.focus_min, 50, "{bad}");
+        }
+        let c = SnapConfig {
+            preview_seconds: i64::MIN,
+            ..SnapConfig::default()
+        };
+        assert_eq!(c.preview_secs(), 10);
+        let c = SnapConfig {
+            preview_seconds: i64::MAX,
+            ..SnapConfig::default()
+        };
+        assert_eq!(c.preview_secs(), 10);
+    }
+
+    #[test]
+    fn snap_preview_seconds_round_trips_with_the_other_sections() {
+        let mut c = Config::parse(
+            "theme = \"paper-zine\"\n[timer]\nfocus_min = 50\n[snap]\nsave_dir = \"D:/shots\"\n",
+        );
+        c.snap.preview_seconds = 42;
+        let text = c.to_toml();
+        assert!(text.contains("preview_seconds = 42"), "{text}");
+        let back = Config::parse(&text);
+        assert_eq!(back, c);
+        assert_eq!(back.snap.preview_secs(), 42);
+        assert_eq!(back.snap.save_dir, "D:/shots");
+        assert_eq!(back.timer.focus_min, 50);
+        // An out-of-range number is kept as written; only the accessor falls back.
+        c.snap.preview_seconds = 2;
+        let back = Config::parse(&c.to_toml());
+        assert_eq!(back, c);
+        assert_eq!(back.snap.preview_secs(), 10);
+        // A wrong-typed value is written back as the default, not as text.
+        let c = Config::parse("[snap]\npreview_seconds = \"abc\"\n");
+        assert_eq!(c.snap.preview_seconds, 10);
         assert_eq!(Config::parse(&c.to_toml()), c);
     }
 
