@@ -8,6 +8,7 @@ mod icons;
 mod music;
 mod paint;
 mod sweep;
+mod timer;
 mod vitals;
 
 pub use gpu::{RenderError, Renderer};

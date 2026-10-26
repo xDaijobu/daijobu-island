@@ -56,7 +56,7 @@ pub const FEATURES: [Feature; 12] = [
     available("music", "Music", Icon::Media),
     available("osd", "OSD", Icon::Osd),
     available("vitals", "Vitals", Icon::Vitals),
-    locked("timer", "Timer", Icon::Timer),
+    available("timer", "Timer", Icon::Timer),
     locked("snap", "Snap", Icon::Snap),
     locked("clipboard", "Clipboard", Icon::Clipboard),
     locked("notifications", "Notifications", Icon::Notifications),
@@ -73,7 +73,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ids_unique_and_only_music_osd_and_vitals_are_available() {
+    fn ids_unique_and_only_music_osd_vitals_and_timer_are_available() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
         assert_eq!(FEATURES.len(), 12);
@@ -82,7 +82,7 @@ mod tests {
             .filter(|f| f.availability == Availability::Available)
             .map(|f| f.id)
             .collect();
-        assert_eq!(open, ["music", "osd", "vitals"]);
+        assert_eq!(open, ["music", "osd", "vitals", "timer"]);
         assert_eq!(FEATURES[0].name, "Music");
     }
 

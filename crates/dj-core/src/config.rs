@@ -1,5 +1,6 @@
 //! `~/.daijobu/config.toml`. Parsing only; the app does the file IO.
 
+use crate::timer::{Settings, MAX_EVERY, MAX_MIN};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,7 @@ pub struct Config {
     pub osd: OsdConfig,
     pub vitals: VitalsConfig,
     pub sweep: SweepConfig,
+    pub timer: TimerConfig,
 }
 
 /// `[music]` section. The YouTube Music profile itself lives in `~/.daijobu/ytmusic/`.
@@ -87,6 +89,53 @@ impl SweepConfig {
     }
 }
 
+/// `[timer]` section. Minutes are signed so a stray negative value only resets that
+/// field, not the whole file. `settings()` applies the ranges.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimerConfig {
+    pub focus_min: i64,
+    pub break_min: i64,
+    pub long_break_min: i64,
+    /// Every `every`-th focus is followed by the long break.
+    pub every: i64,
+    /// Play the chime when a session ends.
+    pub chime: bool,
+}
+
+impl Default for TimerConfig {
+    fn default() -> Self {
+        Self {
+            focus_min: 25,
+            break_min: 5,
+            long_break_min: 15,
+            every: 4,
+            chime: true,
+        }
+    }
+}
+
+impl TimerConfig {
+    /// The Pomodoro settings. A minute value outside 1..=180 or an `every` outside
+    /// 1..=12 falls back to its default.
+    pub fn settings(&self) -> Settings {
+        let d = Self::default();
+        let pick = |v: i64, max: i64, fallback: i64| {
+            if (1..=max).contains(&v) {
+                v as u32
+            } else {
+                fallback as u32
+            }
+        };
+        Settings::minutes(
+            pick(self.focus_min, MAX_MIN, d.focus_min),
+            pick(self.break_min, MAX_MIN, d.break_min),
+            pick(self.long_break_min, MAX_MIN, d.long_break_min),
+            pick(self.every, MAX_EVERY, d.every),
+        )
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -96,6 +145,7 @@ impl Default for Config {
             osd: OsdConfig::default(),
             vitals: VitalsConfig::default(),
             sweep: SweepConfig::default(),
+            timer: TimerConfig::default(),
         }
     }
 }
@@ -141,6 +191,11 @@ mod tests {
             vitals: VitalsConfig { health_lamp: false },
             sweep: SweepConfig {
                 project_roots: vec!["D:/work".into()],
+            },
+            timer: TimerConfig {
+                focus_min: 50,
+                chime: false,
+                ..TimerConfig::default()
             },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);
@@ -196,6 +251,34 @@ mod tests {
         );
         // Without a profile, `~` roots would be relative, so they are dropped too.
         assert_eq!(c.roots(Path::new("")), vec![PathBuf::from("D:/work")]);
+    }
+
+    #[test]
+    fn timer_defaults_and_reads_the_timer_table() {
+        let d = Config::parse("theme = \"x\"").timer;
+        assert_eq!(d, TimerConfig::default());
+        assert!(d.chime);
+        assert_eq!(d.settings(), Settings::minutes(25, 5, 15, 4));
+        let c = Config::parse(
+            "[timer]\nfocus_min = 50\nbreak_min = 10\nlong_break_min = 30\nevery = 3\nchime = false\n",
+        );
+        assert!(!c.timer.chime);
+        assert_eq!(c.timer.settings(), Settings::minutes(50, 10, 30, 3));
+        assert_eq!(c.theme, crate::theme::DEFAULT_THEME);
+    }
+
+    #[test]
+    fn timer_out_of_range_values_fall_back_per_field() {
+        let c = Config::parse(
+            "theme = \"paper-zine\"\n[timer]\nfocus_min = 0\nbreak_min = 181\nlong_break_min = -5\nevery = 0\n",
+        );
+        // The rest of the file still reads.
+        assert_eq!(c.theme, "paper-zine");
+        assert_eq!(c.timer.settings(), Settings::minutes(25, 5, 15, 4));
+        let edge = Config::parse("[timer]\nfocus_min = 180\nbreak_min = 1\nevery = 13\n");
+        assert_eq!(edge.timer.settings(), Settings::minutes(180, 1, 15, 4));
+        let top = Config::parse("[timer]\nevery = 12\n");
+        assert_eq!(top.timer.settings().every, 12);
     }
 
     #[test]

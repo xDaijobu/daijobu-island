@@ -1,13 +1,15 @@
 //! Application state: glues the island model, themes, the Music engine, renderer and
 //! Win32 events.
 
+use crate::chime::SystemChime;
 use crate::storage;
 use crate::sweep::{Job, Msg, ScanId, Sweeper};
+use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
 use dj_core::config::Config;
 use dj_core::features::FEATURES;
-use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction};
+use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, TimerAction};
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
@@ -91,6 +93,12 @@ pub struct App {
     estimate_started: Option<Instant>,
     /// A clean (or a single recycle) is running.
     cleaning: bool,
+    /// The Pomodoro and its chime.
+    timer: Timer,
+    /// The deadline the one-shot `TIMER_DEADLINE` is armed for, if any.
+    deadline_armed: Option<Instant>,
+    /// The one-shot `TIMER_DIGITS` redraw is armed.
+    digits_armed: bool,
 }
 
 impl App {
@@ -113,6 +121,11 @@ impl App {
             ..Session::default()
         };
         let worker = Worker::start(hwnd);
+        let timer = Timer::new(
+            config.timer.settings(),
+            config.timer.chime,
+            Box::new(SystemChime),
+        );
         let profile = std::env::var_os("USERPROFILE")
             .map(PathBuf::from)
             .unwrap_or_default();
@@ -156,6 +169,9 @@ impl App {
             preview_scan: None,
             estimate_started: None,
             cleaning: false,
+            timer,
+            deadline_armed: None,
+            digits_armed: false,
         };
         app.relayout();
         app.install_shell_integration();
@@ -474,6 +490,72 @@ impl App {
             IslandState::Vitals | IslandState::Sweep
         ) {
             self.dirty = true;
+        }
+    }
+
+    // ---- Timer ----
+
+    /// The timer's digits are on screen: Timer compact or panel, or Music compact with
+    /// a timer on it. The alert shows no ticking digits.
+    fn timer_digits_on_screen(&self) -> bool {
+        self.visible
+            && match self.island.state() {
+                IslandState::TimerCompact | IslandState::TimerPanel => true,
+                IslandState::MusicCompact => self.timer.ui().active,
+                _ => false,
+            }
+    }
+
+    /// Pushes the timer facts into the island, which may change its state.
+    fn apply_timer_ui(&mut self) {
+        let tokens = self.anim.current().clone();
+        self.island.set_timer(self.timer.ui(), &tokens);
+        self.dirty = true;
+    }
+
+    /// Ends the phase if its deadline has passed: the chime plays and the alert comes
+    /// up (or waits for an open panel to collapse). Harmless when called early.
+    fn check_timer(&mut self) {
+        if self.timer.fire(Instant::now()).is_some() {
+            self.apply_timer_ui();
+        }
+    }
+
+    fn timer_action(&mut self, action: TimerAction) {
+        if self.timer.apply(action, Instant::now()) {
+            // The digits jumped, so realign their redraw.
+            if self.digits_armed {
+                window::kill_timer(self.hwnd, TIMER_DIGITS);
+                self.digits_armed = false;
+            }
+            self.apply_timer_ui();
+        }
+    }
+
+    /// Arms or kills the two one-shot timer messages to match `Timer::plan`. The
+    /// deadline stays armed while the island is hidden; the digit redraw does not.
+    fn sync_timer(&mut self) {
+        let plan = self
+            .timer
+            .plan(Instant::now(), self.timer_digits_on_screen());
+        let deadline = self.timer.deadline();
+        if deadline != self.deadline_armed {
+            match plan.deadline_ms {
+                Some(ms) => window::set_timer(self.hwnd, TIMER_DEADLINE, ms),
+                None => window::kill_timer(self.hwnd, TIMER_DEADLINE),
+            }
+            self.deadline_armed = deadline;
+        }
+        match plan.digits_ms {
+            Some(ms) if !self.digits_armed => {
+                window::set_timer(self.hwnd, TIMER_DIGITS, ms);
+                self.digits_armed = true;
+            }
+            None if self.digits_armed => {
+                window::kill_timer(self.hwnd, TIMER_DIGITS);
+                self.digits_armed = false;
+            }
+            _ => {}
         }
     }
 
@@ -844,6 +926,10 @@ impl Handler for App {
                     ClickOutcome::Open(i) if FEATURES[i].id == "vitals" => {
                         self.island.open_vitals(&tokens);
                     }
+                    ClickOutcome::Open(i) if FEATURES[i].id == "timer" => {
+                        self.island.open_timer(&tokens);
+                    }
+                    ClickOutcome::Timer(action) => self.timer_action(action),
                     // A clean that is still running keeps its view; otherwise preview afresh.
                     ClickOutcome::OpenSweep if !self.cleaning => self.start_preview(),
                     ClickOutcome::Sweep { x, y } => {
@@ -921,6 +1007,19 @@ impl Handler for App {
                     self.back_to_vitals();
                 }
             }
+            // Both are one-shot: SetTimer repeats, so each is killed when it fires and
+            // `sync_timer` arms it again if it is still wanted.
+            Event::Timer(TIMER_DEADLINE) => {
+                window::kill_timer(self.hwnd, TIMER_DEADLINE);
+                self.deadline_armed = None;
+                self.check_timer();
+            }
+            Event::Timer(TIMER_DIGITS) => {
+                window::kill_timer(self.hwnd, TIMER_DIGITS);
+                self.digits_armed = false;
+                self.dirty = true;
+                self.check_timer();
+            }
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => self.drain_art(),
@@ -935,6 +1034,7 @@ impl Handler for App {
         self.sync_vu_timer();
         self.sync_vitals();
         self.sync_sweep();
+        self.sync_timer();
     }
 
     fn wants_frame(&self) -> bool {
@@ -981,6 +1081,7 @@ impl Handler for App {
             pos,
         };
         let estimate = self.estimate();
+        let timer = self.timer.view(now);
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
             return;
@@ -997,6 +1098,7 @@ impl Handler for App {
             health_lamp: self.config.vitals.health_lamp,
             sweep: &self.sweep,
             estimate,
+            timer: &timer,
         };
         match renderer.render(&frame) {
             Ok(()) => {}

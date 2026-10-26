@@ -1,5 +1,6 @@
 //! Platform-free core of Daijobu Island: springs, themes, the feature registry,
-//! layout, the island state machine, vitals and the Sweep view model. No `unsafe`, no Win32.
+//! layout, the island state machine, vitals, the Sweep view model and the Pomodoro timer.
+//! No `unsafe`, no Win32.
 #![forbid(unsafe_code)]
 
 pub mod color;
@@ -13,4 +14,5 @@ pub mod osd;
 pub mod spring;
 pub mod sweep;
 pub mod theme;
+pub mod timer;
 pub mod vitals;
