@@ -2,8 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod chime;
 mod storage;
 mod sweep;
+mod timer;
 mod vitals;
 
 use dj_win::{system, window};
