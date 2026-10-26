@@ -2,7 +2,7 @@
 //! testing, and what the panel shows. Pure; the app applies the actions (autostart,
 //! hotkey registration, saving the config).
 
-use crate::config::{SnapConfig, SnapHotkey};
+use crate::config::{IslandStyle, SnapConfig, SnapHotkey};
 use crate::layout;
 
 /// The order the Snap hotkey chip cycles through.
@@ -77,6 +77,8 @@ pub enum SettingsAction {
     ToggleAutostart,
     CycleHotkey,
     CycleAltHotkey,
+    /// Notch ↔ pill.
+    ToggleStyle,
 }
 
 /// A control the pointer can land on, in pill-local px.
@@ -96,6 +98,8 @@ pub fn hit(x: f32, y: f32) -> Option<SettingsHit> {
         Some(SettingsHit::Action(SettingsAction::CycleHotkey))
     } else if layout::ST_ALT.contains(x, y) {
         Some(SettingsHit::Action(SettingsAction::CycleAltHotkey))
+    } else if layout::ST_STYLE.contains(x, y) {
+        Some(SettingsHit::Action(SettingsAction::ToggleStyle))
     } else {
         None
     }
@@ -110,6 +114,7 @@ pub struct SettingsView {
     /// Another app holds the key: the chip draws in the warn colour.
     pub hotkey_taken: bool,
     pub alt_taken: bool,
+    pub style: IslandStyle,
 }
 
 impl Default for SettingsView {
@@ -120,6 +125,7 @@ impl Default for SettingsView {
             alt: Some(SnapHotkey::CtrlSpace),
             hotkey_taken: false,
             alt_taken: false,
+            style: IslandStyle::default(),
         }
     }
 }

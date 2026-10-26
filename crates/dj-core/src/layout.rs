@@ -114,9 +114,9 @@ pub fn tp_chip(i: usize) -> Rect {
     )
 }
 
-/// Settings panel (opened from the gear on Home): same size as the Timer panel.
+/// Settings panel (opened from the gear on Home): the Timer panel's width, one row taller.
 pub const SETTINGS_W: f32 = 400.0;
-pub const SETTINGS_H: f32 = 184.0;
+pub const SETTINGS_H: f32 = 220.0;
 pub const SETTINGS_R: f32 = 32.0;
 /// Panel elements, relative to the pill's top-left. The header text sits left of back.
 pub const ST_HEADER: Rect = Rect::new(20.0, 12.0, 260.0, 16.0);
@@ -125,11 +125,14 @@ pub const ST_BACK: Rect = Rect::new(304.0, 8.0, 84.0, 24.0);
 pub const ST_ROW_AUTOSTART: Rect = Rect::new(20.0, 44.0, 220.0, 28.0);
 pub const ST_ROW_HOTKEY: Rect = Rect::new(20.0, 80.0, 220.0, 28.0);
 pub const ST_ROW_ALT: Rect = Rect::new(20.0, 116.0, 220.0, 28.0);
+pub const ST_ROW_STYLE: Rect = Rect::new(20.0, 152.0, 220.0, 28.0);
 pub const ST_TOGGLE: Rect = Rect::new(328.0, 46.0, 52.0, 24.0);
 pub const ST_HOTKEY: Rect = Rect::new(248.0, 82.0, 132.0, 24.0);
 pub const ST_ALT: Rect = Rect::new(248.0, 118.0, 132.0, 24.0);
+/// The island style chip (`notch` / `pill`).
+pub const ST_STYLE: Rect = Rect::new(248.0, 154.0, 132.0, 24.0);
 /// The `taken by another app` line.
-pub const ST_STATUS: Rect = Rect::new(20.0, 154.0, 360.0, 16.0);
+pub const ST_STATUS: Rect = Rect::new(20.0, 190.0, 360.0, 16.0);
 
 /// The gear in the Home header, left of the clock (pill-local on the Home grid).
 pub const HOME_GEAR: Rect = Rect::new(384.0, 16.0, 28.0, 28.0);
@@ -190,8 +193,22 @@ pub fn sw_recycle(i: usize) -> Rect {
     Rect::new(324.0, l.y + 2.0, 60.0, l.h - 4.0)
 }
 
-/// Gap between the top of the screen and the pill.
+/// Gap between the top of the screen and the pill. In notch style the shape fills this
+/// gap (it reaches y = 0), but the pill rect, its content and its hit testing stay put.
 pub const TOP_MARGIN: f32 = 6.0;
+/// Notch style: radius of the concave shoulders where the notch meets the top edge.
+pub const NOTCH_SHOULDER: f32 = 8.0;
+
+/// Notch style: the box the notch shape covers for a pill rect (window-logical px):
+/// from the top edge down to the pill's bottom, widened by a shoulder on each side.
+pub fn notch_bounds(pill: Rect) -> Rect {
+    Rect::new(
+        pill.x - NOTCH_SHOULDER,
+        0.0,
+        pill.w + 2.0 * NOTCH_SHOULDER,
+        pill.y + pill.h,
+    )
+}
 /// Extra window rows below the largest pill so the AA edge is never clipped.
 const BOTTOM_SLACK: f32 = 2.0;
 

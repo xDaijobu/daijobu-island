@@ -8,6 +8,7 @@ use crate::icons::{draw_gear, draw_icon, draw_lock, draw_volume_icon};
 use crate::snap::SnapFrame;
 use crate::vitals::{format_rate, ring_sweep, spark_points};
 use dj_core::color::Rgb;
+use dj_core::config::IslandStyle;
 use dj_core::features::{Availability, Icon, FEATURES};
 use dj_core::health::Reason;
 use dj_core::island::{IslandView, MusicUi};
@@ -49,6 +50,8 @@ pub struct Frame<'a> {
     pub snap: Option<SnapFrame>,
     /// The Settings panel's values, drawn while `view.layers.settings` is up.
     pub settings: &'a SettingsView,
+    /// Pill or notch (config `[island] style`): the shape of the island's body.
+    pub island_style: IslandStyle,
 }
 
 /// What the Music views draw. Built by the app from the Music session.

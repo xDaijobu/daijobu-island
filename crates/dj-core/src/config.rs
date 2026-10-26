@@ -10,12 +10,73 @@ pub struct Config {
     /// Theme id (file stem for user themes).
     pub theme: String,
     pub start_with_windows: bool,
+    pub island: IslandConfig,
     pub music: MusicConfig,
     pub osd: OsdConfig,
     pub vitals: VitalsConfig,
     pub sweep: SweepConfig,
     pub timer: TimerConfig,
     pub snap: SnapConfig,
+}
+
+/// How the island sits at the top of the screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IslandStyle {
+    /// A floating pill, `TOP_MARGIN` below the screen's top edge.
+    Pill,
+    /// Attached to the top edge like a hardware notch: flat top, concave shoulders.
+    #[default]
+    Notch,
+}
+
+impl IslandStyle {
+    /// The config value and the Settings chip text.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pill => "pill",
+            Self::Notch => "notch",
+        }
+    }
+
+    /// Case-insensitive, surrounding spaces ignored.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "pill" => Some(Self::Pill),
+            "notch" => Some(Self::Notch),
+            _ => None,
+        }
+    }
+
+    /// The other style (the Settings chip toggles).
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Pill => Self::Notch,
+            Self::Notch => Self::Pill,
+        }
+    }
+}
+
+/// `[island]` section.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IslandConfig {
+    /// `"notch"` (default) or `"pill"`.
+    pub style: String,
+}
+
+impl Default for IslandConfig {
+    fn default() -> Self {
+        Self {
+            style: IslandStyle::default().label().to_string(),
+        }
+    }
+}
+
+impl IslandConfig {
+    /// An unknown value falls back to the default (notch).
+    pub fn style(&self) -> IslandStyle {
+        IslandStyle::parse(&self.style).unwrap_or_default()
+    }
 }
 
 /// `[music]` section. The YouTube Music profile itself lives in `~/.daijobu/ytmusic/`.
@@ -242,6 +303,7 @@ impl Default for Config {
         Self {
             theme: crate::theme::DEFAULT_THEME.to_string(),
             start_with_windows: false,
+            island: IslandConfig::default(),
             music: MusicConfig::default(),
             osd: OsdConfig::default(),
             vitals: VitalsConfig::default(),
@@ -286,6 +348,9 @@ mod tests {
         let c = Config {
             theme: "paper-zine".into(),
             start_with_windows: true,
+            island: IslandConfig {
+                style: "pill".into(),
+            },
             music: MusicConfig { signed_in: true },
             osd: OsdConfig {
                 replace_volume_flyout: false,

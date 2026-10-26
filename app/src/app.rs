@@ -622,6 +622,11 @@ impl App {
                 self.register_snap_hotkey();
                 storage::save_config(&self.config);
             }
+            SettingsAction::ToggleStyle => {
+                let next = self.config.island.style().toggled();
+                self.config.island.style = next.label().to_string();
+                storage::save_config(&self.config);
+            }
         }
     }
 
@@ -632,6 +637,7 @@ impl App {
             alt: self.config.snap.alt_hotkey(),
             hotkey_taken: self.snap_taken.0,
             alt_taken: self.snap_taken.1,
+            style: self.config.island.style(),
         }
     }
 
@@ -1591,6 +1597,7 @@ impl Handler for App {
             timer: &timer,
             snap: self.snap_frame,
             settings: &settings,
+            island_style: self.config.island.style(),
         };
         match renderer.render(&frame) {
             Ok(()) => {}
