@@ -33,7 +33,7 @@ use dj_render::{
 };
 use dj_win::overlay::{self, SnapInput};
 use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
-use dj_win::{hook, system, volume, window, Event, Handler, HICON, HWND};
+use dj_win::{appbar, hook, system, volume, window, Event, Handler, HICON, HWND};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -87,6 +87,9 @@ pub struct App {
     started: Instant,
     last_frame: Option<Instant>,
     last_rect: Option<Edges>,
+    /// The top strip asked of the shell while `[island] reserve_top` holds (see
+    /// `sync_appbar`); `None` while nothing is reserved.
+    reserved: Option<Edges>,
     icon: Option<HICON>,
     exe: PathBuf,
     /// The default render endpoint. None if the audio stack is unavailable.
@@ -220,6 +223,7 @@ impl App {
             thumb_armed: false,
             snap_frame: None,
             snap_taken: (false, false),
+            reserved: None,
         };
         app.relayout();
         app.install_shell_integration();
@@ -644,8 +648,37 @@ impl App {
                 // Switch at once: the next frame draws the new shape and `device_rect`
                 // (which reads the style) moves the window region with it.
                 self.dirty = true;
+                self.sync_appbar(false);
+            }
+            SettingsAction::ToggleReserve => {
+                self.config.island.reserve_top = !self.config.island.reserve_top;
+                storage::save_config(&self.config);
+                self.dirty = true;
+                self.sync_appbar(false);
             }
         }
+    }
+
+    /// Reserves the top strip (an AppBar) while the island is a visible notch with
+    /// `[island] reserve_top`, and gives it back otherwise. `force` sets it again even if
+    /// nothing changed here (the shell moved the bars, or the monitor changed).
+    fn sync_appbar(&mut self, force: bool) {
+        let want = (self.visible && self.config.island.reserves_top()).then(|| {
+            let mon = window::primary_monitor();
+            notch::reserve_strip(mon.left, mon.top, mon.width, mon.dpi as f32 / 96.0)
+        });
+        if want == self.reserved && !force {
+            return;
+        }
+        match want {
+            Some(strip) => {
+                if appbar::reserve(self.hwnd, strip).is_none() {
+                    storage::log("appbar: the shell refused to reserve the top strip");
+                }
+            }
+            None => appbar::release(self.hwnd),
+        }
+        self.reserved = want;
     }
 
     fn settings_view(&self) -> SettingsView {
@@ -656,6 +689,7 @@ impl App {
             hotkey_taken: self.snap_taken.0,
             alt_taken: self.snap_taken.1,
             style: self.config.island.style(),
+            reserve: self.config.island.reserve_top,
         }
     }
 
@@ -1188,6 +1222,8 @@ impl App {
         }
         self.scale = scale;
         self.dirty = true;
+        // The monitor or its DPI may have changed: the strip's size goes with it.
+        self.sync_appbar(true);
     }
 
     fn create_renderer(&self, w: i32, h: i32) -> Option<Renderer> {
@@ -1249,6 +1285,8 @@ impl App {
         self.last_frame = None;
         self.dirty = visible;
         self.sync_vu_timer();
+        // A hidden island gives the screen back.
+        self.sync_appbar(false);
     }
 
     // ---- YouTube Music ----
@@ -1489,6 +1527,9 @@ impl App {
     }
 
     fn quit(&mut self) {
+        // Give the strip back first, or the work area stays short after we're gone.
+        appbar::release(self.hwnd);
+        self.reserved = None;
         self.end_snap(End::Cancel);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ALT);
@@ -1685,7 +1726,11 @@ impl Handler for App {
                 if let Some(icon) = self.icon {
                     tray::add(self.hwnd, icon, "Daijobu Island");
                 }
+                // Explorer restarted and forgot every AppBar: register again.
+                appbar::forget();
+                self.sync_appbar(true);
             }
+            Event::AppBarMoved => self.sync_appbar(true),
             Event::VitalsReady => self.drain_vitals(),
             Event::SweepReady => self.drain_sweep(),
         }
