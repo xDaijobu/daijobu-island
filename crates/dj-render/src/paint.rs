@@ -14,6 +14,7 @@ use dj_core::layout::{self, Rect as LRect};
 use dj_core::music::NowPlaying;
 use dj_core::sweep::{format_bytes, Estimate, SweepView};
 use dj_core::theme::ResolvedTokens;
+use dj_core::timer::TimerView;
 use dj_core::vitals::{ProcUsage, Vitals};
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::paint::{Cap, Join, Style};
@@ -40,6 +41,8 @@ pub struct Frame<'a> {
     pub sweep: &'a SweepView,
     /// What the Vitals panel's Sweep button shows.
     pub estimate: Estimate,
+    /// The Pomodoro, for the Timer views and the arc on Music compact.
+    pub timer: &'a TimerView,
 }
 
 /// What the Music views draw. Built by the app from the Music session.
@@ -187,6 +190,9 @@ impl Painter {
         let expanded_op = smoothstep(0.35, 1.0, lay.expanded) * not_osd;
         let vitals_op = smoothstep(0.35, 1.0, lay.vitals) * not_osd;
         let sweep_op = smoothstep(0.35, 1.0, lay.sweep) * not_osd;
+        let timer_op = smoothstep(0.35, 1.0, lay.timer) * not_osd;
+        let timer_compact_op = smoothstep(0.35, 1.0, lay.timer_compact) * not_osd;
+        let alert_op = smoothstep(0.35, 1.0, lay.alert) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -216,6 +222,21 @@ impl Painter {
         if sweep_op > 0.01 {
             begin_layer(canvas, &rect, sweep_op, center, s);
             self.sweep_view(canvas, f, &rect);
+            canvas.restore();
+        }
+        if timer_op > 0.01 {
+            begin_layer(canvas, &rect, timer_op, center, s);
+            self.timer_panel(canvas, f, &rect);
+            canvas.restore();
+        }
+        if timer_compact_op > 0.01 {
+            begin_layer(canvas, &rect, timer_compact_op, center, s);
+            self.timer_compact(canvas, f, &rect);
+            canvas.restore();
+        }
+        if alert_op > 0.01 {
+            begin_layer(canvas, &rect, alert_op, center, s);
+            self.timer_alert(canvas, f, &rect);
             canvas.restore();
         }
         if osd_a > 0.01 {

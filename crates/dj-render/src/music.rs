@@ -1,6 +1,7 @@
-//! The Music views: the compact pill (224 x 36), the expanded player (400 x 184) and
-//! its sign-in view. Same layout rules as the Home grid: content is anchored to the
-//! pill's top-centre, so it holds still while the pill springs around it.
+//! The Music views: the compact pill (224 x 36, plus the timer overlay while a timer
+//! runs), the expanded player (400 x 184) and its sign-in view. Same layout rules as
+//! the Home grid: content is anchored to the pill's top-centre, so it holds still while
+//! the pill springs around it.
 
 use crate::fonts::Weight;
 use crate::icons::draw_icon;
@@ -94,10 +95,17 @@ impl Painter {
             accent,
         );
 
+        // A running (or paused) timer takes the end of the title's room for its digits.
+        let timer_on = f.timer.is_active();
         if let Some(now) = m.now {
             let font = self.fonts.font(&t.font_label, Weight::Medium, 11.0 * s);
             let tr = at(lay::MC_TITLE);
-            let line = fit(&font, &now.title, 0.0, tr.width());
+            let room = if timer_on {
+                (lay::MC_TIMER.x - lay::MC_TITLE.x - 6.0) * s
+            } else {
+                tr.width()
+            };
+            let line = fit(&font, &now.title, 0.0, room);
             draw_text(
                 canvas,
                 &font,
@@ -111,6 +119,9 @@ impl Painter {
         if let Some(bands) = m.bands {
             let groups = vu_groups(bands, 5);
             draw_vu(canvas, at(lay::MC_VU), &groups, &t.visualizer, accent, s);
+        }
+        if timer_on {
+            self.music_timer_overlay(canvas, f, rect);
         }
     }
 
@@ -401,7 +412,7 @@ impl Painter {
 
 /// A labelled button: filled body, hairline edge, centred label.
 #[allow(clippy::too_many_arguments)]
-fn button(
+pub(crate) fn button(
     canvas: &Canvas,
     font: &skia_safe::Font,
     r: Rect,
