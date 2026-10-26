@@ -132,6 +132,18 @@ pub const AL_TEXT: Rect = Rect::new(24.0, 20.0, 180.0, 32.0);
 pub const AL_CONTINUE: Rect = Rect::new(212.0, 20.0, 88.0, 32.0);
 pub const AL_STOP: Rect = Rect::new(308.0, 20.0, 32.0, 32.0);
 
+/// Snap thumb (plan.html: 330 x 72, radius 26): the shot, its size, the copy status and
+/// the copy / save buttons.
+pub const SNAP_W: f32 = 330.0;
+pub const SNAP_H: f32 = 72.0;
+pub const SNAP_R: f32 = 26.0;
+/// Thumb elements, relative to the pill's top-left. The shot is aspect-fit in `SN_SHOT`.
+pub const SN_SHOT: Rect = Rect::new(10.0, 12.0, 76.0, 48.0);
+/// `snap · 612×388` on the left, `✓ copied` right-aligned.
+pub const SN_CAPTION: Rect = Rect::new(98.0, 14.0, 218.0, 16.0);
+pub const SN_COPY: Rect = Rect::new(98.0, 38.0, 56.0, 22.0);
+pub const SN_SAVE: Rect = Rect::new(160.0, 38.0, 56.0, 22.0);
+
 /// The small timer on Music compact while a timer runs: mono mm:ss before the VU. The
 /// title gives up this much room.
 pub const MC_TIMER: Rect = Rect::new(118.0, 0.0, 42.0, 36.0);
@@ -370,6 +382,22 @@ mod tests {
         // The mini timer on Music compact sits between the art and the VU.
         assert!(inside(&MC_TIMER, MUSIC_COMPACT_W, MUSIC_COMPACT_H));
         assert!(apart(&MC_TIMER, &MC_ART) && apart(&MC_TIMER, &MC_VU));
+    }
+
+    #[test]
+    fn snap_thumb_fits_the_window_and_its_parts_do_not_overlap() {
+        let (w, h) = window_size();
+        assert!(SNAP_W <= w && TOP_MARGIN + SNAP_H <= h);
+        let parts = [SN_SHOT, SN_CAPTION, SN_COPY, SN_SAVE];
+        for (i, a) in parts.iter().enumerate() {
+            assert!(inside(a, SNAP_W, SNAP_H), "{a:?}");
+            for b in &parts[i + 1..] {
+                assert!(apart(a, b), "{a:?} overlaps {b:?}");
+            }
+        }
+        // The shot is the plan's 76 x 48, and the window size is unchanged.
+        assert_eq!((SN_SHOT.w, SN_SHOT.h), (76.0, 48.0));
+        assert_eq!(window_size(), (HOME_W, TOP_MARGIN + HOME_H + BOTTOM_SLACK));
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel with
-//! its Sweep view, the Timer views and the OSD overlay, driven by springs. Time only
-//! enters through `step(dt)`, so everything here is deterministic. The timer itself
-//! (`timer::Pomodoro`) lives in the app; the island only hears whether it is active or done.
+//! its Sweep view, the Timer views, the snap thumb and the OSD overlay, driven by springs.
+//! Time only enters through `step(dt)`, so everything here is deterministic. The timer
+//! itself (`timer::Pomodoro`) lives in the app; the island only hears whether it is active
+//! or done. Likewise the snap thumb's countdown and its shot live in the app; the island
+//! only hears whether a thumb is up.
 
 use crate::features::{Availability, FEATURES};
 use crate::layout::{self, Rect};
@@ -34,10 +36,14 @@ pub enum IslandState {
     TimerCompact,
     /// A session ended: waits for continue or stop. Shown over the rest states only.
     TimerAlert,
+    /// The last snap: its shot, size, copy status, and copy / save. Outranks everything
+    /// but the OSD and goes after 6 s (the app's countdown); a click elsewhere on it
+    /// dismisses it.
+    SnapThumb,
 }
 
 /// Number of content layers (one per `IslandState`).
-const LAYERS: usize = 9;
+const LAYERS: usize = 10;
 
 impl IslandState {
     /// Index into the per-content opacity springs.
@@ -52,6 +58,7 @@ impl IslandState {
             IslandState::TimerPanel => 6,
             IslandState::TimerCompact => 7,
             IslandState::TimerAlert => 8,
+            IslandState::SnapThumb => 9,
         }
     }
 
@@ -64,6 +71,7 @@ impl IslandState {
                 | IslandState::MusicCompact
                 | IslandState::TimerCompact
                 | IslandState::TimerAlert
+                | IslandState::SnapThumb
         )
     }
 }
@@ -145,6 +153,20 @@ pub enum ClickOutcome {
     /// the new `TimerUi`. Controls that don't apply right now (a preset while running)
     /// still land here, so they never collapse the panel.
     Timer(TimerAction),
+    /// A click on the snap thumb. `Dismiss` has already sent the island to its rest
+    /// state; the app drops the shot and stops the countdown.
+    Snap(SnapAction),
+}
+
+/// What a click on the snap thumb asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapAction {
+    /// Copy the shot to the clipboard again.
+    Copy,
+    /// Write it to the save folder.
+    Save,
+    /// Anywhere else on the thumb: it goes.
+    Dismiss,
 }
 
 /// Opacity of each content layer, 0..1. At most one is 1 once settled.
@@ -159,6 +181,7 @@ pub struct Layers {
     pub timer: f32,
     pub timer_compact: f32,
     pub alert: f32,
+    pub snap: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -174,6 +197,8 @@ pub struct IslandView {
     pub hint: Option<(usize, f32)>,
     /// The volume pill. Its `alpha` also hides the content layers while > 0.
     pub osd: OsdView,
+    /// The snap thumb button under the pointer (Copy or Save).
+    pub snap_hover: Option<SnapAction>,
 }
 
 pub struct Island {
@@ -189,6 +214,11 @@ pub struct Island {
     hint: Option<(usize, f32)>,
     music: MusicUi,
     timer: TimerUi,
+    /// A snap thumb is up (until the app's countdown ends or it is dismissed).
+    snap: bool,
+    /// The pointer is over the snap thumb, and the button under it.
+    snap_pointer: bool,
+    snap_hover: Option<SnapAction>,
     osd: Osd,
     /// True while the user drags the OSD bar.
     dragging: bool,
@@ -212,6 +242,9 @@ impl Island {
             hint: None,
             music: MusicUi::default(),
             timer: TimerUi::default(),
+            snap: false,
+            snap_pointer: false,
+            snap_hover: None,
             osd: Osd::new(),
             dragging: false,
             expanding: true,
@@ -249,13 +282,17 @@ impl Island {
                 layout::TIMER_COMPACT_R,
             ),
             IslandState::TimerAlert => (layout::ALERT_W, layout::ALERT_H, layout::ALERT_R),
+            IslandState::SnapThumb => (layout::SNAP_W, layout::SNAP_H, layout::SNAP_R),
         }
     }
 
     /// The state the island rests in when nothing is being opened, by activity
-    /// priority (plan.html): timer done > media > timer running > idle.
+    /// priority (plan.html): snap thumb > timer done > media > timer running > idle.
+    /// The OSD sits above all of these but only covers the state (see `target_size`).
     fn rest_state(&self) -> IslandState {
-        if self.timer.done {
+        if self.snap {
+            IslandState::SnapThumb
+        } else if self.timer.done {
             IslandState::TimerAlert
         } else if self.music.has_track {
             IslandState::MusicCompact
@@ -287,6 +324,34 @@ impl Island {
         }
         self.timer = ui;
         self.settle_rest(tokens);
+    }
+
+    /// Shows the snap thumb for a fresh shot, from any state: the user just asked for
+    /// it, so it takes over an open panel too (the app collapses the island before a
+    /// snap, so normally this comes from a rest state).
+    pub fn show_snap(&mut self, tokens: &ResolvedTokens) {
+        self.snap = true;
+        if self.state != IslandState::SnapThumb {
+            self.set_state(IslandState::SnapThumb, tokens);
+        }
+    }
+
+    /// The thumb goes (countdown over or dismissed): back to the rest state below it.
+    pub fn hide_snap(&mut self, tokens: &ResolvedTokens) {
+        self.snap = false;
+        if self.state == IslandState::SnapThumb {
+            self.collapse(tokens);
+        }
+    }
+
+    /// A snap thumb is up.
+    pub fn snap_shown(&self) -> bool {
+        self.snap
+    }
+
+    /// The pointer is over the snap thumb (the app pauses the countdown).
+    pub fn snap_hovered(&self) -> bool {
+        self.state == IslandState::SnapThumb && self.snap_pointer
     }
 
     /// Opens the Timer panel (from the Home tile or Timer compact).
@@ -328,6 +393,8 @@ impl Island {
         }
         self.sync_pill(tokens);
         self.hover = None;
+        self.snap_pointer = false;
+        self.snap_hover = None;
     }
 
     /// Shows the volume pill (or refreshes its value and hold timer).
@@ -511,6 +578,16 @@ impl Island {
                     ClickOutcome::Ignored
                 }
             }
+            IslandState::SnapThumb => {
+                let (lx, ly) = Self::view_local(x, y, layout::SNAP_W);
+                match Self::snap_button(lx, ly) {
+                    Some(a) => ClickOutcome::Snap(a),
+                    None => {
+                        self.hide_snap(tokens);
+                        ClickOutcome::Snap(SnapAction::Dismiss)
+                    }
+                }
+            }
             IslandState::Home => match self.tile_at(x, y) {
                 Some(i) if FEATURES[i].availability == Availability::Locked => {
                     self.shake = Some((i, 0.0));
@@ -549,6 +626,17 @@ impl Island {
         (0..PRESETS.len())
             .find(|&i| layout::tp_chip(i).contains(x, y))
             .map(TimerAction::Preset)
+    }
+
+    /// The snap thumb button at view-local `(x, y)`.
+    fn snap_button(x: f32, y: f32) -> Option<SnapAction> {
+        if layout::SN_COPY.contains(x, y) {
+            Some(SnapAction::Copy)
+        } else if layout::SN_SAVE.contains(x, y) {
+            Some(SnapAction::Save)
+        } else {
+            None
+        }
     }
 
     fn music_click(&mut self, x: f32, y: f32, tokens: &ResolvedTokens) -> ClickOutcome {
@@ -597,16 +685,32 @@ impl Island {
         }
     }
 
-    /// Returns true when the hovered tile changed (needs a redraw).
+    /// Returns true when the hovered tile or snap button changed (needs a redraw).
+    /// Also tracks whether the pointer is over the snap thumb (`snap_hovered`).
     pub fn hover(&mut self, x: f32, y: f32) -> bool {
         let h = self.tile_at(x, y);
         let changed = h != self.hover;
         self.hover = h;
-        changed
+        let on_thumb = self.state == IslandState::SnapThumb
+            && !self.osd.is_visible()
+            && self.pill_rect().contains(x, y);
+        self.snap_pointer = on_thumb;
+        let button = if on_thumb {
+            let (lx, ly) = Self::view_local(x, y, layout::SNAP_W);
+            Self::snap_button(lx, ly)
+        } else {
+            None
+        };
+        let button_changed = button != self.snap_hover;
+        self.snap_hover = button;
+        changed || button_changed
     }
 
+    /// The pointer left the window. True when something hovered needs a redraw.
     pub fn clear_hover(&mut self) -> bool {
-        self.hover.take().is_some()
+        self.snap_pointer = false;
+        let button = self.snap_hover.take().is_some();
+        self.hover.take().is_some() || button
     }
 
     pub fn step(&mut self, dt: f32, tokens: &ResolvedTokens) {
@@ -660,6 +764,7 @@ impl Island {
                 timer: v(6),
                 timer_compact: v(7),
                 alert: v(8),
+                snap: v(9),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -670,6 +775,7 @@ impl Island {
                 .hint
                 .map(|(i, left)| (i, (left / HINT_FADE_SECS).min(1.0))),
             osd: self.osd.view(),
+            snap_hover: self.snap_hover,
         }
     }
 }
@@ -763,15 +869,15 @@ mod tests {
         i.click(cx, cy, &t);
         settle(&mut i, &t);
         let p = i.pill_rect();
-        let tile = layout::home_tiles()[4];
+        let tile = layout::home_tiles()[5];
         let out = i.click(p.x + tile.x + 5.0, p.y + tile.y + 5.0, &t);
-        assert_eq!(out, ClickOutcome::Locked(4));
+        assert_eq!(out, ClickOutcome::Locked(5));
         assert_eq!(i.state(), IslandState::Home);
         assert!(i.is_animating());
         i.step(0.05, &t);
         let v = i.view();
-        assert_eq!(v.shake.map(|s| s.0), Some(4));
-        assert_eq!(v.hint.map(|h| h.0), Some(4));
+        assert_eq!(v.shake.map(|s| s.0), Some(5));
+        assert_eq!(v.hint.map(|h| h.0), Some(5));
         settle(&mut i, &t);
         assert!(i.view().shake.is_none() && i.view().hint.is_none());
     }
@@ -1460,5 +1566,182 @@ mod tests {
         settle(&mut i, &t);
         assert_eq!(size(&i), (layout::ALERT_W, layout::ALERT_H));
         assert_eq!(i.view().layers.alert, 1.0);
+    }
+
+    // ---- Snap ----
+
+    fn snap_index() -> usize {
+        FEATURES.iter().position(|f| f.id == "snap").unwrap()
+    }
+
+    #[test]
+    fn snap_tile_reports_open() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        settle(&mut i, &t);
+        let tile = layout::home_tiles()[snap_index()];
+        let p = i.pill_rect();
+        let out = i.click(p.x + tile.x + 5.0, p.y + tile.y + 5.0, &t);
+        assert_eq!(out, ClickOutcome::Open(snap_index()));
+        // The app collapses the island before it freezes the screen.
+        assert_eq!(i.state(), IslandState::Home);
+    }
+
+    #[test]
+    fn the_thumb_shows_at_its_size_and_returns_to_idle() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_snap(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        assert!(i.snap_shown());
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::SNAP_W, layout::SNAP_H));
+        let v = i.view();
+        assert_eq!((v.layers.idle, v.layers.snap), (0.0, 1.0));
+        assert_eq!(v.radius, layout::SNAP_R * t.radius_scale);
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::Idle);
+        assert!(!i.snap_shown());
+        settle(&mut i, &t);
+        assert_eq!(i.view().layers.snap, 0.0);
+    }
+
+    #[test]
+    fn the_thumb_outranks_media_and_the_timer_and_hands_back() {
+        let t = tokens();
+        type Setup = fn(&mut Island, &ResolvedTokens);
+        let cases: [(Setup, IslandState); 4] = [
+            (|_, _| {}, IslandState::Idle),
+            (
+                |i, t| i.set_music(with_track(), t),
+                IslandState::MusicCompact,
+            ),
+            (|i, t| i.set_timer(RUNNING, t), IslandState::TimerCompact),
+            (|i, t| i.set_timer(DONE, t), IslandState::TimerAlert),
+        ];
+        for (setup, rest) in cases {
+            let mut i = Island::new(&t);
+            setup(&mut i, &t);
+            assert_eq!(i.state(), rest);
+            i.show_snap(&t);
+            assert_eq!(i.state(), IslandState::SnapThumb, "over {rest:?}");
+            i.hide_snap(&t);
+            assert_eq!(i.state(), rest, "back to {rest:?}");
+        }
+    }
+
+    #[test]
+    fn facts_arriving_under_the_thumb_wait_for_it_to_go() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_snap(&t);
+        i.set_music(with_track(), &t);
+        i.set_timer(RUNNING, &t);
+        i.set_timer(DONE, &t);
+        // The timer finishing ranks below the thumb: it stays.
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        // Music leaving under the thumb hands back to Idle once it goes.
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.show_snap(&t);
+        i.set_music(MusicUi::default(), &t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::Idle);
+        // Hiding a thumb that isn't up is harmless.
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn the_thumb_takes_over_an_open_panel_and_returns_to_rest() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_timer(RUNNING, &t);
+        i.open_vitals(&t);
+        i.show_snap(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::TimerCompact);
+    }
+
+    #[test]
+    fn thumb_buttons_report_and_elsewhere_dismisses() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_snap(&t);
+        settle(&mut i, &t);
+        let w = layout::SNAP_W;
+        let (x, y) = view_at(w, layout::SN_COPY);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Copy));
+        let (x, y) = view_at(w, layout::SN_SAVE);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Save));
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        // The shot itself is not a button.
+        let (x, y) = view_at(w, layout::SN_SHOT);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Dismiss));
+        assert_eq!(i.state(), IslandState::Idle);
+        assert!(!i.snap_shown());
+    }
+
+    #[test]
+    fn a_dismissed_thumb_over_music_returns_to_music_compact() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.show_snap(&t);
+        settle(&mut i, &t);
+        let (x, y) = view_at(layout::SNAP_W, layout::SN_CAPTION);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Dismiss));
+        assert_eq!(i.state(), IslandState::MusicCompact);
+    }
+
+    #[test]
+    fn hovering_the_thumb_is_tracked_with_its_buttons() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        // Nothing to hover before a thumb is up.
+        let (cx, cy) = center(&i);
+        i.hover(cx, cy);
+        assert!(!i.snap_hovered());
+        i.show_snap(&t);
+        settle(&mut i, &t);
+        let w = layout::SNAP_W;
+        let (x, y) = view_at(w, layout::SN_SHOT);
+        assert!(!i.hover(x, y), "no button under the pointer");
+        assert!(i.snap_hovered());
+        let (x, y) = view_at(w, layout::SN_SAVE);
+        assert!(i.hover(x, y));
+        assert_eq!(i.view().snap_hover, Some(SnapAction::Save));
+        // Off the pill, inside the window.
+        assert!(i.hover(2.0, 2.0));
+        assert!(!i.snap_hovered());
+        assert_eq!(i.view().snap_hover, None);
+        i.hover(x, y);
+        assert!(i.clear_hover());
+        assert!(!i.snap_hovered());
+    }
+
+    #[test]
+    fn osd_over_the_thumb_returns_to_the_thumb() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_snap(&t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.5), &t);
+        settle_pinned(&mut i, &t);
+        assert_eq!(size(&i), (layout::OSD_W, layout::OSD_H));
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        // While the OSD is up, the thumb is neither hovered nor clickable.
+        let (x, y) = center(&i);
+        i.hover(x, y);
+        assert!(!i.snap_hovered());
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::SNAP_W, layout::SNAP_H));
+        assert_eq!(i.view().layers.snap, 1.0);
     }
 }
