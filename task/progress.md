@@ -21,10 +21,11 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 5 | **Vitals + Sweep**: Sweep merged into the Vitals panel (diagnose → clean), full vitals (disk I/O, top processes) | ✅ | PR #6 + `stage-5-safety-fixes` | Opus 5.5 (4 agents: sweep, wiring, render, safety review) · fixes and live test by the coordinator · [`stage-5-report.md`](stage-5-report.md) |
 | 6 | **Timer / Pomodoro**: focus/break cycles, chime alert, mini timer on Music compact | ✅ | `stage-6-timer` | Opus 5.5 agent (headless) · live test by the coordinator · [`stage-6-report.md`](stage-6-report.md) |
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
-| 7b | Snap: annotations, pin, OCR | 🔒 | — | after 7a |
+| 7b | **Snap annotations**: Lightshot-style editor on release (8 tools, select/move, text re-edit, HSV picker, undo/redo) | ✅ merged, live test pending | `xDaijobu/stage-7b-work` | Opus 5.5 agent (headless) · merged at the user's request before the live test · [`stage-7b-report.md`](stage-7b-report.md) |
 | 7c | Snap stack: floating previews, countdown, multi-select, OLE drag-out | 🔒 | — | after 7b |
+| 7d | Snap: pin + OCR | 🔒 | — | moved out of 7b |
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
-| N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | 🔵 | `xDaijobu/stage-n-notch` | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
+| N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -327,6 +328,100 @@ Press PrtSc. The screen freezes under a dimmed overlay, the loupe follows the cu
 - 2026-10-26: Snap split into 7a/7b/7c with the user. 7a defined: PrtSc with a Ctrl+Shift+S fallback, auto-copy on release plus the island thumb, save to `Pictures\Daijobu` without a dialog.
 - 2026-10-26: built by one Opus 5.5 agent (284 tests, new crate `dj-capture`). The coordinator re-verified fmt, clippy, test and release. Live test with the user passed (freeze, loupe, window snap, auto-copy PNG + DIB, save, window click). Added at the user's request: after save, the button reads **open** and reveals the file in Explorer.
 - 2026-10-26: hotkey fix after the user reported that PrtSc opened Snipping Tool. Windows' "Print screen opens screen capture" doesn't use RegisterHotKey, so the keyboard hook now takes plain PrtSc (Alt/Win+PrtSc stay Windows'). The always-on `[snap] alt_hotkey` defaults to Ctrl+Space (the user's choice; it takes autocomplete away from IDEs, and `"none"` turns it off). It replaces the Ctrl+Shift+S fallback, which would have taken Save As from every app. Both verified live by the user.
+
+---
+
+## Stage 7b: Snap annotations
+
+**Goal:** Lightshot-style markup before the shot leaves the overlay. Press PrtSc, drag a region and release: the selection stays and a toolbar appears. Draw an arrow, box a button, type a note, pixelate a password, number the steps, undo a mistake, then press Ctrl+C. The pasted image has the markup, and the island shows the thumb as before.
+
+Pin and OCR move to a new Stage 7d. The Snap stack stays 7c.
+
+### Scope
+- [x] **Flow (replaces 7a's copy on release).** The overlay has two phases:
+  - **Selecting:** unchanged from 7a (hover outline, drag, window click, arrow nudge, loupe). Esc or a right click cancels.
+  - **Editing:** starts on release (a drag of at least 2×2, or a window/monitor click). The selection stays with 8 handles and its size label, the toolbar appears, and the loupe hides. Nothing touches the clipboard yet. A right click does nothing here.
+  - **Finish:**
+    - `Ctrl+C`, `Enter` or the copy button: render the shot with its markup, copy it (PNG + `CF_DIB`), close the overlay and show the snap thumb (as in 7a).
+    - `Ctrl+S` or the save button: the same, plus a save to `[snap] save_dir` (the 7a naming rule). The thumb opens as `saved`, and its button reads `open`.
+    - `Esc` or ✕: cancel. Nothing is copied or saved, and there is no confirm.
+  - The thumb's copy/save buttons work as in 7a, on the annotated image.
+- [x] **Toolbar.** It uses the pill colour, r 12, 26 px buttons with r 8, and the active button in accent (plan.html `.snapov .tools`). Contents in order:
+  - `select`
+  - the 8 tools: `pen`, `line`, `arrow`, `rect`, `marker`, `text`, `pixelate`, `step`
+  - 8 colour swatches plus a custom swatch
+  - sizes `S`, `M`, `L`
+  - `undo`, `redo`
+  - `copy`, `save`, `✕`
+
+  Placement: under the selection, left-aligned with it. If there's no room it goes above, and if neither fits it sits inside the selection's bottom edge. It is clamped to the monitor that holds most of the selection, and wraps to two rows if it is wider than that monitor.
+- [x] **Keys.** Tool shortcuts work except while typing: `V` select, `P` pen, `L` line, `A` arrow, `R` rect, `H` marker, `T` text, `X` pixelate, `N` step. The mouse wheel steps S/M/L. `Ctrl+Z` undoes, and `Ctrl+Y` or `Ctrl+Shift+Z` redoes.
+  - **While typing a text:** Enter is a new line (it doesn't copy), and Backspace/Delete edit the text (they don't delete a shape). `Ctrl+C` and `Ctrl+S` commit the text first, then finish. Esc commits the text and stays in editing; a second Esc cancels.
+- [x] **Tools.** Geometry is in physical desktop px. Sizes are logical px × the DPI scale of the monitor that holds most of the selection. Drawing starts only inside the selection, and markup is clipped to the selection on screen and in the output.
+  - **pen:** freehand with round caps and joins, smoothed. A click without movement leaves a dot. Width S/M/L = 2/4/8.
+  - **line, arrow:** straight from press to release. The arrow has a filled head scaled with the width. A drag shorter than 3 px is dropped.
+  - **rect:** outline only, same widths.
+  - **marker:** like pen but 4× the width, in the colour at 40% alpha. One stroke never darkens where it crosses itself.
+  - **text:** a click puts a caret there. Typing, Backspace, Delete, ←/→, Home/End and Enter (new line) work. A click elsewhere, Esc or a tool change commits the text, and an empty text is dropped. Font Geist Medium at 14/20/28. The caret doesn't blink (no timer). No IME composition: input comes through `WM_CHAR`, surrogate pairs included.
+  - **pixelate:** drag a box. The frozen screen under it shows as square blocks of max(12 px, 10/14/20 × scale), on a grid anchored at the box's top-left. It covers any earlier markup under it. This is pixelate, not blur, because blur can be partly reversed.
+  - **step:** a click places a filled circle (diameter 20/28/38) with the next number (the largest existing + 1, so an undo gives the number back). The number is black or white, whichever contrasts more with the colour.
+- [x] **Colour.**
+  - 8 swatches: red `#E5484D`, yellow `#F5C451`, green `#46A758`, blue `#3E7BFA`, purple `#8E4EC6`, white `#FFFFFF`, black `#111111`, and the theme accent.
+  - A custom swatch shows the last custom colour. Clicking it opens an **HSV picker** popover next to the toolbar: a saturation/value square, a hue strip, a preview and the hex text. Dragging in it sets the colour live, and a click outside closes it.
+- [x] **Select tool** (`V`, or a click on the active tool):
+  - **Selection:** drag a handle to resize the selection, or drag on an empty spot inside it to move it. It is clamped to the desktop with a 2×2 minimum, and dragging past the opposite edge flips it. This is not undoable (as in Lightshot).
+  - **Shapes:** a click selects a shape, topmost first, with about 6 px of hit tolerance on strokes. The selected shape gets a dashed box. Drag to move it, press Delete or Backspace to remove it, or click a swatch or a size to restyle it. Shapes can't be resized or rotated.
+  - **Text:** double-click a text to edit it again. The text tool also edits an existing text when you click on it.
+  - Markup stays put on screen when the selection moves, and what falls outside is clipped.
+- [x] **Undo/redo.** The history keeps snapshots of the shape list (cap 100). Each of these is one step: add, move (press → release), delete, restyle, one text edit session, and one picker drag on a selected shape. A new step clears redo. `Ctrl+Z` while typing commits the text, then undoes it. The selection geometry and the current tool, colour and size are not in the history.
+- [x] **Prefs** are remembered across snaps and restarts in `[snap.annotate]`:
+  - keys: `tool`, `color`, `custom`, `size`
+  - defaults: arrow, red, `#FF7AC6`, `M`; invalid values fall back to them
+  - written when the overlay closes, only if they changed, keeping the other sections (the Stage S writer)
+- [x] **The output is what you see.** The copied/saved image is drawn by the same markup code as the overlay, onto a CPU surface the size of the crop, in physical px. It never contains the handles, outline, toolbar, dim or loupe. With no markup it is byte-identical to the 7a crop.
+- [x] **Cursors:**
+  - crosshair while selecting and with a drawing tool
+  - I-beam for text
+  - move/size cursors over shapes and handles with select
+  - arrow over the toolbar and the picker
+- [x] **Idle CPU ≈ 0.** The overlay still draws only on input, with no caret blink and no animation. The frozen frames live until the overlay closes (as in 7a).
+- [x] **Tests.** `fmt`, `clippy -D warnings`, `test` and `build --release` pass.
+  - **dj-core** (pure):
+    - each tool from press/drag/release, including dots and dropped short drags
+    - history: undo/redo, the cap, redo cleared by a new step, one step per move/edit/picker drag
+    - step numbering after undo
+    - hit testing: topmost first, tolerance, text bounds through a fake measurer
+    - moving, deleting and restyling a shape
+    - text editing: insert, Backspace at 0, caret moves, new line, empty text dropped, re-edit is one step, Ctrl+Z while typing
+    - selection handles: resize, flip, clamp, minimum size, move
+    - toolbar placement (below / above / inside / wrap) and toolbar hit testing
+    - HSV ↔ RGB round trip and picker hits
+    - key mapping: letters off while typing
+    - `[snap.annotate]` parsing, defaults and invalid values
+  - **dj-render** (CPU surface):
+    - an output with no markup equals the crop byte for byte
+    - a rect shape puts its colour on the border and leaves the inside alone
+    - pixelate gives uniform blocks
+    - markup is clipped to the selection
+  - **app** (fake screen and clipboard):
+    - release enters editing and the clipboard is untouched
+    - Ctrl+C copies the annotated PNG + DIB and shows the thumb
+    - Ctrl+S saves and copies
+    - Esc while editing copies nothing
+    - prefs are written once on close, only when they changed
+
+### Acceptance
+Press PrtSc, drag and release: the toolbar appears, and the clipboard still holds what it held before. Use each tool once. Recolour with a swatch and with the picker. Move a shape, delete one, re-edit a text, undo and redo through all of it, and resize and move the selection. Press Ctrl+C and paste into Paint: the image matches the overlay inside the selection, markup included. Ctrl+S saves the same image. Esc while editing cancels and leaves the clipboard untouched. The next snap starts with the same tool, colour and size.
+
+### Rules for the agent
+Headless, as in 7a: fmt, clippy, test and release only. Don't run the exe, don't capture the real screen or touch the real clipboard, and don't create windows, hooks or input in tests. The coordinator and the user do the live test.
+
+### Log
+- 2026-10-26: defined with the user. The Lightshot flow was chosen: release opens the editor, and Ctrl+C or Enter copies. This replaces the handover's earlier idea ("edit from the thumb, keep auto-copy on release"). The 4 extra tools (arrow, marker, pixelate, step numbers), select/move/delete, text re-edit and an HSV picker are all in. Pin + OCR move to 7d.
+- 2026-10-26: built by one Opus 5.5 agent (Orca worker, headless) in 5 commits on `xDaijobu/stage-7b-work`.
+  - The coordinator re-verified fmt, clippy `-D warnings` and 360 tests, after cleaning the workspace crates, because the shared target dir can mix crates between worktrees.
+  - Merged `master` (with Stage N) in; the only conflict was one `use` line in `app.rs`.
+- 2026-10-26: merged at the user's request before the live test ("klo ud kelar dihajar aja"). **Live test pending:** the user runs the report's live test script.
 
 ---
 

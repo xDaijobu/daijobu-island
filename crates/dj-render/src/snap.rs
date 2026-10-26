@@ -6,21 +6,53 @@
 //! round 8x loupe with a crosshair and `#E0A458 · 812,344` under it. Before a drag, the
 //! window under the cursor is cut out of the dim with a solid outline. It is drawn only
 //! when the app asks (on input), never in a loop.
+//!
+//! Once the selection is released the overlay is in its editing phase: the selection
+//! stays (solid outline, 8 handles, size label), the markup is drawn by the same painter
+//! as the output, and the toolbar (plan.html `.snapov .tools`) and the HSV picker sit
+//! next to it. There is no loupe while editing.
 
 use crate::fonts::{Fonts, Weight};
 use crate::gpu::{Chain, Gpu, RenderError};
+use crate::icons::draw_toolbar_icon;
+use crate::markup::{color, draw_markup, frect, raster, PixelCache, TextMetrics};
 use crate::paint::{col, draw_text, fill_paint, fit, stroke_paint, text_width, Frame, Painter};
 use dj_core::layout::{self as lay, Rect as LRect};
 use dj_core::snap::{
     aspect_fit, thumb_label, Bitmap, IRect, Loupe, MonitorFrame, ThumbStatus, LOUPE_CELLS,
     LOUPE_ZOOM,
 };
+use dj_core::snap_edit::{
+    self as ed, caret_line_col, handle_points, live_text_rect, swatch_color, text_lines,
+    ColorChoice, Editor, FRect, Hsv, Item, Picker, Place, Rgba, ShapeKind, TextMeasure, Toolbar,
+};
 use dj_core::theme::ResolvedTokens;
 use skia_safe::gpu::{self as sk_gpu, Budgeted};
+use skia_safe::gradient::{self, Gradient, Interpolation};
 use skia_safe::{
-    images, surfaces, AlphaType, BlurStyle, Canvas, ClipOp, Color, ColorType, Data, FilterMode,
-    Image, ImageInfo, MaskFilter, MipmapMode, Paint, PathEffect, RRect, Rect, SamplingOptions,
+    surfaces, BlurStyle, Canvas, ClipOp, Color, Color4f, FilterMode, Image, MaskFilter, MipmapMode,
+    Paint, PathEffect, Point, RRect, Rect, SamplingOptions, Shader, TileMode,
 };
+
+/// A linear gradient from `a` to `b` through evenly spaced `colors`.
+fn linear(a: Point, b: Point, colors: &[Color]) -> Option<Shader> {
+    let c: Vec<Color4f> = colors.iter().map(|c| Color4f::from(*c)).collect();
+    let g = Gradient::new(
+        gradient::Colors::new_evenly_spaced(&c, TileMode::Clamp, None),
+        Interpolation::default(),
+    );
+    gradient::shaders::linear_gradient((a, b), &g, None)
+}
+
+/// A full-turn sweep gradient around `center`.
+fn sweep(center: Point, colors: &[Color]) -> Option<Shader> {
+    let c: Vec<Color4f> = colors.iter().map(|c| Color4f::from(*c)).collect();
+    let g = Gradient::new(
+        gradient::Colors::new_evenly_spaced(&c, TileMode::Clamp, None),
+        Interpolation::default(),
+    );
+    gradient::shaders::sweep_gradient(center, (0.0, 360.0), &g, None)
+}
 
 /// The thumb keeps its copy of the shot at this size (2x the 76 x 48 box), so it stays
 /// sharp up to 200% scale.
@@ -38,17 +70,6 @@ pub struct SnapFrame {
     pub status: ThumbStatus,
     /// Saved already: the save button reads "open" (reveal in Explorer).
     pub saved: bool,
-}
-
-/// A raster BGRA image of `b` (copied).
-fn raster(b: &Bitmap) -> Option<Image> {
-    let info = ImageInfo::new(
-        (b.width as i32, b.height as i32),
-        ColorType::BGRA8888,
-        AlphaType::Opaque,
-        None,
-    );
-    images::raster_from_data(&info, Data::new_copy(&b.pixels), b.stride())
 }
 
 impl Painter {
@@ -206,6 +227,17 @@ pub struct SnapScene<'a> {
     pub monitor: IRect,
     /// Device px per logical px on that monitor.
     pub scale: f32,
+    /// The editing phase. When set, the fields above (selecting phase) are not used.
+    pub edit: Option<EditScene<'a>>,
+}
+
+/// The overlay while editing: everything comes from the editor.
+pub struct EditScene<'a> {
+    pub editor: &'a Editor,
+    /// The frozen monitors (pixelate reads them, not the canvas).
+    pub frames: &'a [MonitorFrame],
+    /// `612 × 388` for the selection.
+    pub size_text: &'a str,
 }
 
 /// The overlay's GPU side: a swap chain the size of the virtual desktop, and the frozen
@@ -213,7 +245,9 @@ pub struct SnapScene<'a> {
 pub struct SnapOverlay {
     // Field order is drop order; `Drop` clears the surfaces and images first.
     images: Vec<(Image, IRect)>,
+    pixels: PixelCache,
     fonts: Fonts,
+    metrics: TextMetrics,
     gpu: Gpu,
     chain: Chain,
     origin: (i32, i32),
@@ -246,9 +280,12 @@ impl SnapOverlay {
             images.push((img, f.rect));
         }
         let fonts = Fonts::new().map_err(RenderError::Setup)?;
+        let metrics = TextMetrics::new().map_err(RenderError::Setup)?;
         Ok(Self {
             images,
+            pixels: PixelCache::default(),
             fonts,
+            metrics,
             gpu,
             chain,
             origin,
@@ -268,7 +305,12 @@ impl SnapOverlay {
             )
         };
         let canvas = self.chain.back_buffer().canvas();
-        draw_scene(canvas, &self.images, &mut self.fonts, origin, scene, local);
+        let mut ctx = SceneCtx {
+            fonts: &mut self.fonts,
+            metrics: &self.metrics,
+            pixels: &mut self.pixels,
+        };
+        draw_scene(canvas, &self.images, &mut ctx, origin, scene, local);
         self.chain.present(&mut self.gpu.ctx)
     }
 }
@@ -277,15 +319,23 @@ impl Drop for SnapOverlay {
     fn drop(&mut self) {
         // The frozen monitors and the wrapped buffers go first, then wait for the GPU.
         self.images.clear();
+        self.pixels = PixelCache::default();
         self.chain.surfaces.clear();
         self.gpu.ctx.flush_submit_and_sync_cpu();
     }
 }
 
+/// What drawing the scene needs besides the canvas and the frozen images.
+struct SceneCtx<'a> {
+    fonts: &'a mut Fonts,
+    metrics: &'a TextMetrics,
+    pixels: &'a mut PixelCache,
+}
+
 fn draw_scene(
     canvas: &Canvas,
     images: &[(Image, IRect)],
-    fonts: &mut Fonts,
+    ctx: &mut SceneCtx,
     origin: (i32, i32),
     sc: &SnapScene,
     local: impl Fn(IRect) -> Rect,
@@ -297,6 +347,14 @@ fn draw_scene(
         let lr = local(*r);
         canvas.draw_image(img, (lr.left, lr.top), None);
     }
+    if let Some(edit) = &sc.edit {
+        canvas.save();
+        canvas.translate((-origin.0 as f32, -origin.1 as f32));
+        draw_edit(canvas, ctx, origin, t, edit);
+        canvas.restore();
+        return;
+    }
+    let fonts = &mut *ctx.fonts;
 
     // Dim everything but the selection (or the window a click would take).
     let focus = sc.selection.or(sc.hover);
@@ -359,6 +417,382 @@ fn draw_scene(
     }
 
     loupe(canvas, images, fonts, origin, sc, &local);
+}
+
+fn rect_of(r: FRect) -> Rect {
+    Rect::from_xywh(r.x, r.y, r.w, r.h)
+}
+
+/// A soft drop shadow under a floating panel.
+fn shadow(canvas: &Canvas, rr: RRect, s: f32) {
+    let mut p = fill_paint(Color::from_argb(120, 0, 0, 0));
+    p.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 8.0 * s, false));
+    canvas.draw_rrect(rr.with_offset((0.0, 4.0 * s)), &p);
+}
+
+fn dashed(c: Color, width: f32, s: f32) -> Paint {
+    let mut p = stroke_paint(c, width);
+    p.set_stroke_cap(skia_safe::paint::Cap::Butt);
+    p.set_path_effect(PathEffect::dash(&[4.0 * s, 3.0 * s], 0.0));
+    p
+}
+
+/// The editing phase, in desktop px (the canvas is already translated).
+fn draw_edit(
+    canvas: &Canvas,
+    ctx: &mut SceneCtx,
+    origin: (i32, i32),
+    t: &ResolvedTokens,
+    sc: &EditScene,
+) {
+    let e = sc.editor;
+    let s = e.scale();
+    let sel = e.selection();
+    let sr = frect(sel);
+    let size = canvas.base_layer_size();
+    let full = Rect::from_xywh(
+        origin.0 as f32,
+        origin.1 as f32,
+        size.width as f32,
+        size.height as f32,
+    );
+
+    // Dim outside the selection, then the markup inside it.
+    canvas.save();
+    canvas.clip_rect(sr, ClipOp::Difference, false);
+    canvas.draw_rect(
+        full,
+        &fill_paint(Color::from_argb((DIM * 255.0) as u8, 0, 0, 0)),
+    );
+    canvas.restore();
+    draw_markup(
+        canvas,
+        e.shapes(),
+        e.draft(),
+        sel,
+        sc.frames,
+        ctx.pixels,
+        ctx.metrics,
+    );
+
+    // The selected shape's dashed box.
+    if let Some(shape) = e.selected().and_then(|i| e.shapes().get(i)) {
+        let b = shape.bounds(ctx.metrics).inflate(4.0 * s);
+        canvas.draw_rect(rect_of(b), &dashed(col(t.highlight, 1.0), 1.0 * s, s));
+    }
+
+    // The text being typed: a faint box around it and the caret (no blink).
+    if let Some(c) = e.caret() {
+        if let Some(shape) = e.shapes().get(c.shape) {
+            if let (ShapeKind::Text { at, text }, Some(r)) =
+                (&shape.kind, shape.text_rect(ctx.metrics))
+            {
+                let boxr = live_text_rect(r, shape, ctx.metrics);
+                canvas.draw_rect(rect_of(boxr), &dashed(col(t.highlight, 0.7), 1.0 * s, s));
+                let px = shape.font_px();
+                let lh = ctx.metrics.line_height(px);
+                let (line, colm) = caret_line_col(text, c.index);
+                let prefix: String = text_lines(text)
+                    .nth(line)
+                    .unwrap_or("")
+                    .chars()
+                    .take(colm)
+                    .collect();
+                let x = at.0 + ctx.metrics.width(&prefix, px);
+                let y = at.1 + line as f32 * lh;
+                let mut caret = stroke_paint(color(shape.color, 1.0), (1.5 * s).max(1.0));
+                caret.set_stroke_cap(skia_safe::paint::Cap::Butt);
+                canvas.draw_line((x, y), (x, y + lh), &caret);
+            }
+        }
+    }
+
+    // The selection: a solid outline and its 8 handles.
+    let w = 1.5 * s;
+    let mut outline = stroke_paint(col(t.highlight, 1.0), w);
+    outline.set_stroke_cap(skia_safe::paint::Cap::Butt);
+    outline.set_stroke_join(skia_safe::paint::Join::Miter);
+    canvas.draw_rect(sr.with_inset((w / 2.0, w / 2.0)), &outline);
+    let hs = (ed::HANDLE_SIZE * s).round();
+    for (hx, hy) in handle_points(sel) {
+        let r = Rect::from_xywh((hx - hs / 2.0).round(), (hy - hs / 2.0).round(), hs, hs);
+        canvas.draw_rect(r, &fill_paint(col(t.highlight, 1.0)));
+        canvas.draw_rect(
+            r.with_inset((0.5, 0.5)),
+            &stroke_paint(col(t.pill, 1.0), 1.0),
+        );
+    }
+
+    let bar = e.toolbar();
+    let mon = frect(e.display().rect);
+    size_label(canvas, ctx.fonts, t, sr, mon, bar.place, sc.size_text, s);
+    draw_toolbar(canvas, ctx.fonts, t, e, &bar);
+    if let Some((p, hsv)) = e.picker() {
+        draw_picker(canvas, ctx.fonts, t, &p, hsv, s);
+    }
+}
+
+/// `612 × 388` above the selection's top-left, or inside it when there's no room (or
+/// the toolbar took the space above).
+#[allow(clippy::too_many_arguments)]
+fn size_label(
+    canvas: &Canvas,
+    fonts: &mut Fonts,
+    t: &ResolvedTokens,
+    r: Rect,
+    mon: Rect,
+    place: Place,
+    text: &str,
+    s: f32,
+) {
+    let font = fonts.font(&t.font_label, Weight::Medium, 10.0 * s);
+    let tw = text_width(&font, text, 0.0);
+    let (pad_x, h) = (6.0 * s, 16.0 * s);
+    let mut x = r.left;
+    let mut y = r.top - h - 6.0 * s;
+    if y < mon.top || place == Place::Above {
+        y = r.top + 6.0 * s;
+        x = r.left + 6.0 * s;
+    }
+    x = x.min(mon.right - tw - pad_x * 2.0).max(mon.left);
+    let label = Rect::from_xywh(x, y, tw + pad_x * 2.0, h);
+    let rad = 5.0 * s;
+    canvas.draw_rrect(
+        RRect::new_rect_xy(label, rad, rad),
+        &fill_paint(col(t.pill, 1.0)),
+    );
+    draw_text(
+        canvas,
+        &font,
+        text,
+        label.left + pad_x,
+        label.center_y() + 0.35 * 10.0 * s,
+        0.0,
+        &fill_paint(col(t.highlight, 1.0)),
+    );
+}
+
+/// The toolbar: pill body, r 12, 26 px buttons with r 8, the active tool and size in
+/// accent, the active swatch ringed in accent, the hovered button on surface2.
+fn draw_toolbar(canvas: &Canvas, fonts: &mut Fonts, t: &ResolvedTokens, e: &Editor, bar: &Toolbar) {
+    let s = bar.scale;
+    let body = rect_of(bar.rect);
+    let rad = ed::RADIUS * s;
+    let rr = RRect::new_rect_xy(body, rad, rad);
+    shadow(canvas, rr, s);
+    canvas.draw_rrect(rr, &fill_paint(col(t.pill, 1.0)));
+    canvas.draw_rrect(
+        RRect::new_rect_xy(body.with_inset((0.5, 0.5)), rad - 0.5, rad - 0.5),
+        &stroke_paint(col(t.surface2, 1.0), 1.0),
+    );
+    for r in &bar.rules {
+        canvas.draw_rect(rect_of(*r), &fill_paint(col(t.surface2, 1.0)));
+    }
+    let size_font = fonts.font(&t.font_label, Weight::SemiBold, 12.0 * s);
+    for (item, r) in &bar.buttons {
+        let br = rect_of(*r);
+        let (cx, cy) = r.center();
+        let filled = match item {
+            Item::Tool(tool) => *tool == e.tool(),
+            Item::Size(z) => *z == e.size(),
+            _ => false,
+        };
+        let enabled = match item {
+            Item::Undo => e.can_undo(),
+            Item::Redo => e.can_redo(),
+            _ => true,
+        };
+        let hovered = e.hover() == Some(*item) && enabled;
+        let brad = 8.0 * s;
+        if filled {
+            canvas.draw_rrect(
+                RRect::new_rect_xy(br, brad, brad),
+                &fill_paint(col(t.accent, 1.0)),
+            );
+        } else if hovered {
+            canvas.draw_rrect(
+                RRect::new_rect_xy(br, brad, brad),
+                &fill_paint(col(t.surface2, 1.0)),
+            );
+        }
+        let ink = if filled {
+            col(t.pill, 1.0)
+        } else if enabled {
+            col(t.text, 1.0)
+        } else {
+            col(t.text_dim, 0.45)
+        };
+        match item {
+            Item::Swatch(i) => {
+                let c = swatch_color(*i, e.accent());
+                swatch(canvas, t, c, cx, cy, s);
+                if e.color_choice() == ColorChoice::Swatch(*i) {
+                    ring(canvas, t, cx, cy, s);
+                }
+            }
+            Item::Custom => {
+                // The custom colour inside a thin hue ring.
+                let hues = [
+                    Color::from_rgb(255, 0, 0),
+                    Color::from_rgb(255, 255, 0),
+                    Color::from_rgb(0, 255, 0),
+                    Color::from_rgb(0, 255, 255),
+                    Color::from_rgb(0, 0, 255),
+                    Color::from_rgb(255, 0, 255),
+                    Color::from_rgb(255, 0, 0),
+                ];
+                let mut p = stroke_paint(Color::WHITE, 2.0 * s);
+                p.set_shader(sweep(Point::new(cx, cy), &hues));
+                canvas.draw_circle((cx, cy), 8.0 * s, &p);
+                canvas.draw_circle((cx, cy), 5.0 * s, &fill_paint(color(e.custom(), 1.0)));
+                if e.color_choice() == ColorChoice::Custom {
+                    ring(canvas, t, cx, cy, s);
+                }
+            }
+            Item::Size(z) => {
+                let label = z.name();
+                let tw = text_width(&size_font, label, 0.0);
+                draw_text(
+                    canvas,
+                    &size_font,
+                    label,
+                    cx - tw / 2.0,
+                    cy + 0.36 * 12.0 * s,
+                    0.0,
+                    &fill_paint(ink),
+                );
+            }
+            _ => {
+                let mut p = stroke_paint(ink, 1.5 * s);
+                p.set_stroke_join(skia_safe::paint::Join::Round);
+                draw_toolbar_icon(canvas, *item, cx, cy, 16.0 * s, &p);
+            }
+        }
+    }
+}
+
+/// A colour dot with a faint edge, so white and black show on the pill.
+fn swatch(canvas: &Canvas, t: &ResolvedTokens, c: Rgba, cx: f32, cy: f32, s: f32) {
+    canvas.draw_circle((cx, cy), 6.5 * s, &fill_paint(color(c, 1.0)));
+    canvas.draw_circle((cx, cy), 6.5 * s, &stroke_paint(col(t.surface2, 1.0), 1.0));
+}
+
+/// The active swatch's accent ring.
+fn ring(canvas: &Canvas, t: &ResolvedTokens, cx: f32, cy: f32, s: f32) {
+    canvas.draw_circle(
+        (cx, cy),
+        10.5 * s,
+        &stroke_paint(col(t.accent, 1.0), 1.5 * s),
+    );
+}
+
+/// The HSV picker: the saturation/value square for the current hue, the hue strip, a
+/// preview of the colour and its hex.
+fn draw_picker(
+    canvas: &Canvas,
+    fonts: &mut Fonts,
+    t: &ResolvedTokens,
+    p: &Picker,
+    hsv: Hsv,
+    s: f32,
+) {
+    let body = rect_of(p.rect);
+    let rad = ed::RADIUS * s;
+    let rr = RRect::new_rect_xy(body, rad, rad);
+    shadow(canvas, rr, s);
+    canvas.draw_rrect(rr, &fill_paint(col(t.pill, 1.0)));
+    canvas.draw_rrect(
+        RRect::new_rect_xy(body.with_inset((0.5, 0.5)), rad - 0.5, rad - 0.5),
+        &stroke_paint(col(t.surface2, 1.0), 1.0),
+    );
+
+    // Saturation left to right, value top to bottom, over the pure hue.
+    let sv = rect_of(p.sv);
+    let pure = Hsv {
+        h: hsv.h,
+        s: 1.0,
+        v: 1.0,
+    }
+    .to_rgba();
+    canvas.draw_rect(sv, &fill_paint(color(pure, 1.0)));
+    let mut white = Paint::default();
+    white.set_shader(linear(
+        Point::new(sv.left, sv.top),
+        Point::new(sv.right, sv.top),
+        &[Color::WHITE, Color::from_argb(0, 255, 255, 255)],
+    ));
+    canvas.draw_rect(sv, &white);
+    let mut black = Paint::default();
+    black.set_shader(linear(
+        Point::new(sv.left, sv.top),
+        Point::new(sv.left, sv.bottom),
+        &[Color::from_argb(0, 0, 0, 0), Color::BLACK],
+    ));
+    canvas.draw_rect(sv, &black);
+    let (mx, my) = p.sv_point(hsv.s, hsv.v);
+    canvas.draw_circle((mx, my), 5.0 * s, &stroke_paint(Color::BLACK, 3.0 * s));
+    canvas.draw_circle((mx, my), 5.0 * s, &stroke_paint(Color::WHITE, 1.5 * s));
+
+    // The hue strip, top (0°) to bottom (360°).
+    let hue = rect_of(p.hue);
+    let stops: Vec<Color> = (0..=6)
+        .map(|i| {
+            let c = Hsv {
+                h: i as f32 * 60.0,
+                s: 1.0,
+                v: 1.0,
+            }
+            .to_rgba();
+            color(c, 1.0)
+        })
+        .collect();
+    let mut strip = Paint::default();
+    strip.set_shader(linear(
+        Point::new(hue.left, hue.top),
+        Point::new(hue.left, hue.bottom),
+        &stops,
+    ));
+    let hr = 4.0 * s;
+    canvas.draw_rrect(RRect::new_rect_xy(hue, hr, hr), &strip);
+    let hy = p.hue_y(hsv.h);
+    let marker = Rect::from_xywh(
+        hue.left - 2.0 * s,
+        hy - 2.5 * s,
+        hue.width() + 4.0 * s,
+        5.0 * s,
+    );
+    canvas.draw_rrect(
+        RRect::new_rect_xy(marker, 2.0 * s, 2.0 * s),
+        &stroke_paint(Color::BLACK, 3.0 * s),
+    );
+    canvas.draw_rrect(
+        RRect::new_rect_xy(marker, 2.0 * s, 2.0 * s),
+        &stroke_paint(Color::WHITE, 1.5 * s),
+    );
+
+    // Preview and hex.
+    let c = hsv.to_rgba();
+    let pv = rect_of(p.preview);
+    let prad = 6.0 * s;
+    canvas.draw_rrect(
+        RRect::new_rect_xy(pv, prad, prad),
+        &fill_paint(color(c, 1.0)),
+    );
+    canvas.draw_rrect(
+        RRect::new_rect_xy(pv.with_inset((0.5, 0.5)), prad, prad),
+        &stroke_paint(col(t.surface2, 1.0), 1.0),
+    );
+    let font = fonts.font(&t.font_label, Weight::Medium, 11.0 * s);
+    let hex = rect_of(p.hex);
+    draw_text(
+        canvas,
+        &font,
+        &c.to_hex(),
+        hex.left,
+        hex.center_y() + 0.35 * 11.0 * s,
+        0.0,
+        &fill_paint(col(t.text, 1.0)),
+    );
 }
 
 /// The round loupe next to the cursor, flipped to the other side near the monitor's
@@ -465,6 +899,7 @@ mod tests {
     use dj_core::snap::Selector;
     use dj_core::theme::{ThemeRegistry, DEFAULT_THEME};
     use skia_safe::image::CachingHint;
+    use skia_safe::{AlphaType, ColorType, ImageInfo};
 
     fn tokens() -> ResolvedTokens {
         ThemeRegistry::with_builtins()
@@ -480,6 +915,31 @@ mod tests {
             height: h,
             pixels: bgra.repeat(w as usize * h as usize),
         }
+    }
+
+    /// Draws a scene onto a CPU surface the way the overlay does.
+    fn draw_cpu(
+        surface: &mut skia_safe::Surface,
+        images: &[(Image, IRect)],
+        origin: (i32, i32),
+        scene: &SnapScene,
+    ) {
+        let mut fonts = Fonts::new().unwrap();
+        let metrics = TextMetrics::new().unwrap();
+        let mut pixels = PixelCache::default();
+        let mut ctx = SceneCtx {
+            fonts: &mut fonts,
+            metrics: &metrics,
+            pixels: &mut pixels,
+        };
+        draw_scene(surface.canvas(), images, &mut ctx, origin, scene, |r| {
+            Rect::from_xywh(
+                (r.x - origin.0) as f32,
+                (r.y - origin.1) as f32,
+                r.w as f32,
+                r.h as f32,
+            )
+        });
     }
 
     fn read(surface: &mut skia_safe::Surface, x: i32, y: i32) -> [u8; 4] {
@@ -543,17 +1003,10 @@ mod tests {
             size_text: Some("200 × 80"),
             monitor: IRect::new(0, 0, 300, 150),
             scale: 1.0,
+            edit: None,
         };
         let mut surface = surfaces::raster_n32_premul((500, 150)).unwrap();
-        let mut fonts = Fonts::new().unwrap();
-        draw_scene(surface.canvas(), &images, &mut fonts, origin, &scene, |r| {
-            Rect::from_xywh(
-                (r.x - origin.0) as f32,
-                (r.y - origin.1) as f32,
-                r.w as f32,
-                r.h as f32,
-            )
-        });
+        draw_cpu(&mut surface, &images, origin, &scene);
         // Inside the selection, across the monitor seam: untouched.
         assert_eq!(read(&mut surface, 100, 60), [200, 200, 200, 255]);
         assert_eq!(read(&mut surface, 220, 60), [200, 200, 200, 255]);
@@ -562,5 +1015,94 @@ mod tests {
         assert!(dim[0].abs_diff(90) <= 2 && dim[3] == 255, "{dim:?}");
         let dim = read(&mut surface, 300, 10);
         assert!(dim[0].abs_diff(90) <= 2, "{dim:?}");
+    }
+
+    fn bgra(c: Color) -> [u8; 4] {
+        [c.b(), c.g(), c.r(), c.a()]
+    }
+
+    /// The editing phase on a CPU surface: the selection shows the frame and the markup,
+    /// outside is dimmed, and the handles and the toolbar are drawn; no loupe.
+    #[test]
+    fn the_editing_scene_draws_markup_handles_and_the_toolbar() {
+        use dj_core::snap_edit::{Display, EditInput, Prefs, Tool};
+        let t = tokens();
+        let mon = IRect::new(0, 0, 800, 500);
+        let frames = [MonitorFrame {
+            rect: mon,
+            dpi: 96,
+            bitmap: solid(800, 500, [200, 200, 200, 255]),
+        }];
+        let images: Vec<(Image, IRect)> = frames
+            .iter()
+            .map(|f| (raster(&f.bitmap).unwrap(), f.rect))
+            .collect();
+        let metrics = TextMetrics::new().unwrap();
+        let mut e = Editor::new(
+            IRect::new(100, 100, 300, 200),
+            mon,
+            vec![Display {
+                rect: mon,
+                scale: 1.0,
+            }],
+            Prefs {
+                tool: Tool::Rect,
+                ..Prefs::default()
+            },
+            Rgba::from_rgb(t.accent),
+            (0, 0),
+        );
+        for ev in [
+            EditInput::Press { x: 150, y: 150 },
+            EditInput::Motion { x: 250, y: 250 },
+            EditInput::Release { x: 250, y: 250 },
+            EditInput::Motion { x: 700, y: 50 },
+        ] {
+            e.input(ev, &metrics);
+        }
+        assert_eq!(e.shapes().len(), 1);
+        let scene = SnapScene {
+            tokens: &t,
+            cursor: (700, 50),
+            selection: None,
+            hover: None,
+            loupe: Loupe::at((700, 50), mon),
+            loupe_text: "",
+            size_text: None,
+            monitor: mon,
+            scale: 1.0,
+            edit: Some(EditScene {
+                editor: &e,
+                frames: &frames,
+                size_text: "300 × 200",
+            }),
+        };
+        let mut surface = surfaces::raster_n32_premul((800, 500)).unwrap();
+        draw_cpu(&mut surface, &images, (0, 0), &scene);
+        // Inside the selection, off the markup: the frame as it was.
+        assert_eq!(read(&mut surface, 300, 280), [200, 200, 200, 255]);
+        // The rect's left edge, in red.
+        let red = dj_core::snap_edit::SWATCHES[0];
+        assert_eq!(read(&mut surface, 150, 200), [red.b, red.g, red.r, 255]);
+        // Outside, away from the toolbar: dimmed, and no loupe at the cursor.
+        let dim = read(&mut surface, 700, 50);
+        assert!(dim[0].abs_diff(90) <= 2, "{dim:?}");
+        let dim = read(&mut surface, 730, 80);
+        assert!(dim[0].abs_diff(90) <= 2, "no loupe: {dim:?}");
+        // The top-left handle.
+        assert_eq!(read(&mut surface, 99, 99), bgra(col(t.highlight, 1.0)));
+        // The toolbar (two rows: one row is wider than this 800 px monitor) with the
+        // active tool in accent.
+        let bar = e.toolbar();
+        assert_eq!(bar.rows, 2);
+        let body = read(
+            &mut surface,
+            bar.rect.x as i32 + 3,
+            bar.rect.center().1 as i32,
+        );
+        assert_eq!(body, bgra(col(t.pill, 1.0)));
+        let b = bar.button(Item::Tool(Tool::Rect)).unwrap();
+        let on = read(&mut surface, b.x as i32 + 3, b.center().1 as i32);
+        assert_eq!(on, bgra(col(t.accent, 1.0)));
     }
 }

@@ -1,5 +1,6 @@
 //! `~/.daijobu/config.toml`. Parsing only; the app does the file IO.
 
+use crate::snap_edit::{ColorChoice, Prefs, Rgba, Size, Tool, DEFAULT_CUSTOM};
 use crate::timer::{Settings, MAX_EVERY, MAX_MIN};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -252,6 +253,8 @@ pub struct SnapConfig {
     /// Where **save** writes. A leading `~` is the user profile; a relative or blank
     /// path falls back to the default.
     pub save_dir: String,
+    /// `[snap.annotate]`: the editor's tool, colour and size, remembered across snaps.
+    pub annotate: AnnotateConfig,
 }
 
 /// The default `[snap] save_dir`.
@@ -263,6 +266,66 @@ impl Default for SnapConfig {
             hotkey: SnapHotkey::PrtSc.label().to_string(),
             alt_hotkey: SnapHotkey::CtrlSpace.label().to_string(),
             save_dir: SNAP_SAVE_DIR.to_string(),
+            annotate: AnnotateConfig::default(),
+        }
+    }
+}
+
+/// `[snap.annotate]`. Written by the app when the overlay closes, if they changed.
+/// Unknown values fall back to the defaults one by one (see the accessors).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnnotateConfig {
+    /// A tool name: `select`, `pen`, `line`, `arrow`, `rect`, `marker`, `text`,
+    /// `pixelate` or `step`.
+    pub tool: String,
+    /// A swatch (`red`, `yellow`, `green`, `blue`, `purple`, `white`, `black`, `accent`)
+    /// or `custom`.
+    pub color: String,
+    /// The custom swatch's colour, `#RRGGBB`.
+    pub custom: String,
+    /// `S`, `M` or `L`.
+    pub size: String,
+}
+
+impl Default for AnnotateConfig {
+    fn default() -> Self {
+        Self::from_prefs(&Prefs::default())
+    }
+}
+
+impl AnnotateConfig {
+    pub fn tool(&self) -> Tool {
+        Tool::parse(&self.tool).unwrap_or(Prefs::default().tool)
+    }
+
+    pub fn color(&self) -> ColorChoice {
+        ColorChoice::parse(&self.color).unwrap_or(Prefs::default().color)
+    }
+
+    pub fn custom(&self) -> Rgba {
+        Rgba::from_hex(&self.custom).unwrap_or(DEFAULT_CUSTOM)
+    }
+
+    pub fn size(&self) -> Size {
+        Size::parse(&self.size).unwrap_or(Prefs::default().size)
+    }
+
+    pub fn prefs(&self) -> Prefs {
+        Prefs {
+            tool: self.tool(),
+            color: self.color(),
+            custom: self.custom(),
+            size: self.size(),
+        }
+    }
+
+    pub fn from_prefs(p: &Prefs) -> Self {
+        Self {
+            tool: p.tool.name().to_string(),
+            color: p.color.name().to_string(),
+            custom: p.custom.to_hex(),
+            size: p.size.name().to_string(),
         }
     }
 }
@@ -369,6 +432,12 @@ mod tests {
                 hotkey: "Ctrl+Shift+S".into(),
                 alt_hotkey: "none".into(),
                 save_dir: "D:/shots".into(),
+                annotate: AnnotateConfig {
+                    tool: "pixelate".into(),
+                    color: "custom".into(),
+                    custom: "#123ABC".into(),
+                    size: "L".into(),
+                },
             },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);
@@ -611,6 +680,60 @@ mod tests {
             SnapConfig::default().save_dir(Path::new("")),
             Path::new("Pictures").join("Daijobu")
         );
+    }
+
+    #[test]
+    fn snap_annotate_defaults_reading_and_invalid_values() {
+        let d = Config::parse("theme = \"x\"").snap.annotate;
+        assert_eq!(d, AnnotateConfig::default());
+        assert_eq!(
+            (
+                d.tool.as_str(),
+                d.color.as_str(),
+                d.custom.as_str(),
+                d.size.as_str()
+            ),
+            ("arrow", "red", "#FF7AC6", "M")
+        );
+        assert_eq!(d.prefs(), Prefs::default());
+        let c = Config::parse(
+            "[snap]\nhotkey = \"Ctrl+Alt+S\"\n[snap.annotate]\ntool = \"Marker\"\ncolor = \"accent\"\ncustom = \"#00ff00\"\nsize = \"l\"\n",
+        );
+        assert_eq!(
+            c.snap.hotkey(),
+            SnapHotkey::CtrlAltS,
+            "the [snap] keys stay"
+        );
+        let p = c.snap.annotate.prefs();
+        assert_eq!(p.tool, Tool::Marker);
+        assert_eq!(p.color, ColorChoice::Swatch(7));
+        assert_eq!(p.custom, Rgba::rgb(0, 255, 0));
+        assert_eq!(p.size, Size::L);
+        // Each bad value falls back on its own.
+        let c = Config::parse(
+            "[snap.annotate]\ntool = \"brush\"\ncolor = \"pink\"\ncustom = \"#12\"\nsize = \"XL\"\n",
+        );
+        assert_eq!(c.snap.annotate.prefs(), Prefs::default());
+        let c = Config::parse("[snap.annotate]\ntool = \"step\"\nsize = \"huge\"\n");
+        assert_eq!(c.snap.annotate.tool(), Tool::Step);
+        assert_eq!(c.snap.annotate.size(), Size::M);
+        assert_eq!(c.snap.annotate.color(), ColorChoice::Swatch(0));
+        // Prefs round-trip through the config text, keeping the other sections.
+        let mut c = Config::parse("theme = \"paper-zine\"\n[timer]\nfocus_min = 50\n");
+        let p = Prefs {
+            tool: Tool::Text,
+            color: ColorChoice::Custom,
+            custom: Rgba::rgb(0x12, 0x34, 0x56),
+            size: Size::S,
+        };
+        c.snap.annotate = AnnotateConfig::from_prefs(&p);
+        let text = c.to_toml();
+        assert!(text.contains("[snap.annotate]"), "{text}");
+        let back = Config::parse(&text);
+        assert_eq!(back.snap.annotate.prefs(), p);
+        assert_eq!(back.snap.annotate.custom, "#123456");
+        assert_eq!(back.theme, "paper-zine");
+        assert_eq!(back.timer.focus_min, 50);
     }
 
     #[test]
