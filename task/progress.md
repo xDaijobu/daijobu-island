@@ -22,7 +22,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 6 | **Timer / Pomodoro**: focus/break cycles, chime alert, mini timer on Music compact | ✅ | `stage-6-timer` | Opus 5.5 agent (headless) · live test by the coordinator · [`stage-6-report.md`](stage-6-report.md) |
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
 | 7b | **Snap annotations**: Lightshot-style editor on release (8 tools, select/move, text re-edit, HSV picker, undo/redo) | ✅ merged, live test pending | `xDaijobu/stage-7b-work` | Opus 5.5 agent (headless) · merged at the user's request before the live test · [`stage-7b-report.md`](stage-7b-report.md) |
-| 7c | Snap stack: floating previews, countdown, keep-in-stack pin, multi-select, copy/save | 🟡 built, live test pending | `xDaijobu/stage-7c-snap-stack` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 541 tests · [`stage-7c-report.md`](stage-7c-report.md) · no OLE in this stage |
+| 7c | Snap stack: floating previews, countdown, keep-in-stack pin, multi-select, copy/save | ✅ | `xDaijobu/stage-7c-snap-stack` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 541 tests · live test with the user · [`stage-7c-report.md`](stage-7c-report.md) · no OLE in this stage |
 | 7c-2 | Snap stack: multi-file OLE drag-out | locked | — | after 7c; separate implementation and live target-app checks |
 | 7d | Snap: standalone pin-to-screen + OCR | locked | — | moved out of 7b; distinct from keeping a stack card |
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
@@ -431,7 +431,7 @@ Headless, as in 7a: fmt, clippy, test and release only. Don't run the exe, don't
 
 ## Stage 7c: Snap stack (preview UI only)
 
-**Status:** built and verified headless (fmt, clippy, 541 tests, release); **live acceptance pending**. Scope items below are implemented unless the report says otherwise; see [`stage-7c-report.md`](stage-7c-report.md) for what still needs a desktop.
+**Status:** done. Verified headless (fmt, clippy, 541 tests, release) and live-tested by the user on 2026-10-26. Details, deviations and known issues: [`stage-7c-report.md`](stage-7c-report.md).
 
 **Goal:** keep several finished, annotated snaps within reach below the island without implementing OLE in the same stage. Defaults follow the stack mockup in `docs/plan.html`: 10 seconds, up to 5 cards, hover/selection pause. The mockup describes the eventual product; the scope here is the implementation gate.
 
@@ -463,6 +463,7 @@ Use [`stage-7c-brief.md`](stage-7c-brief.md). Implementation runs in its own wor
 ### Log
 - 2026-10-26: continuation chose planning + 7b verification, not 7c-lite implementation. Defaults captured from the design; OLE split into 7c-2 to keep implementation and target-app testing separate. No 7c code shipped in this session.
 - 2026-10-26: built in `xDaijobu/stage-7c-snap-stack` after the Kilo handover: the coordinator (Opus 5.5) wrote the seam contract ([`stage-7c-plan.md`](stage-7c-plan.md)) and ran four Sonnet 5.5 workers in parallel worktrees (core, native window, render, payload store), then wrote the controller and the app wiring itself. Deviations: no fan or hover lift; no drop shadow and the focus ring sits inside the card, because the window region that keeps gaps click-through also clips what shows. fmt, clippy `-D warnings`, 541 workspace tests (after the wiring review fixes) and the release build pass on a worktree-local target. **Live test pending** (report lists the five sequences and the coordinates to drive them).
+- 2026-10-26: a Sonnet 5.5 review of the wiring found no high-severity bug; its medium/low findings (tick re-armed on every input, hover/focus kept across a rebuild, no retry after a lost device, stale focus loss, hidden buttons tappable, thumb/card saved state) were fixed with tests. **Live test passed**: the user ran the 9-step checklist on the release build (cards, countdown pause/resume, card buttons, multi-select bar, exclusion from the next capture, click-through, stack full, tray keyboard access, theme/panel) and confirmed it works as specified ("ok mantap ud sesuai").
 
 ## Stage 7c-2: Snap stack OLE drag-out (deferred)
 

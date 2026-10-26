@@ -1,6 +1,6 @@
 # Stage 7c report: Snap stack (preview UI only)
 
-Status: **built and verified headless** on `xDaijobu/stage-7c-snap-stack`. **No live test yet**: nothing in this stage has been run on a desktop, so every acceptance sequence below is still open.
+Status: **done.** Built and verified headless on `xDaijobu/stage-7c-snap-stack`, then **live-tested by the user** on 2026-10-26 with the 9-step checklist (cards appear without stealing focus, countdown pause/resume, card buttons, multi-select bar, exclusion from the next capture, click-through, stack full, tray keyboard access, theme/panel). The user confirmed it works as specified; the per-step details below were not logged individually.
 
 Built 2026-10-26 by the coordinator (Claude Opus 5.5) with four parallel Claude Sonnet 5.5 workers, each in its own worktree with its own target dir. The interface contract is in [`stage-7c-plan.md`](stage-7c-plan.md).
 
