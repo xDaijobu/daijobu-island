@@ -23,6 +23,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
 | 7b | Snap: annotations, pin, OCR | 🔒 | — | after 7a |
 | 7c | Snap stack: floating previews, countdown, multi-select, OLE drag-out | 🔒 | — | after 7b |
+| S | **Settings window**: gear icon in the island, rebind shortcuts (press-to-record), auto-startup and other toggles, applied live | 🔒 | — | user-requested 2026-10-26; scheduled *later* (after Snap). Until then: tray menu + `config.toml` |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
