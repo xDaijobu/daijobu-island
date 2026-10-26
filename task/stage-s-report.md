@@ -36,3 +36,18 @@ Pill-local logical px, and the offset to the 520-wide island window's client coo
 | Autostart toggle | 328, 46, 52, 24 | 388, 52 | 414, 64 |
 | Snap hotkey chip | 248, 82, 132, 24 | 308, 88 | 374, 100 |
 | Snap alt chip | 248, 118, 132, 24 | 308, 124 | 374, 136 |
+
+## Live test (coordinator + user, 2026-10-26)
+Release build of this branch, driven by posted clicks.
+
+| Check | Result |
+|---|---|
+| Home → gear opens the Settings panel (SETTINGS · BACK, the toggle, both chips) | Pass |
+| The toggle reflects the real state (on: `DaijobuIsland` is in HKCU Run) | Pass |
+| Toggle off → Run entry removed and `start_with_windows = false`; on → restored and `true` | Pass |
+| Main chip PrtSc → Ctrl+Space; alt moves off Ctrl+Space to Ctrl+Alt+S; both saved | Pass |
+| User: Ctrl+Space and Ctrl+Alt+S open the snap, and PrtSc no longer does | Pass (user) |
+| Cycle back to PrtSc and Ctrl+Space through the chips (order and skip rule as in the contract) | Pass |
+| Back returns to Home | Pass |
+
+Not verified: a registration failure (the warn chip), and persistence across a restart (the config file is written, so it should hold).

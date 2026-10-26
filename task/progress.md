@@ -23,7 +23,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
 | 7b | Snap: annotations, pin, OCR | 🔒 | — | after 7a |
 | 7c | Snap stack: floating previews, countdown, multi-select, OLE drag-out | 🔒 | — | after 7b |
-| S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | 🟡 | `stage-s-settings` | user-requested · Sonnet 5.5 agent · brief: [`stage-s-brief.md`](stage-s-brief.md) |
+| S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -334,15 +334,15 @@ Press PrtSc. The screen freezes under a dimmed overlay, the loupe follows the cu
 **Goal:** change the basics without editing `config.toml`: a gear icon on Home opens a small Settings panel in the island.
 
 ### Scope
-- [ ] **Gear icon** in the Home grid header (right side, next to the clock), with hover and press states like the other controls. A click opens the **Settings panel**. It is not a feature tile, so the registry count stays 5 of 12.
-- [ ] **Settings panel** inside the island (about 400×184, r 32, same style as the Vitals/Timer panels). A back control (or an empty click) returns to Home. Rows:
+- [x] **Gear icon** in the Home grid header (right side, next to the clock), with hover and press states like the other controls. A click opens the **Settings panel**. It is not a feature tile, so the registry count stays 5 of 12.
+- [x] **Settings panel** inside the island (about 400×184, r 32, same style as the Vitals/Timer panels). A back control (or an empty click) returns to Home. Rows:
   - **Start with Windows**: an on/off toggle. It uses the existing autostart code (the same one as the tray's *Start with Windows*), the tray's check mark stays in sync, and it is saved to config.
   - **Snap hotkey**: a chip showing the current key. Each click cycles `PrtSc → Ctrl+Space → Ctrl+Alt+S → Ctrl+Shift+S → PrtSc`.
   - **Snap alt hotkey**: a chip; each click cycles `Ctrl+Space → Ctrl+Alt+S → Ctrl+Shift+S → off → Ctrl+Space`. It can't be set to the same key as the main hotkey; that value is skipped.
-- [ ] **Applied live:** a hotkey change unregisters the old key and registers the new one at once (PrtSc goes through the keyboard hook, the others through `RegisterHotKey`), and saves `[snap] hotkey` / `alt_hotkey`. If registration fails (another app holds the key), the chip shows the key in the warn colour with a short status line `taken by another app`, and the reason goes to the log.
-- [ ] **Persisted:** `config.toml` is rewritten with the new values, and the other sections are kept as they were.
-- [ ] Idle CPU ≈ 0 (no timers for this panel).
-- [ ] Tests: the hotkey cycle order (including skipping the main key for alt, and "off"), panel hit testing (gear, toggle, chips, back), config round trip with the new values, and the island transitions Home ↔ Settings. `fmt`, `clippy -D warnings`, `test` and `build --release` pass.
+- [x] **Applied live:** a hotkey change unregisters the old key and registers the new one at once (PrtSc goes through the keyboard hook, the others through `RegisterHotKey`), and saves `[snap] hotkey` / `alt_hotkey`. If registration fails (another app holds the key), the chip shows the key in the warn colour with a short status line `taken by another app`, and the reason goes to the log.
+- [x] **Persisted:** `config.toml` is rewritten with the new values, and the other sections are kept as they were.
+- [x] Idle CPU ≈ 0 (no timers for this panel).
+- [x] Tests: the hotkey cycle order (including skipping the main key for alt, and "off"), panel hit testing (gear, toggle, chips, back), config round trip with the new values, and the island transitions Home ↔ Settings. `fmt`, `clippy -D warnings`, `test` and `build --release` pass.
 
 ### Acceptance
 Home → gear → Settings. Toggling *Start with Windows* updates the tray check and the HKCU Run entry. Clicking the hotkey chip changes the key at once: the new key opens a snap and the old one doesn't. After a restart the choices are still there.
@@ -352,6 +352,7 @@ Headless: fmt, clippy, test and release only. Don't run the exe, and don't touch
 
 ### Log
 - 2026-10-26: defined with the user (minimal: auto-start + Snap hotkeys; press-to-record later).
+- 2026-10-26: built by one Sonnet 5.5 agent (303 tests). Live test passed: gear → panel, the autostart toggle (Run key + config), hotkey chips applied live (the user pressed the keys), then restored to PrtSc + Ctrl+Space.
 
 ---
 
