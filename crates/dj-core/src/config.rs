@@ -144,14 +144,12 @@ pub enum SnapHotkey {
     PrtSc,
     CtrlShiftS,
     CtrlAltS,
+    CtrlSpace,
 }
 
 impl SnapHotkey {
-    /// The fallback when the configured key can't be registered.
-    pub const FALLBACK: SnapHotkey = SnapHotkey::CtrlShiftS;
-
-    /// Reads `"PrtSc"`, `"Ctrl+Shift+S"` or `"Ctrl+Alt+S"`. Case, spaces and the order of
-    /// the modifiers don't matter. Anything else is None.
+    /// Reads `"PrtSc"`, `"Ctrl+Shift+S"`, `"Ctrl+Alt+S"` or `"Ctrl+Space"`. Case, spaces
+    /// and the order of the modifiers don't matter. Anything else is None.
     pub fn parse(s: &str) -> Option<Self> {
         let mut parts: Vec<String> = s
             .split('+')
@@ -163,6 +161,7 @@ impl SnapHotkey {
             ([], "prtsc" | "printscreen" | "print") => Some(Self::PrtSc),
             ([a, b], "s") if a == "ctrl" && b == "shift" => Some(Self::CtrlShiftS),
             ([a, b], "s") if a == "alt" && b == "ctrl" => Some(Self::CtrlAltS),
+            ([a], "space") if a == "ctrl" => Some(Self::CtrlSpace),
             _ => None,
         }
     }
@@ -172,15 +171,7 @@ impl SnapHotkey {
             Self::PrtSc => "PrtSc",
             Self::CtrlShiftS => "Ctrl+Shift+S",
             Self::CtrlAltS => "Ctrl+Alt+S",
-        }
-    }
-
-    /// The keys to try, in order: this one, then the fallback.
-    pub fn candidates(self) -> Vec<SnapHotkey> {
-        if self == Self::FALLBACK {
-            vec![self]
-        } else {
-            vec![self, Self::FALLBACK]
+            Self::CtrlSpace => "Ctrl+Space",
         }
     }
 }
@@ -189,8 +180,13 @@ impl SnapHotkey {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SnapConfig {
-    /// `"PrtSc"`, `"Ctrl+Shift+S"` or `"Ctrl+Alt+S"`. Anything else means PrtSc.
+    /// `"PrtSc"`, `"Ctrl+Shift+S"`, `"Ctrl+Alt+S"` or `"Ctrl+Space"`. Anything else means
+    /// PrtSc. PrtSc is taken through the keyboard hook, so Windows' own "Print screen
+    /// opens screen capture" never sees it.
     pub hotkey: String,
+    /// A second shortcut that is always registered next to `hotkey`, from the same names.
+    /// `"none"` (or blank, or an unknown name) means no second shortcut.
+    pub alt_hotkey: String,
     /// Where **save** writes. A leading `~` is the user profile; a relative or blank
     /// path falls back to the default.
     pub save_dir: String,
@@ -203,6 +199,7 @@ impl Default for SnapConfig {
     fn default() -> Self {
         Self {
             hotkey: SnapHotkey::PrtSc.label().to_string(),
+            alt_hotkey: SnapHotkey::CtrlSpace.label().to_string(),
             save_dir: SNAP_SAVE_DIR.to_string(),
         }
     }
@@ -211,6 +208,11 @@ impl Default for SnapConfig {
 impl SnapConfig {
     pub fn hotkey(&self) -> SnapHotkey {
         SnapHotkey::parse(&self.hotkey).unwrap_or(SnapHotkey::PrtSc)
+    }
+
+    /// The second shortcut, unless it is off, unknown or the same as `hotkey`.
+    pub fn alt_hotkey(&self) -> Option<SnapHotkey> {
+        SnapHotkey::parse(&self.alt_hotkey).filter(|k| *k != self.hotkey())
     }
 
     /// The save folder: `~` becomes `profile`, and a relative or blank path (or `~`
@@ -299,6 +301,7 @@ mod tests {
             },
             snap: SnapConfig {
                 hotkey: "Ctrl+Shift+S".into(),
+                alt_hotkey: "none".into(),
                 save_dir: "D:/shots".into(),
             },
         };
@@ -412,6 +415,9 @@ mod tests {
             ("shift + ctrl + s", Some(SnapHotkey::CtrlShiftS)),
             ("Ctrl+Alt+S", Some(SnapHotkey::CtrlAltS)),
             ("Alt+Ctrl+s", Some(SnapHotkey::CtrlAltS)),
+            ("Ctrl+Space", Some(SnapHotkey::CtrlSpace)),
+            ("ctrl + space", Some(SnapHotkey::CtrlSpace)),
+            ("Space", None),
             ("Ctrl+S", None),
             ("Ctrl+Shift+X", None),
             ("Win+Shift+S", None),
@@ -427,17 +433,34 @@ mod tests {
             SnapHotkey::PrtSc,
             SnapHotkey::CtrlShiftS,
             SnapHotkey::CtrlAltS,
+            SnapHotkey::CtrlSpace,
         ] {
             assert_eq!(SnapHotkey::parse(k.label()), Some(k));
         }
     }
 
     #[test]
-    fn snap_hotkey_falls_back_to_ctrl_shift_s() {
-        use SnapHotkey::*;
-        assert_eq!(PrtSc.candidates(), [PrtSc, CtrlShiftS]);
-        assert_eq!(CtrlAltS.candidates(), [CtrlAltS, CtrlShiftS]);
-        assert_eq!(CtrlShiftS.candidates(), [CtrlShiftS]);
+    fn snap_alt_hotkey_defaults_to_ctrl_space_and_can_be_turned_off() {
+        let d = SnapConfig::default();
+        assert_eq!(d.alt_hotkey, "Ctrl+Space");
+        assert_eq!(d.alt_hotkey(), Some(SnapHotkey::CtrlSpace));
+        let alt = |hotkey: &str, alt: &str| {
+            SnapConfig {
+                hotkey: hotkey.into(),
+                alt_hotkey: alt.into(),
+                ..SnapConfig::default()
+            }
+            .alt_hotkey()
+        };
+        assert_eq!(alt("PrtSc", "Ctrl+Alt+S"), Some(SnapHotkey::CtrlAltS));
+        for off in ["", "  ", "none", "Off", "F13"] {
+            assert_eq!(alt("PrtSc", off), None, "{off:?}");
+        }
+        // The same key as the main hotkey is not registered twice.
+        assert_eq!(alt("Ctrl+Space", "ctrl + space"), None);
+        let c = Config::parse("[snap]\nalt_hotkey = \"none\"\n");
+        assert_eq!(c.snap.alt_hotkey(), None);
+        assert_eq!(c.snap.hotkey(), SnapHotkey::PrtSc);
     }
 
     #[test]

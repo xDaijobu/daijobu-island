@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 pub const HOTKEY_SNAP: i32 = 3;
 /// Esc, registered only while the overlay is up, in case it didn't get the keyboard.
 pub const HOTKEY_SNAP_ESC: i32 = 4;
+/// `[snap] alt_hotkey`, the second shortcut (Ctrl+Space by default).
+pub const HOTKEY_SNAP_ALT: i32 = 5;
 /// One-shot: the thumb's countdown ends. App timer ids 1-6 are taken.
 pub const TIMER_SNAP_THUMB: usize = 7;
 /// One-shot: the island has finished collapsing, so the screen can be frozen.
@@ -30,6 +32,7 @@ pub const START_DELAY_MS: u32 = 60;
 
 const VK_SNAPSHOT: u32 = 0x2C;
 const VK_S: u32 = 0x53;
+const VK_SPACE: u32 = 0x20;
 pub const VK_ESCAPE: u32 = 0x1B;
 /// A save never overwrites: `-2` … `-999`, then it gives up.
 const MAX_NAME_TRIES: u32 = 999;
@@ -40,6 +43,7 @@ pub fn hotkey_keys(k: SnapHotkey) -> (u32, u32) {
         SnapHotkey::PrtSc => (dj_win::window::MOD_NONE, VK_SNAPSHOT),
         SnapHotkey::CtrlShiftS => (dj_win::window::MOD_CTRL_SHIFT, VK_S),
         SnapHotkey::CtrlAltS => (dj_win::window::MOD_CTRL_ALT, VK_S),
+        SnapHotkey::CtrlSpace => (dj_win::window::MOD_CTRL, VK_SPACE),
     }
 }
 
@@ -368,16 +372,19 @@ mod tests {
         assert_eq!(hotkey_keys(SnapHotkey::PrtSc), (0, 0x2C));
         assert_eq!(hotkey_keys(SnapHotkey::CtrlShiftS), (0x0002 | 0x0004, 0x53));
         assert_eq!(hotkey_keys(SnapHotkey::CtrlAltS), (0x0002 | 0x0001, 0x53));
+        assert_eq!(hotkey_keys(SnapHotkey::CtrlSpace), (0x0002, 0x20));
     }
 
     #[test]
     fn ids_are_free() {
         // Hotkeys 1 and 2 belong to app.rs; timers 1, 2, 4 to app.rs, 3 to vitals.rs and
         // 5, 6 to timer.rs.
-        for id in [HOTKEY_SNAP, HOTKEY_SNAP_ESC] {
+        for id in [HOTKEY_SNAP, HOTKEY_SNAP_ESC, HOTKEY_SNAP_ALT] {
             assert!(![1, 2].contains(&id));
         }
         assert_ne!(HOTKEY_SNAP, HOTKEY_SNAP_ESC);
+        assert_ne!(HOTKEY_SNAP_ALT, HOTKEY_SNAP);
+        assert_ne!(HOTKEY_SNAP_ALT, HOTKEY_SNAP_ESC);
         let taken = [
             1,
             2,

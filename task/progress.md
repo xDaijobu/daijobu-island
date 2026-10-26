@@ -324,6 +324,7 @@ Press PrtSc. The screen freezes under a dimmed overlay, the loupe follows the cu
 ### Log
 - 2026-10-26: Snap split into 7a/7b/7c with the user. 7a defined: PrtSc with a Ctrl+Shift+S fallback, auto-copy on release plus the island thumb, save to `Pictures\Daijobu` without a dialog.
 - 2026-10-26: built by one Opus 5.5 agent (284 tests, new crate `dj-capture`). The coordinator re-verified fmt, clippy, test and release. Live test with the user passed (freeze, loupe, window snap, auto-copy PNG + DIB, save, window click). Added at the user's request: after save, the button reads **open** and reveals the file in Explorer.
+- 2026-10-26: hotkey fix after the user reported that PrtSc opened Snipping Tool. Windows' "Print screen opens screen capture" doesn't use RegisterHotKey, so the keyboard hook now takes plain PrtSc (Alt/Win+PrtSc stay Windows'). The always-on `[snap] alt_hotkey` defaults to Ctrl+Space (the user's choice; it takes autocomplete away from IDEs, and `"none"` turns it off). It replaces the Ctrl+Shift+S fallback, which would have taken Save As from every app. Both verified live by the user.
 
 ---
 
