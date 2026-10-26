@@ -9,14 +9,14 @@
 //! an 18 px check box top-left, a 16 px countdown ring top-right and a row of action
 //! chips on hover. Selected, pinned, focused and failed cards differ by shape or text,
 //! not by colour alone: a drawn check mark, a "PIN" badge in place of the ring, a dashed
-//! focus ring outside the selection outline, and the status text itself.
+//! focus ring just inside the card, and the status text itself.
 //!
 //! Everything is laid out by `dj-core` in logical px; this module only multiplies by the
 //! scene's `scale`. Card-local rects (`check`, `ring`, `status_rect`, the actions) are
 //! relative to the card's top-left, the rest are window coordinates. Nothing is drawn
-//! more than 9 logical px outside a card, except the shadow, which reaches about 11 px
-//! below it, so the window's transparent margin (16 px) holds the shadow, the selection
-//! outline and the focus ring even with a hover lift.
+//! more than 4 logical px outside a card (the selection outline), because the window's
+//! input region, which hugs the cards so the gaps stay click-through, also clips what
+//! shows; that is why the cards have no drop shadow.
 
 use crate::fonts::{Fonts, Weight};
 use crate::gpu::{Chain, Gpu, RenderError};
@@ -24,20 +24,15 @@ use crate::markup::raster;
 use crate::paint::{col, draw_text, fill_paint, fit, stroke_paint, text_width};
 use dj_core::layout::Rect as LRect;
 use dj_core::snap::{aspect_fit, Bitmap};
+use dj_core::snap_stack::{CARD_H, CARD_R, CARD_W};
 use dj_core::theme::ResolvedTokens;
 use skia_safe::gpu::{self as sk_gpu, Budgeted};
 use skia_safe::paint::Cap;
 use skia_safe::{
-    surfaces, BlurStyle, Canvas, ClipOp, Color, FilterMode, Font, Image, MaskFilter, MipmapMode,
-    Paint, PathEffect, RRect, Rect, SamplingOptions,
+    surfaces, Canvas, ClipOp, Color, FilterMode, Font, Image, MipmapMode, Paint, PathEffect, RRect,
+    Rect, SamplingOptions,
 };
 use std::collections::HashMap;
-
-// Mirrors dj_core::snap_stack::{CARD_W, CARD_H}; the integrator swaps them.
-const CARD_W: f32 = 124.0;
-const CARD_H: f32 = 80.0;
-/// Mirrors dj_core::snap_stack::CARD_R.
-const CARD_R: f32 = 12.0;
 
 /// The card's body: `.shot`'s border is `color-mix(t1 14%)`; hover brightens it.
 const BORDER: f32 = 0.14;
@@ -321,20 +316,8 @@ fn draw_card(
         canvas.save_layer_alpha_f(r.with_outset((16.0 * s, 16.0 * s)), alpha);
     }
 
-    // A soft drop shadow, mostly below: the blur stays inside the window's margin
-    // (about 11 px under, about 3 px to the sides) and the 10 px gap between cards
-    // stays clear.
-    let mut sp = fill_paint(Color::from_argb(170, 0, 0, 0));
-    sp.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 3.0 * s, false));
-    canvas.draw_rrect(
-        RRect::new_rect_xy(
-            r.with_inset((4.0 * s, 4.0 * s)).with_offset((0.0, 6.0 * s)),
-            rad - 4.0 * s,
-            rad - 4.0 * s,
-        ),
-        &sp,
-    );
-
+    // No drop shadow: the window's input region clips what it shows too, and a shadow
+    // outside the card would have to take clicks (see `app::previews::region`).
     canvas.save();
     canvas.clip_rrect(rr, ClipOp::Intersect, true);
     canvas.draw_rect(r, &fill_paint(col(t.pill, 1.0)));
@@ -388,10 +371,11 @@ fn draw_card(
             &stroke_paint(col(t.accent, 1.0), 2.0 * s),
         );
     }
-    // Keyboard focus: a dashed ring in the text colour on a pill halo, outside the
-    // selection outline, so it reads on any desktop and differs from selection by shape.
+    // Keyboard focus: a dashed ring in the text colour on a pill halo, just inside the
+    // card, so it reads on any shot and differs from the selection outline by shape and
+    // place (and stays inside the window region, which hugs the card).
     if c.focused {
-        let ring = grown(r, rad, 6.5 * s);
+        let ring = grown(r, rad, -3.5 * s);
         canvas.draw_rrect(ring, &stroke_paint(col(t.pill, 1.0), 3.5 * s));
         let mut dash = stroke_paint(col(t.text, 1.0), 1.5 * s);
         dash.set_stroke_cap(Cap::Butt);
@@ -995,27 +979,34 @@ mod tests {
             paint(&scene(&t, 1.0, &cards), &HashMap::new(), W, H)
         };
         let (sel, foc, both) = (make(true, false), make(false, true), make(true, true));
-        // Selection: accent outside the card, no text-coloured ring.
+        // The focus ring runs just inside the card's top edge (centre 3.5 px in).
+        let ring_row =
+            |p: &Shot| -> Vec<bool> { (30..130).map(|x| near(p.at(x, 20 + 3), txt, 6)).collect() };
+        // Selection: accent outside the card, no text-coloured ring anywhere.
         assert!(sel.count_outside(card_rect, acc, 6) > 200);
         assert_eq!(sel.count_outside(card_rect, txt, 6), 0);
-        // Focus: a text-coloured ring, no accent outline.
-        assert!(foc.count_outside(card_rect, txt, 6) > 100);
+        assert!(!ring_row(&sel).contains(&true));
+        // Focus: a text-coloured ring inside, no accent outline.
+        assert!(ring_row(&foc).contains(&true));
         assert_eq!(foc.count_outside(card_rect, acc, 6), 0);
         // Both: both rings.
         assert!(both.count_outside(card_rect, acc, 6) > 200);
-        assert!(both.count_outside(card_rect, txt, 6) > 100);
+        assert!(ring_row(&both).contains(&true));
         assert_ne!(sel.px, foc.px);
         assert_ne!(foc.px, both.px);
         // The focus ring is dashed: along the top edge both its dashes and its gaps show.
-        let row: Vec<bool> = (30..130).map(|x| near(foc.at(x, 20 - 7), txt, 6)).collect();
+        let row = ring_row(&foc);
         assert!(row.contains(&true) && row.contains(&false), "{row:?}");
-        // It stays within 9 px of the card (12 below, with the shadow), inside the margin.
+        // Focus draws nothing outside the card (the window region hugs it), and the
+        // selection outline stays within 4 px of it.
         for y in 0..H {
             for x in 0..W {
-                // The shadow reaches a little further below than the ring does to the sides.
-                let outside = (20 - x).max(x - 143).max(20 - y).max(y - 99 - 3);
-                if outside > 9 {
-                    assert_eq!(foc.at(x, y)[3], 0, "({x},{y})");
+                let outside = (20 - x).max(x - 143).max(20 - y).max(y - 99);
+                if outside > 1 {
+                    assert_eq!(foc.at(x, y)[3], 0, "focus ({x},{y})");
+                }
+                if outside > 4 {
+                    assert_eq!(both.at(x, y)[3], 0, "both ({x},{y})");
                 }
             }
         }

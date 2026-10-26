@@ -54,10 +54,11 @@ pub const BAR_H: f32 = 32.0;
 pub const BAR_PAD: f32 = 8.0;
 pub const BAR_GAP: f32 = 6.0;
 pub const BAR_BTN_H: f32 = 24.0;
-/// The "N selected" text area, then the widths of Select all, Clear, Save selected and
-/// Dismiss selected.
-pub const BAR_COUNT_W: f32 = 72.0;
-pub const BAR_BTN_W: [f32; 4] = [76.0, 52.0, 100.0, 120.0];
+/// The "N selected" text area, then the widths of Select all, Clear selection, Save
+/// selected and Dismiss selected: each label in 10 px mono (about 6.6 px a char) plus
+/// the chip's 8 px of padding.
+pub const BAR_COUNT_W: f32 = 84.0;
+pub const BAR_BTN_W: [f32; 4] = [84.0, 108.0, 104.0, 124.0];
 /// The stack-full notice's size.
 pub const NOTICE_W: f32 = 168.0;
 pub const NOTICE_H: f32 = 24.0;
