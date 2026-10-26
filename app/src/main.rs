@@ -4,6 +4,7 @@
 mod app;
 mod chime;
 mod notch;
+mod preview_store;
 mod snap;
 mod storage;
 mod sweep;
