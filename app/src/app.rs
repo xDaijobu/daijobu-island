@@ -1503,6 +1503,8 @@ impl App {
                 running: self.engine.is_some(),
                 signed_in: self.session.signed_in,
             },
+            // Stage 7c placeholder: the preview stack is wired in a later part.
+            previews: false,
         };
         match tray::show_menu(self.hwnd, &spec) {
             Some(MenuCommand::ToggleVisible) => self.set_visible(!self.visible),
@@ -1521,6 +1523,7 @@ impl App {
             Some(MenuCommand::MusicShow) => self.ensure_engine(true),
             Some(MenuCommand::MusicSignOut) => self.sign_out(),
             Some(MenuCommand::MusicStop) => self.stop_engine(),
+            Some(MenuCommand::SnapPreviews) => {}
             Some(MenuCommand::Quit) => self.quit(),
             None => {}
         }
@@ -1666,6 +1669,7 @@ impl Handler for App {
             Event::Hotkey(HOTKEY_SNAP_ESC) => self.snap_escape(),
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
+            Event::Previews(_) => {}
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
             Event::DpiChanged => self.relayout(),

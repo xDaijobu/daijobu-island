@@ -16,6 +16,7 @@ const CMD_QUIT: usize = 3;
 const CMD_MUSIC_SHOW: usize = 4;
 const CMD_MUSIC_SIGNOUT: usize = 5;
 const CMD_MUSIC_STOP: usize = 6;
+const CMD_SNAP_PREVIEWS: usize = 7;
 const CMD_THEME_BASE: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +27,8 @@ pub enum MenuCommand {
     MusicShow,
     MusicSignOut,
     MusicStop,
+    /// Give the Snap preview stack the keyboard (deliberate keyboard access).
+    SnapPreviews,
     Quit,
 }
 
@@ -34,6 +37,9 @@ pub struct MenuSpec<'a> {
     pub themes: &'a [(String, bool)],
     pub autostart: bool,
     pub music: MusicMenu,
+    /// The Snap preview stack has cards to focus; "Focus Snap previews" is greyed out
+    /// otherwise.
+    pub previews: bool,
 }
 
 /// Which YouTube Music items can be used right now.
@@ -149,6 +155,12 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
         append(menu, MF_STRING, CMD_TOGGLE, "Show / Hide");
         let _ = AppendMenuW(menu, MF_POPUP, themes.0 as usize, w!("Theme"));
         let _ = AppendMenuW(menu, MF_POPUP, music.0 as usize, w!("YouTube Music"));
+        append(
+            menu,
+            grey(spec.previews),
+            CMD_SNAP_PREVIEWS,
+            "Focus Snap previews",
+        );
         let flags = if spec.autostart {
             MF_STRING | MF_CHECKED
         } else {
@@ -173,16 +185,69 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
         );
         let _ = PostMessageW(Some(hwnd), WM_NULL, Default::default(), Default::default());
         let _ = DestroyMenu(menu); // also destroys the submenu
-        match cmd.0 as usize {
-            0 => None,
-            CMD_TOGGLE => Some(MenuCommand::ToggleVisible),
-            CMD_AUTOSTART => Some(MenuCommand::ToggleAutostart),
-            CMD_MUSIC_SHOW => Some(MenuCommand::MusicShow),
-            CMD_MUSIC_SIGNOUT => Some(MenuCommand::MusicSignOut),
-            CMD_MUSIC_STOP => Some(MenuCommand::MusicStop),
-            CMD_QUIT => Some(MenuCommand::Quit),
-            n if n >= CMD_THEME_BASE => Some(MenuCommand::Theme(n - CMD_THEME_BASE)),
-            _ => None,
+        command_for(cmd.0 as usize)
+    }
+}
+
+/// The command a chosen menu id stands for (`TrackPopupMenu` returns 0 for no choice).
+fn command_for(id: usize) -> Option<MenuCommand> {
+    match id {
+        CMD_TOGGLE => Some(MenuCommand::ToggleVisible),
+        CMD_AUTOSTART => Some(MenuCommand::ToggleAutostart),
+        CMD_MUSIC_SHOW => Some(MenuCommand::MusicShow),
+        CMD_MUSIC_SIGNOUT => Some(MenuCommand::MusicSignOut),
+        CMD_MUSIC_STOP => Some(MenuCommand::MusicStop),
+        CMD_SNAP_PREVIEWS => Some(MenuCommand::SnapPreviews),
+        CMD_QUIT => Some(MenuCommand::Quit),
+        n if n >= CMD_THEME_BASE => Some(MenuCommand::Theme(n - CMD_THEME_BASE)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_ids_map_to_their_commands() {
+        assert_eq!(command_for(0), None);
+        assert_eq!(command_for(CMD_TOGGLE), Some(MenuCommand::ToggleVisible));
+        assert_eq!(
+            command_for(CMD_AUTOSTART),
+            Some(MenuCommand::ToggleAutostart)
+        );
+        assert_eq!(command_for(CMD_MUSIC_SHOW), Some(MenuCommand::MusicShow));
+        assert_eq!(
+            command_for(CMD_MUSIC_SIGNOUT),
+            Some(MenuCommand::MusicSignOut)
+        );
+        assert_eq!(command_for(CMD_MUSIC_STOP), Some(MenuCommand::MusicStop));
+        assert_eq!(
+            command_for(CMD_SNAP_PREVIEWS),
+            Some(MenuCommand::SnapPreviews)
+        );
+        assert_eq!(command_for(CMD_QUIT), Some(MenuCommand::Quit));
+        assert_eq!(command_for(CMD_THEME_BASE), Some(MenuCommand::Theme(0)));
+        assert_eq!(command_for(CMD_THEME_BASE + 3), Some(MenuCommand::Theme(3)));
+        // An id in the gap between the fixed commands and the themes is nothing.
+        assert_eq!(command_for(CMD_SNAP_PREVIEWS + 1), None);
+        assert_eq!(command_for(CMD_THEME_BASE - 1), None);
+    }
+
+    #[test]
+    fn fixed_menu_ids_are_distinct_and_below_the_themes() {
+        let ids = [
+            CMD_TOGGLE,
+            CMD_AUTOSTART,
+            CMD_QUIT,
+            CMD_MUSIC_SHOW,
+            CMD_MUSIC_SIGNOUT,
+            CMD_MUSIC_STOP,
+            CMD_SNAP_PREVIEWS,
+        ];
+        for (i, a) in ids.iter().enumerate() {
+            assert!(*a > 0 && *a < CMD_THEME_BASE);
+            assert!(ids[i + 1..].iter().all(|b| a != b), "duplicate id {a}");
         }
     }
 }
