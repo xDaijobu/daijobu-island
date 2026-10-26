@@ -20,7 +20,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 4 | **Vitals (compact)** | ✅ merged (PR #4), live test pending | — | Haiku started, Opus 5.5 finished · lock-icon fix by the coordinator after the first live run |
 | 5 | **Vitals + Sweep**: Sweep merged into the Vitals panel (diagnose → clean), full vitals (disk I/O, top processes) | ✅ | PR #6 + `stage-5-safety-fixes` | Opus 5.5 (4 agents: sweep, wiring, render, safety review) · fixes and live test by the coordinator · [`stage-5-report.md`](stage-5-report.md) |
 | 6 | **Timer / Pomodoro**: focus/break cycles, chime alert, mini timer on Music compact | ✅ | `stage-6-timer` | Opus 5.5 agent (headless) · live test by the coordinator · [`stage-6-report.md`](stage-6-report.md) |
-| 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save, snap thumb | 🟡 | `stage-7a-snap` | brief: [`stage-7a-brief.md`](stage-7a-brief.md) |
+| 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
 | 7b | Snap: annotations, pin, OCR | 🔒 | — | after 7a |
 | 7c | Snap stack: floating previews, countdown, multi-select, OLE drag-out | 🔒 | — | after 7b |
 | 8 | Clipboard history | 🔒 | — | |
