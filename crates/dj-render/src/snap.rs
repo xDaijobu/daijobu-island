@@ -313,11 +313,6 @@ impl SnapOverlay {
         draw_scene(canvas, &self.images, &mut ctx, origin, scene, local);
         self.chain.present(&mut self.gpu.ctx)
     }
-
-    /// The editor's text measurer (the same font the overlay draws with).
-    pub fn metrics(&self) -> &TextMetrics {
-        &self.metrics
-    }
 }
 
 impl Drop for SnapOverlay {

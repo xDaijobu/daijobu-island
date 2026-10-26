@@ -452,21 +452,6 @@ impl Editor {
         }
         let (fx, fy) = (x as f32, y as f32);
 
-        // A click in the text being typed moves the caret.
-        if let Some(t) = &self.text {
-            let s = &self.shapes[t.index];
-            if let (Some(r), ShapeKind::Text { at, text }) = (s.text_rect(m), &s.kind) {
-                if live_text_rect(r, s, m).contains(fx, fy) {
-                    let caret = caret_at(text, *at, s.font_px(), m, (fx, fy));
-                    if let Some(t) = self.text.as_mut() {
-                        t.caret = caret;
-                    }
-                    self.drag = Drag::Held;
-                    return Outcome::Redraw;
-                }
-            }
-        }
-
         // The picker takes its own presses; a press outside it (and off the toolbar)
         // only closes it.
         if self.picker.is_some() {
@@ -498,6 +483,21 @@ impl Editor {
                 Some(item) => self.toolbar_item(item),
                 None => Outcome::Nothing,
             };
+        }
+
+        // A click in the text being typed moves the caret.
+        if let Some(t) = &self.text {
+            let s = &self.shapes[t.index];
+            if let (Some(r), ShapeKind::Text { at, text }) = (s.text_rect(m), &s.kind) {
+                if live_text_rect(r, s, m).contains(fx, fy) {
+                    let caret = caret_at(text, *at, s.font_px(), m, (fx, fy));
+                    if let Some(t) = self.text.as_mut() {
+                        t.caret = caret;
+                    }
+                    self.drag = Drag::Held;
+                    return Outcome::Redraw;
+                }
+            }
         }
 
         // Anywhere else ends the text being typed, then the tool acts.
@@ -1590,6 +1590,36 @@ mod tests {
         typed(&mut e, "s");
         assert_eq!(key(&mut e, Key::ctrl(letter('S'))), Outcome::Save);
         assert_eq!(e.shapes().len(), 3);
+    }
+
+    #[test]
+    fn the_toolbar_wins_over_the_text_being_typed_where_they_overlap() {
+        // A full-monitor selection puts the toolbar inside its bottom edge.
+        let mut e = Editor::new(
+            IRect::new(0, 0, 1920, 1080),
+            DESK,
+            displays(),
+            Prefs {
+                tool: Tool::Text,
+                ..Prefs::default()
+            },
+            ACCENT,
+            (0, 0),
+        );
+        assert_eq!(e.toolbar().place, Place::Inside);
+        click(&mut e, 100, 1020);
+        typed(&mut e, "a");
+        key(&mut e, Key::plain(KeyCode::Enter));
+        typed(&mut e, "b");
+        // The two-line text now reaches under the toolbar's rect button.
+        let rect = e.toolbar().button(Item::Tool(Tool::Rect)).unwrap();
+        let (x, y) = (rect.center().0 as i32, rect.y as i32 + 10);
+        let s = &e.shapes()[0];
+        assert!(live_text_rect(s.text_rect(&M).unwrap(), s, &M).contains(x as f32, y as f32));
+        click(&mut e, x, y);
+        assert_eq!(e.tool(), Tool::Rect);
+        assert!(!e.is_typing());
+        assert_eq!(text_of(&e, 0), "a\nb");
     }
 
     #[test]
