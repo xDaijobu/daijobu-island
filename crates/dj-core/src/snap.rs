@@ -325,6 +325,16 @@ impl Loupe {
     }
 }
 
+/// The largest `w` x `h` size with the bitmap's aspect that fits in `box_w` x `box_h`
+/// (the thumb's shot is aspect-fit). Never smaller than 1 x 1.
+pub fn aspect_fit(w: u32, h: u32, box_w: f32, box_h: f32) -> (f32, f32) {
+    if w == 0 || h == 0 {
+        return (box_w.max(1.0), box_h.max(1.0));
+    }
+    let k = (box_w / w as f32).min(box_h / h as f32);
+    ((w as f32 * k).max(1.0), (h as f32 * k).max(1.0))
+}
+
 /// `#E0A458` for a BGRA pixel.
 pub fn hex(bgra: [u8; 4]) -> String {
     format!("#{:02X}{:02X}{:02X}", bgra[2], bgra[1], bgra[0])
@@ -661,6 +671,19 @@ mod tests {
         assert_eq!(px(0, 3), [0, 0, 0, 255], "gap below the left monitor");
         assert_eq!(px(2, 2), [1, 0, 0, 255], "primary origin");
         assert_eq!(px(3, 3), [1, 1, 1, 255]);
+    }
+
+    #[test]
+    fn aspect_fit_keeps_the_shape() {
+        assert_eq!(aspect_fit(612, 388, 76.0, 48.0).1, 48.0);
+        let (w, h) = aspect_fit(612, 388, 76.0, 48.0);
+        assert!((w / h - 612.0 / 388.0).abs() < 0.01 && w <= 76.0);
+        let near =
+            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
+        assert!(near(aspect_fit(1000, 100, 76.0, 48.0), (76.0, 7.6)));
+        // A sliver is still at least a pixel wide.
+        assert!(near(aspect_fit(10, 4000, 76.0, 48.0), (1.0, 48.0)));
+        assert_eq!(aspect_fit(0, 0, 76.0, 48.0), (76.0, 48.0));
     }
 
     #[test]
