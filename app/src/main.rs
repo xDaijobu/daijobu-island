@@ -3,6 +3,7 @@
 
 mod app;
 mod chime;
+mod snap;
 mod storage;
 mod sweep;
 mod timer;

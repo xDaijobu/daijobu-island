@@ -126,12 +126,14 @@ dependencies = [
 name = "daijobu"
 version = "0.1.0"
 dependencies = [
+ "dj-capture",
  "dj-core",
  "dj-music",
  "dj-render",
  "dj-sweep",
  "dj-vitals",
  "dj-win",
+ "tempfile",
 ]
 
 [[package]]

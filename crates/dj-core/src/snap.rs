@@ -200,6 +200,11 @@ impl Selector {
         self.dragging
     }
 
+    /// The button is down (pressed on the overlay, not released yet).
+    pub fn is_pressed(&self) -> bool {
+        self.press.is_some()
+    }
+
     /// Keeps a point on the desktop's pixels.
     fn clamp_point(&self, (x, y): (i32, i32)) -> (i32, i32) {
         let d = self.desktop;
@@ -581,6 +586,7 @@ mod tests {
         s.move_to(12, 12);
         assert_eq!(s.release(), Some(IRect::new(10, 10, 2, 2)));
         // Release without a press does nothing.
+        assert!(!s.is_pressed());
         assert_eq!(s.release(), None);
     }
 

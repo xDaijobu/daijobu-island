@@ -274,6 +274,16 @@ pub const MOD_NONE: u32 = 0;
 
 /// Registers a global hotkey. Returns false if another app already owns it.
 pub fn register_hotkey(hwnd: HWND, id: i32, modifiers: u32, vk: u32) -> bool {
+    try_register_hotkey(hwnd, id, modifiers, vk).is_ok()
+}
+
+/// Like [`register_hotkey`], with the reason it failed (for the log).
+pub fn try_register_hotkey(
+    hwnd: HWND,
+    id: i32,
+    modifiers: u32,
+    vk: u32,
+) -> std::result::Result<(), String> {
     // SAFETY: valid window handle.
     unsafe {
         RegisterHotKey(
@@ -282,8 +292,8 @@ pub fn register_hotkey(hwnd: HWND, id: i32, modifiers: u32, vk: u32) -> bool {
             HOT_KEY_MODIFIERS(modifiers) | MOD_NOREPEAT,
             vk,
         )
-        .is_ok()
     }
+    .map_err(|e| e.message())
 }
 
 pub fn unregister_hotkey(hwnd: HWND, id: i32) {
