@@ -23,7 +23,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
 | 7b | Snap: annotations, pin, OCR | 🔒 | — | after 7a |
 | 7c | Snap stack: floating previews, countdown, multi-select, OLE drag-out | 🔒 | — | after 7b |
-| S | **Settings window**: gear icon in the island, rebind shortcuts (press-to-record), auto-startup and other toggles, applied live | 🔒 | — | user-requested 2026-10-26; scheduled *later* (after Snap). Until then: tray menu + `config.toml` |
+| S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | 🟡 | `stage-s-settings` | user-requested · Sonnet 5.5 agent · brief: [`stage-s-brief.md`](stage-s-brief.md) |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -326,6 +326,32 @@ Press PrtSc. The screen freezes under a dimmed overlay, the loupe follows the cu
 - 2026-10-26: Snap split into 7a/7b/7c with the user. 7a defined: PrtSc with a Ctrl+Shift+S fallback, auto-copy on release plus the island thumb, save to `Pictures\Daijobu` without a dialog.
 - 2026-10-26: built by one Opus 5.5 agent (284 tests, new crate `dj-capture`). The coordinator re-verified fmt, clippy, test and release. Live test with the user passed (freeze, loupe, window snap, auto-copy PNG + DIB, save, window click). Added at the user's request: after save, the button reads **open** and reveals the file in Explorer.
 - 2026-10-26: hotkey fix after the user reported that PrtSc opened Snipping Tool. Windows' "Print screen opens screen capture" doesn't use RegisterHotKey, so the keyboard hook now takes plain PrtSc (Alt/Win+PrtSc stay Windows'). The always-on `[snap] alt_hotkey` defaults to Ctrl+Space (the user's choice; it takes autocomplete away from IDEs, and `"none"` turns it off). It replaces the Ctrl+Shift+S fallback, which would have taken Save As from every app. Both verified live by the user.
+
+---
+
+## Stage S: Settings (minimal)
+
+**Goal:** change the basics without editing `config.toml`: a gear icon on Home opens a small Settings panel in the island.
+
+### Scope
+- [ ] **Gear icon** in the Home grid header (right side, next to the clock), with hover and press states like the other controls. A click opens the **Settings panel**. It is not a feature tile, so the registry count stays 5 of 12.
+- [ ] **Settings panel** inside the island (about 400×184, r 32, same style as the Vitals/Timer panels). A back control (or an empty click) returns to Home. Rows:
+  - **Start with Windows**: an on/off toggle. It uses the existing autostart code (the same one as the tray's *Start with Windows*), the tray's check mark stays in sync, and it is saved to config.
+  - **Snap hotkey**: a chip showing the current key. Each click cycles `PrtSc → Ctrl+Space → Ctrl+Alt+S → Ctrl+Shift+S → PrtSc`.
+  - **Snap alt hotkey**: a chip; each click cycles `Ctrl+Space → Ctrl+Alt+S → Ctrl+Shift+S → off → Ctrl+Space`. It can't be set to the same key as the main hotkey; that value is skipped.
+- [ ] **Applied live:** a hotkey change unregisters the old key and registers the new one at once (PrtSc goes through the keyboard hook, the others through `RegisterHotKey`), and saves `[snap] hotkey` / `alt_hotkey`. If registration fails (another app holds the key), the chip shows the key in the warn colour with a short status line `taken by another app`, and the reason goes to the log.
+- [ ] **Persisted:** `config.toml` is rewritten with the new values, and the other sections are kept as they were.
+- [ ] Idle CPU ≈ 0 (no timers for this panel).
+- [ ] Tests: the hotkey cycle order (including skipping the main key for alt, and "off"), panel hit testing (gear, toggle, chips, back), config round trip with the new values, and the island transitions Home ↔ Settings. `fmt`, `clippy -D warnings`, `test` and `build --release` pass.
+
+### Acceptance
+Home → gear → Settings. Toggling *Start with Windows* updates the tray check and the HKCU Run entry. Clicking the hotkey chip changes the key at once: the new key opens a snap and the old one doesn't. After a restart the choices are still there.
+
+### Rules for the agent
+Headless: fmt, clippy, test and release only. Don't run the exe, and don't touch the real Run key or hotkeys in tests (use fakes or traits).
+
+### Log
+- 2026-10-26: defined with the user (minimal: auto-start + Snap hotkeys; press-to-record later).
 
 ---
 
