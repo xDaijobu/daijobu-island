@@ -744,6 +744,7 @@ impl Editor {
             && self.idle()
             && self.picker.is_none()
             && !self.toolbar().contains(fx, fy)
+            && handle_at(self.selection, fx, fy, self.scale()).is_none()
         {
             let top = self
                 .selection
@@ -1645,6 +1646,24 @@ mod tests {
             assert_eq!(text_of(&e, 0), "abc");
             assert_eq!(e.history.undo_len(), 1);
         }
+    }
+
+    #[test]
+    fn double_click_on_a_selection_handle_grabs_it_instead_of_editing_text() {
+        let mut e = editor(Tool::Text);
+        click(&mut e, 480, 385);
+        typed(&mut e, "abc");
+        key(&mut e, Key::plain(KeyCode::Esc));
+        key(&mut e, Key::plain(letter('V')));
+        // Inside the text and within reach of the bottom-right handle, as a press sees it.
+        let (x, y) = (495, 395);
+        assert!(handle_at(e.selection, x as f32, y as f32, e.scale()).is_some());
+        assert_eq!(hit_test(e.shapes(), x as f32, y as f32, &M), Some(0));
+        e.input(EditInput::DoubleClick { x, y }, &M);
+        assert!(!e.is_typing());
+        assert!(matches!(e.drag, Drag::Handle { .. }));
+        e.input(EditInput::Release { x, y }, &M);
+        assert_eq!(text_of(&e, 0), "abc");
     }
 
     #[test]
