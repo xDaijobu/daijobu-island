@@ -114,6 +114,26 @@ pub fn tp_chip(i: usize) -> Rect {
     )
 }
 
+/// Settings panel (opened from the gear on Home): same size as the Timer panel.
+pub const SETTINGS_W: f32 = 400.0;
+pub const SETTINGS_H: f32 = 184.0;
+pub const SETTINGS_R: f32 = 32.0;
+/// Panel elements, relative to the pill's top-left. The header text sits left of back.
+pub const ST_HEADER: Rect = Rect::new(20.0, 12.0, 260.0, 16.0);
+pub const ST_BACK: Rect = Rect::new(304.0, 8.0, 84.0, 24.0);
+/// Row labels on the left; the controls are right-aligned at x = 380.
+pub const ST_ROW_AUTOSTART: Rect = Rect::new(20.0, 44.0, 220.0, 28.0);
+pub const ST_ROW_HOTKEY: Rect = Rect::new(20.0, 80.0, 220.0, 28.0);
+pub const ST_ROW_ALT: Rect = Rect::new(20.0, 116.0, 220.0, 28.0);
+pub const ST_TOGGLE: Rect = Rect::new(328.0, 46.0, 52.0, 24.0);
+pub const ST_HOTKEY: Rect = Rect::new(248.0, 82.0, 132.0, 24.0);
+pub const ST_ALT: Rect = Rect::new(248.0, 118.0, 132.0, 24.0);
+/// The `taken by another app` line.
+pub const ST_STATUS: Rect = Rect::new(20.0, 154.0, 360.0, 16.0);
+
+/// The gear in the Home header, left of the clock (pill-local on the Home grid).
+pub const HOME_GEAR: Rect = Rect::new(384.0, 16.0, 28.0, 28.0);
+
 /// Timer compact (plan.html: 172 x 36, ring 18, Doto 18).
 pub const TIMER_COMPACT_W: f32 = 172.0;
 pub const TIMER_COMPACT_H: f32 = 36.0;
@@ -365,6 +385,41 @@ mod tests {
             for b in &rects[i + 1..] {
                 assert!(apart(a, b), "{a:?} overlaps {b:?}");
             }
+        }
+    }
+
+    #[test]
+    fn settings_panel_controls_fit_and_do_not_overlap() {
+        let (w, h) = window_size();
+        assert!(SETTINGS_W <= w && TOP_MARGIN + SETTINGS_H <= h);
+        let rects = [
+            ST_HEADER,
+            ST_BACK,
+            ST_ROW_AUTOSTART,
+            ST_ROW_HOTKEY,
+            ST_ROW_ALT,
+            ST_TOGGLE,
+            ST_HOTKEY,
+            ST_ALT,
+            ST_STATUS,
+        ];
+        for (i, a) in rects.iter().enumerate() {
+            assert!(inside(a, SETTINGS_W, SETTINGS_H), "{a:?}");
+            for b in &rects[i + 1..] {
+                assert!(apart(a, b), "{a:?} overlaps {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_gear_sits_in_the_home_header_clear_of_the_label_and_the_clock() {
+        assert!(inside(&HOME_GEAR, HOME_W, HOME_H));
+        // The clock is about 70 px wide, flush with the header's right edge.
+        const {
+            assert!(HOME_GEAR.x + HOME_GEAR.w <= HEADER.x + HEADER.w - 70.0);
+            assert!(HOME_GEAR.y >= HEADER.y);
+            assert!(HOME_GEAR.y + HOME_GEAR.h <= HEADER.y + HEADER.h);
+            assert!(HOME_GEAR.x > HEADER.x + 160.0);
         }
     }
 

@@ -17,6 +17,7 @@ use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, SnapAction
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
+use dj_core::settings::{self, SettingsAction, SettingsView};
 use dj_core::snap::{loupe_label, pixel_at, size_label, IRect, Loupe, Stamp};
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
@@ -128,6 +129,8 @@ pub struct App {
     thumb_armed: bool,
     /// What the thumb shows. Kept after the shot goes, until the thumb has faded out.
     snap_frame: Option<SnapFrame>,
+    /// Another app holds the Snap hotkey / the alt hotkey (the Settings chips go warn).
+    snap_taken: (bool, bool),
 }
 
 impl App {
@@ -212,6 +215,7 @@ impl App {
             snap_start_armed: false,
             thumb_armed: false,
             snap_frame: None,
+            snap_taken: (false, false),
         };
         app.relayout();
         app.install_shell_integration();
@@ -536,12 +540,17 @@ impl App {
 
     // ---- Snap ----
 
-    /// Sets up `[snap] hotkey` and `[snap] alt_hotkey`. PrtSc goes through the keyboard
-    /// hook, which keeps it from Windows' own screen capture (that one doesn't use
-    /// `RegisterHotKey`, so registering PrtSc alone would not win). If the hook can't be
-    /// installed, PrtSc is registered as a plain hotkey instead. Every failure goes to
-    /// the log.
+    /// Sets up `[snap] hotkey` and `[snap] alt_hotkey`, dropping whatever was set up
+    /// before, so it also serves a change from the Settings panel. PrtSc goes through
+    /// the keyboard hook, which keeps it from Windows' own screen capture (that one
+    /// doesn't use `RegisterHotKey`, so registering PrtSc alone would not win). If the
+    /// hook can't be installed, PrtSc is registered as a plain hotkey instead. Every
+    /// failure goes to the log, and `snap_taken` remembers which key failed.
     fn register_snap_hotkey(&mut self) {
+        window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
+        window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ALT);
+        hook::set_print_screen(false);
+        self.snap_taken = (false, false);
         let snap = self.config.snap.clone();
         if SnapHotkey::parse(&snap.hotkey).is_none() {
             storage::log(&format!(
@@ -560,10 +569,10 @@ impl App {
             ok
         };
         if !hooked {
-            self.register_snap_key(HOTKEY_SNAP, main);
+            self.snap_taken.0 = !self.register_snap_key(HOTKEY_SNAP, main);
         }
         match snap.alt_hotkey() {
-            Some(alt) => self.register_snap_key(HOTKEY_SNAP_ALT, alt),
+            Some(alt) => self.snap_taken.1 = !self.register_snap_key(HOTKEY_SNAP_ALT, alt),
             None => {
                 let off = snap.alt_hotkey.trim();
                 if !off.is_empty() && !off.eq_ignore_ascii_case("none") {
@@ -574,14 +583,55 @@ impl App {
     }
 
     /// Registers one Snap shortcut under `id`, logging why if another app holds it.
-    fn register_snap_key(&mut self, id: i32, key: SnapHotkey) {
+    fn register_snap_key(&mut self, id: i32, key: SnapHotkey) -> bool {
         let (mods, vk) = snapper::hotkey_keys(key);
-        if let Err(e) = window::try_register_hotkey(self.hwnd, id, mods, vk) {
-            storage::log(&format!(
-                "snap: {} is not available: {}",
-                key.label(),
-                e.trim()
-            ));
+        match window::try_register_hotkey(self.hwnd, id, mods, vk) {
+            Ok(()) => true,
+            Err(e) => {
+                storage::log(&format!(
+                    "snap: {} is not available: {}",
+                    key.label(),
+                    e.trim()
+                ));
+                false
+            }
+        }
+    }
+
+    // ---- Settings ----
+
+    /// A control in the Settings panel. The panel redraws from the config, so applying
+    /// the change and saving it is all there is to do.
+    fn settings_action(&mut self, action: SettingsAction) {
+        match action {
+            SettingsAction::ToggleAutostart => {
+                let want = !system::autostart_enabled();
+                if system::set_autostart(want, &self.exe) {
+                    self.config.start_with_windows = want;
+                    storage::save_config(&self.config);
+                } else {
+                    storage::log("settings: cannot change the Run entry");
+                }
+            }
+            SettingsAction::CycleHotkey | SettingsAction::CycleAltHotkey => {
+                if action == SettingsAction::CycleHotkey {
+                    settings::cycle_hotkey(&mut self.config.snap);
+                } else {
+                    settings::cycle_alt_hotkey(&mut self.config.snap);
+                }
+                self.register_snap_hotkey();
+                storage::save_config(&self.config);
+            }
+        }
+    }
+
+    fn settings_view(&self) -> SettingsView {
+        SettingsView {
+            autostart: self.config.start_with_windows,
+            hotkey: self.config.snap.hotkey(),
+            alt: self.config.snap.alt_hotkey(),
+            hotkey_taken: self.snap_taken.0,
+            alt_taken: self.snap_taken.1,
         }
     }
 
@@ -1330,6 +1380,7 @@ impl Handler for App {
                     ClickOutcome::Open(i) if FEATURES[i].id == "snap" => self.request_snap(),
                     ClickOutcome::Snap(action) => self.snap_action(action),
                     ClickOutcome::Timer(action) => self.timer_action(action),
+                    ClickOutcome::Settings(action) => self.settings_action(action),
                     // A clean that is still running keeps its view; otherwise preview afresh.
                     ClickOutcome::OpenSweep if !self.cleaning => self.start_preview(),
                     ClickOutcome::Sweep { x, y } => {
@@ -1520,6 +1571,7 @@ impl Handler for App {
         };
         let estimate = self.estimate();
         let timer = self.timer.view(now);
+        let settings = self.settings_view();
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
             return;
@@ -1538,6 +1590,7 @@ impl Handler for App {
             estimate,
             timer: &timer,
             snap: self.snap_frame,
+            settings: &settings,
         };
         match renderer.render(&frame) {
             Ok(()) => {}

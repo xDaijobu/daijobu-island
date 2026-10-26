@@ -4,7 +4,7 @@
 
 use crate::fonts::{Fonts, Weight};
 use crate::fx::Effects;
-use crate::icons::{draw_icon, draw_lock, draw_volume_icon};
+use crate::icons::{draw_gear, draw_icon, draw_lock, draw_volume_icon};
 use crate::snap::SnapFrame;
 use crate::vitals::{format_rate, ring_sweep, spark_points};
 use dj_core::color::Rgb;
@@ -13,6 +13,7 @@ use dj_core::health::Reason;
 use dj_core::island::{IslandView, MusicUi};
 use dj_core::layout::{self, Rect as LRect};
 use dj_core::music::NowPlaying;
+use dj_core::settings::SettingsView;
 use dj_core::sweep::{format_bytes, Estimate, SweepView};
 use dj_core::theme::ResolvedTokens;
 use dj_core::timer::TimerView;
@@ -46,6 +47,8 @@ pub struct Frame<'a> {
     pub timer: &'a TimerView,
     /// The snap thumb's size and status. The app keeps it until the thumb has faded out.
     pub snap: Option<SnapFrame>,
+    /// The Settings panel's values, drawn while `view.layers.settings` is up.
+    pub settings: &'a SettingsView,
 }
 
 /// What the Music views draw. Built by the app from the Music session.
@@ -200,6 +203,7 @@ impl Painter {
         let timer_compact_op = smoothstep(0.35, 1.0, lay.timer_compact) * not_osd;
         let alert_op = smoothstep(0.35, 1.0, lay.alert) * not_osd;
         let snap_op = smoothstep(0.35, 1.0, lay.snap) * not_osd;
+        let settings_op = smoothstep(0.35, 1.0, lay.settings) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -249,6 +253,11 @@ impl Painter {
         if snap_op > 0.01 {
             begin_layer(canvas, &rect, snap_op, center, s);
             self.snap_thumb(canvas, f, &rect);
+            canvas.restore();
+        }
+        if settings_op > 0.01 {
+            begin_layer(canvas, &rect, settings_op, center, s);
+            self.settings_panel(canvas, f, &rect);
             canvas.restore();
         }
         if osd_a > 0.01 {
@@ -338,6 +347,24 @@ impl Painter {
             hy + 0.35 * 22.0 * s,
             0.0,
             &fill_paint(col(t.accent, 1.0)),
+        );
+
+        // Gear: opens Settings. It takes a surface behind it while hovered.
+        let gear = at(layout::HOME_GEAR);
+        if v.gear_hover {
+            let rad = 10.0 * t.radius_scale.min(1.2) * s;
+            canvas.draw_rrect(
+                RRect::new_rect_xy(gear, rad, rad),
+                &fill_paint(col(t.surface2, 1.0)),
+            );
+        }
+        let gear_ink = if v.gear_hover { t.accent } else { t.text_dim };
+        draw_gear(
+            canvas,
+            gear.center_x(),
+            gear.center_y(),
+            20.0 * s,
+            &stroke_paint(col(gear_ink, 1.0), 1.6 * s),
         );
 
         // Tiles.

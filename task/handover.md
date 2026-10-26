@@ -7,7 +7,9 @@
   - #9 README (WebView2 note)
   - #10 Stage 7a Snap core
   - #11 Snap hotkey fix
-- Tests: 286 passing. fmt, clippy `-D warnings` and `build --release` are clean.
+  - #12 handover
+  - Stage S **Settings (minimal)**: gear on Home → autostart toggle + Snap hotkey chips (applied live)
+- Tests: 303 passing. fmt, clippy `-D warnings` and `build --release` are clean.
 - `daijobu.exe` (release, current master) is running on the user's machine.
 
 ## Next: Stage 7b (Snap annotations, pin, OCR), brainstorming in progress

@@ -250,3 +250,28 @@ pub fn draw_lock(canvas: &Canvas, cx: f32, cy: f32, size: f32, paint: &Paint) {
     canvas.draw_rrect(rrect(-4.0, -0.5, 8.0, 6.0, 1.6), &fill);
     canvas.restore();
 }
+
+/// Settings gear in the same +-10 box as the tile icons: a toothed outline and a hub.
+/// `paint` must be a stroke paint; `size` is the icon's full width in px.
+pub fn draw_gear(canvas: &Canvas, cx: f32, cy: f32, size: f32, paint: &Paint) {
+    canvas.save();
+    canvas.translate((cx, cy));
+    let k = size / 22.0;
+    canvas.scale((k, k));
+    const TEETH: usize = 8;
+    let (inner, outer) = (6.2_f32, 8.6_f32);
+    // Each tooth spans a quarter of its sector at the tip and half at the root.
+    let sector = std::f32::consts::TAU / TEETH as f32;
+    let at = |r: f32, a: f32| (r * a.cos(), r * a.sin());
+    let mut pts = Vec::with_capacity(TEETH * 4);
+    for i in 0..TEETH {
+        let a = i as f32 * sector;
+        pts.push(at(inner, a - sector * 0.25));
+        pts.push(at(outer, a - sector * 0.13));
+        pts.push(at(outer, a + sector * 0.13));
+        pts.push(at(inner, a + sector * 0.25));
+    }
+    canvas.draw_path(&poly(&pts, true), paint);
+    canvas.draw_circle((0.0, 0.0), 2.6, paint);
+    canvas.restore();
+}

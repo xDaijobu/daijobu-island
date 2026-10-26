@@ -1,5 +1,6 @@
 //! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel with
-//! its Sweep view, the Timer views, the snap thumb and the OSD overlay, driven by springs.
+//! its Sweep view, the Timer views, Settings, the snap thumb and the OSD overlay, driven by
+//! springs.
 //! Time only enters through `step(dt)`, so everything here is deterministic. The timer
 //! itself (`timer::Pomodoro`) lives in the app; the island only hears whether it is active
 //! or done. Likewise the snap thumb's countdown and its shot live in the app; the island
@@ -8,6 +9,7 @@
 use crate::features::{Availability, FEATURES};
 use crate::layout::{self, Rect};
 use crate::osd::{Osd, OsdView, Volume};
+use crate::settings::{self, SettingsAction, SettingsHit};
 use crate::spring::{Spring, SpringSpec};
 use crate::theme::ResolvedTokens;
 use crate::timer::PRESETS;
@@ -40,10 +42,13 @@ pub enum IslandState {
     /// but the OSD and goes after 6 s (the app's countdown); a click elsewhere on it
     /// dismisses it.
     SnapThumb,
+    /// The Settings panel, opened from the gear in the Home header. Back, or an empty
+    /// click, returns to Home.
+    Settings,
 }
 
 /// Number of content layers (one per `IslandState`).
-const LAYERS: usize = 10;
+const LAYERS: usize = 11;
 
 impl IslandState {
     /// Index into the per-content opacity springs.
@@ -59,6 +64,7 @@ impl IslandState {
             IslandState::TimerCompact => 7,
             IslandState::TimerAlert => 8,
             IslandState::SnapThumb => 9,
+            IslandState::Settings => 10,
         }
     }
 
@@ -153,6 +159,9 @@ pub enum ClickOutcome {
     /// the new `TimerUi`. Controls that don't apply right now (a preset while running)
     /// still land here, so they never collapse the panel.
     Timer(TimerAction),
+    /// A Settings panel control. The app applies it (autostart, a hotkey chip) and
+    /// saves the config. Back and empty clicks come out as `Home`.
+    Settings(SettingsAction),
     /// A click on the snap thumb. `Dismiss` has already sent the island to its rest
     /// state; the app drops the shot and stops the countdown.
     Snap(SnapAction),
@@ -182,6 +191,7 @@ pub struct Layers {
     pub timer_compact: f32,
     pub alert: f32,
     pub snap: f32,
+    pub settings: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -199,6 +209,8 @@ pub struct IslandView {
     pub osd: OsdView,
     /// The snap thumb button under the pointer (Copy or Save).
     pub snap_hover: Option<SnapAction>,
+    /// The pointer is over the gear in the Home header.
+    pub gear_hover: bool,
 }
 
 pub struct Island {
@@ -219,6 +231,7 @@ pub struct Island {
     /// The pointer is over the snap thumb, and the button under it.
     snap_pointer: bool,
     snap_hover: Option<SnapAction>,
+    gear_hover: bool,
     osd: Osd,
     /// True while the user drags the OSD bar.
     dragging: bool,
@@ -245,6 +258,7 @@ impl Island {
             snap: false,
             snap_pointer: false,
             snap_hover: None,
+            gear_hover: false,
             osd: Osd::new(),
             dragging: false,
             expanding: true,
@@ -283,6 +297,7 @@ impl Island {
             ),
             IslandState::TimerAlert => (layout::ALERT_W, layout::ALERT_H, layout::ALERT_R),
             IslandState::SnapThumb => (layout::SNAP_W, layout::SNAP_H, layout::SNAP_R),
+            IslandState::Settings => (layout::SETTINGS_W, layout::SETTINGS_H, layout::SETTINGS_R),
         }
     }
 
@@ -361,6 +376,13 @@ impl Island {
         }
     }
 
+    /// Opens the Settings panel (from the gear on Home).
+    pub fn open_settings(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::Settings {
+            self.set_state(IslandState::Settings, tokens);
+        }
+    }
+
     /// The pill's resting size: the OSD size while it is up, else the state's size.
     /// The OSD only covers the state; it never changes it, so the state returns after.
     fn target_size(&self) -> (f32, f32, f32) {
@@ -394,6 +416,7 @@ impl Island {
         self.sync_pill(tokens);
         self.hover = None;
         self.snap_pointer = false;
+        self.gear_hover = false;
         self.snap_hover = None;
     }
 
@@ -511,6 +534,18 @@ impl Island {
         layout::hit_tile(&self.tiles, x - p.x, y - p.y)
     }
 
+    /// True when `(x, y)` (window-logical) is on the Home header's gear.
+    fn gear_at(&self, x: f32, y: f32) -> bool {
+        if self.state != IslandState::Home
+            || self.layers[IslandState::Home.layer()].value < 0.5
+            || self.osd.is_visible()
+        {
+            return false;
+        }
+        let (lx, ly) = Self::view_local(x, y, layout::HOME_W);
+        layout::HOME_GEAR.contains(lx, ly)
+    }
+
     /// `(x, y)` in window-logical px.
     pub fn click(&mut self, x: f32, y: f32, tokens: &ResolvedTokens) -> ClickOutcome {
         if self.osd.is_visible() {
@@ -587,6 +622,21 @@ impl Island {
                         ClickOutcome::Snap(SnapAction::Dismiss)
                     }
                 }
+            }
+            IslandState::Settings => {
+                let (lx, ly) = Self::view_local(x, y, layout::SETTINGS_W);
+                match settings::hit(lx, ly) {
+                    Some(SettingsHit::Action(a)) => ClickOutcome::Settings(a),
+                    // Back, or an empty click.
+                    _ => {
+                        self.set_state(IslandState::Home, tokens);
+                        ClickOutcome::Home
+                    }
+                }
+            }
+            IslandState::Home if self.gear_at(x, y) => {
+                self.open_settings(tokens);
+                ClickOutcome::Expanded
             }
             IslandState::Home => match self.tile_at(x, y) {
                 Some(i) if FEATURES[i].availability == Availability::Locked => {
@@ -703,14 +753,18 @@ impl Island {
         };
         let button_changed = button != self.snap_hover;
         self.snap_hover = button;
-        changed || button_changed
+        let gear = self.gear_at(x, y);
+        let gear_changed = gear != self.gear_hover;
+        self.gear_hover = gear;
+        changed || button_changed || gear_changed
     }
 
     /// The pointer left the window. True when something hovered needs a redraw.
     pub fn clear_hover(&mut self) -> bool {
         self.snap_pointer = false;
         let button = self.snap_hover.take().is_some();
-        self.hover.take().is_some() || button
+        let gear = std::mem::take(&mut self.gear_hover);
+        self.hover.take().is_some() || button || gear
     }
 
     pub fn step(&mut self, dt: f32, tokens: &ResolvedTokens) {
@@ -765,6 +819,7 @@ impl Island {
                 timer_compact: v(7),
                 alert: v(8),
                 snap: v(9),
+                settings: v(10),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -776,6 +831,7 @@ impl Island {
                 .map(|(i, left)| (i, (left / HINT_FADE_SECS).min(1.0))),
             osd: self.osd.view(),
             snap_hover: self.snap_hover,
+            gear_hover: self.gear_hover,
         }
     }
 }
@@ -1743,5 +1799,108 @@ mod tests {
         settle(&mut i, &t);
         assert_eq!(size(&i), (layout::SNAP_W, layout::SNAP_H));
         assert_eq!(i.view().layers.snap, 1.0);
+    }
+
+    // ---- Settings ----
+
+    fn open_home(i: &mut Island, t: &ResolvedTokens) {
+        i.expand(t);
+        settle(i, t);
+    }
+
+    #[test]
+    fn the_gear_opens_settings_and_back_returns_to_home() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        let (x, y) = view_at(layout::HOME_W, layout::HOME_GEAR);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Expanded);
+        assert_eq!(i.state(), IslandState::Settings);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::SETTINGS_W, layout::SETTINGS_H));
+        let l = i.view().layers;
+        assert_eq!((l.settings, l.home), (1.0, 0.0));
+        let (x, y) = view_at(layout::SETTINGS_W, layout::ST_BACK);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Home);
+        assert_eq!(i.state(), IslandState::Home);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::HOME_W, layout::HOME_H));
+    }
+
+    #[test]
+    fn an_empty_click_in_settings_returns_to_home() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.open_settings(&t);
+        settle(&mut i, &t);
+        let (x, y) = view_at(layout::SETTINGS_W, layout::ST_ROW_ALT);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Home);
+        assert_eq!(i.state(), IslandState::Home);
+    }
+
+    #[test]
+    fn settings_controls_report_their_actions_and_stay_open() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.open_settings(&t);
+        settle(&mut i, &t);
+        for (r, want) in [
+            (layout::ST_TOGGLE, SettingsAction::ToggleAutostart),
+            (layout::ST_HOTKEY, SettingsAction::CycleHotkey),
+            (layout::ST_ALT, SettingsAction::CycleAltHotkey),
+        ] {
+            let (x, y) = view_at(layout::SETTINGS_W, r);
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Settings(want), "{r:?}");
+            assert_eq!(i.state(), IslandState::Settings);
+        }
+    }
+
+    #[test]
+    fn the_gear_only_responds_on_home_and_a_header_click_elsewhere_still_collapses() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        // The header outside the gear is an empty click.
+        let (x, y) = view_at(layout::HOME_W, layout::HEADER);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Collapsed);
+        // The same spot on Idle or in another panel is no gear.
+        i.open_timer(&t);
+        settle(&mut i, &t);
+        let (x, y) = view_at(layout::HOME_W, layout::HOME_GEAR);
+        assert!(!i.hover(x, y));
+        assert_ne!(i.click(x, y, &t), ClickOutcome::Expanded);
+        assert_ne!(i.state(), IslandState::Settings);
+    }
+
+    #[test]
+    fn the_gear_hover_follows_the_pointer_and_clears() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        let (x, y) = view_at(layout::HOME_W, layout::HOME_GEAR);
+        assert!(i.hover(x, y));
+        assert!(i.view().gear_hover);
+        assert!(!i.hover(x, y));
+        assert!(i.hover(x - 100.0, y));
+        assert!(!i.view().gear_hover);
+        assert!(i.hover(x, y));
+        assert!(i.clear_hover());
+        assert!(!i.view().gear_hover);
+    }
+
+    #[test]
+    fn settings_is_not_a_rest_state_and_a_finished_timer_waits_for_the_collapse() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.open_settings(&t);
+        settle(&mut i, &t);
+        i.set_timer(DONE, &t);
+        assert_eq!(i.state(), IslandState::Settings);
+        let (x, y) = view_at(layout::SETTINGS_W, layout::ST_BACK);
+        i.click(x, y, &t);
+        settle(&mut i, &t);
+        let p = i.pill_rect();
+        assert_eq!(i.click(p.x + 2.0, p.y + 2.0, &t), ClickOutcome::Collapsed);
+        assert_eq!(i.state(), IslandState::TimerAlert);
     }
 }
