@@ -92,6 +92,8 @@ The tray icon has the same controls, plus *Start with Windows*. Settings live in
 
 By default the island is a notch attached to the top edge of the screen. To get the floating pill back, flip *Island style* in the Settings panel or set `[island] style = "pill"` in the config.
 
+The notch also reserves a strip as tall as itself along the top of the screen, so maximized windows (and browser tabs) start below it instead of under it. Turn it off with *Reserve top space* in Settings, or `[island] reserve_top = false`.
+
 ## How it's built
 
 - **Window:** a raw Win32 popup (`WS_EX_NOREDIRECTIONBITMAP`, tool window, topmost, never activates) with a DirectComposition visual. Clicks outside the pill fall through to whatever is underneath.
