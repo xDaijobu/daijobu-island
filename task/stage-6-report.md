@@ -112,6 +112,30 @@ chime = true
 
 For a quick live test, set `focus_min = 1` and `break_min = 1`. This config value isn't one of the presets, so no chip is lit until you pick one.
 
+## Live test by the coordinator (2026-10-26, user's machine, 3440×1440, scale 1.0)
+
+Run with `[timer] focus_min = 1, break_min = 1`. Clicks were posted to the window (`WM_LBUTTONDOWN/UP`), so the user's real cursor was never moved.
+
+| Check | Result |
+|---|---|
+| Home → Timer opens the panel (Doto 01:00, `focus 1/4`, chips, Start/Skip/Reset) | Pass |
+| Start: counts down, the ring advances, the chips are disabled while running | Pass |
+| Empty click collapses to Timer compact (ring, `focus`, `00:52`); a click opens the panel again | Pass |
+| Pause: digits freeze, label `paused`, button shows Resume, **0 ms CPU over 4 s** | Pass |
+| Session end with the panel open: done shown inline (`focus done`, warn 00:00, CONTINUE/STOP) | Pass |
+| Collapse after done → alert `● TIMER · focus done · break 1:00`, ▸ CONTINUE, × | Pass |
+| ▸ Continue starts the break (compact `break 00:56`); running compact costs about 16 ms CPU per 10 s | Pass |
+| Skip ×6: `focus 4/4` → `long break 14:59` (long break after the 4th focus) | Pass |
+| Reset → `focus 1/4`; chip 25/5 → 25:00, highlighted; Skip disabled while stopped | Pass |
+| Stopped, collapsed to the idle clock: **0 ms CPU over 10 s** | Pass |
+
+Still not verified live:
+- **Chime audibility** (the coordinator can't hear; the user should confirm).
+- The Music compact arc (no track loaded: YouTube Music isn't signed in on this machine).
+- The alert over the OSD.
+- Hide while running.
+- Sleep or hibernate.
+
 ## Suggested live test (not run)
 
 1. Home → Timer → 25/5 → START. The pill shows the countdown once the panel collapses.
