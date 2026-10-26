@@ -3,15 +3,16 @@
 
 use crate::chime::SystemChime;
 use crate::snap::{
-    self as snapper, Snapper, SystemClipboard, SystemScreen, HOTKEY_SNAP, HOTKEY_SNAP_ALT,
-    HOTKEY_SNAP_ESC, START_DELAY_MS, TIMER_SNAP_START, TIMER_SNAP_THUMB, VK_ESCAPE,
+    self as snapper, End, RoughMeasure, Snapper, SystemClipboard, SystemScreen, HOTKEY_SNAP,
+    HOTKEY_SNAP_ALT, HOTKEY_SNAP_ESC, START_DELAY_MS, TIMER_SNAP_START, TIMER_SNAP_THUMB,
+    VK_ESCAPE,
 };
 use crate::storage;
 use crate::sweep::{Job, Msg, ScanId, Sweeper};
 use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
-use dj_core::config::{Config, SnapHotkey};
+use dj_core::config::{AnnotateConfig, Config, SnapHotkey};
 use dj_core::features::FEATURES;
 use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, SnapAction, TimerAction};
 use dj_core::layout;
@@ -19,12 +20,16 @@ use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
 use dj_core::settings::{self, SettingsAction, SettingsView};
 use dj_core::snap::{loupe_label, pixel_at, size_label, IRect, Loupe, Stamp};
+use dj_core::snap_edit::{CursorKind, EditInput, Key, KeyCode, Outcome, Rgba, TextMeasure};
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
-use dj_render::{Frame, MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene};
+use dj_render::{
+    EditScene, Frame, MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene,
+    TextMetrics,
+};
 use dj_win::overlay::{self, SnapInput};
 use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
 use dj_win::{hook, system, volume, window, Event, Handler, HICON, HWND};
@@ -209,6 +214,7 @@ impl App {
                 Box::new(SystemClipboard {
                     owner: hwnd.0 as isize,
                 }),
+                Self::text_measure(),
             ),
             overlay: None,
             snap_pending: false,
@@ -540,6 +546,17 @@ impl App {
 
     // ---- Snap ----
 
+    /// The annotation editor measures text with the font the markup is drawn in.
+    fn text_measure() -> Box<dyn TextMeasure> {
+        match TextMetrics::new() {
+            Ok(m) => Box::new(m),
+            Err(e) => {
+                storage::log(&format!("snap: {e}; text boxes are approximate"));
+                Box::new(RoughMeasure)
+            }
+        }
+    }
+
     /// Sets up `[snap] hotkey` and `[snap] alt_hotkey`, dropping whatever was set up
     /// before, so it also serves a change from the Settings panel. PrtSc goes through
     /// the keyboard hook, which keeps it from Windows' own screen capture (that one
@@ -671,7 +688,12 @@ impl App {
             return;
         }
         let desktop = IRect::new(vx, vy, vw, vh);
-        let frames = match self.snapper.begin(desktop, overlay::cursor_pos()) {
+        let prefs = self.config.snap.annotate.prefs();
+        let accent = Rgba::from_rgb(self.anim.current().accent);
+        let frames = match self
+            .snapper
+            .begin(desktop, overlay::cursor_pos(), prefs, accent)
+        {
             Ok(session) => &session.frames,
             Err(e) => {
                 storage::log(&format!("snap: cannot capture the screen: {e}"));
@@ -682,7 +704,7 @@ impl App {
             Ok(h) => h,
             Err(e) => {
                 storage::log(&format!("snap: cannot create the overlay: {e}"));
-                self.snapper.cancel();
+                self.snapper.end(End::Cancel, Instant::now());
                 return;
             }
         };
@@ -692,7 +714,7 @@ impl App {
                 Err(e) => {
                     storage::log(&format!("snap: overlay renderer: {e}"));
                     overlay::destroy(hwnd);
-                    self.snapper.cancel();
+                    self.snapper.end(End::Cancel, Instant::now());
                     return;
                 }
             };
@@ -718,18 +740,42 @@ impl App {
         }
     }
 
-    /// Overlay input, in the overlay's client px.
+    /// Overlay input, in the overlay's client px. Before the release it drives the 7a
+    /// selection; after it, the annotation editor.
     fn snap_input(&mut self, input: SnapInput) {
         let Some(origin) = self.overlay.as_ref().map(|o| o.origin) else {
             return;
         };
+        // Alt+F4 on the overlay: cancel, whatever the phase.
+        if input == SnapInput::Close {
+            self.end_snap(End::Cancel);
+            return;
+        }
+        let editing = self.snapper.session().is_some_and(|s| s.editor.is_some());
+        if editing {
+            self.edit_input(input, origin);
+        } else {
+            self.select_input(input, origin);
+        }
+    }
+
+    /// The selecting phase: hover, drag, window click, arrow nudge. Esc or a right click
+    /// cancels; the release starts editing (a too-small selection cancels).
+    fn select_input(&mut self, input: SnapInput, origin: (i32, i32)) {
         let Some(session) = self.snapper.session_mut() else {
             return;
         };
         let sel = &mut session.selector;
         let desk = |x: i32, y: i32| (x + origin.0, y + origin.1);
+        let arrow = |vk: u16| match vk {
+            0x25 => Some((-1, 0)),
+            0x27 => Some((1, 0)),
+            0x26 => Some((0, -1)),
+            0x28 => Some((0, 1)),
+            _ => None,
+        };
         let changed = match input {
-            SnapInput::Press { x, y } => {
+            SnapInput::Press { x, y } | SnapInput::DoubleClick { x, y } => {
                 let (x, y) = desk(x, y);
                 sel.press(x, y);
                 true
@@ -738,11 +784,20 @@ impl App {
                 let (x, y) = desk(x, y);
                 sel.move_to(x, y)
             }
-            SnapInput::Arrow { dx, dy, big } => {
-                let (x, y) = sel.nudge(dx, dy, big);
+            SnapInput::Key { vk, shift, .. } if arrow(vk).is_some() => {
+                let (dx, dy) = arrow(vk).unwrap_or_default();
+                let (x, y) = sel.nudge(dx, dy, shift);
                 // The pointer follows, so the next mouse move agrees with the nudge.
                 overlay::set_cursor_pos(x, y);
                 true
+            }
+            SnapInput::Key { vk, .. } if u32::from(vk) == VK_ESCAPE => {
+                self.end_snap(End::Cancel);
+                return;
+            }
+            SnapInput::RightPress => {
+                self.end_snap(End::Cancel);
+                return;
             }
             // A release without a press on the overlay (the button was already down
             // when it opened) is ignored.
@@ -750,13 +805,17 @@ impl App {
             SnapInput::Release { x, y } => {
                 let (x, y) = desk(x, y);
                 sel.move_to(x, y);
-                self.end_snap(true);
-                return;
+                if self.snapper.start_editing() {
+                    // The selection stays, the toolbar shows; the clipboard is untouched.
+                    self.sync_overlay_cursor();
+                    true
+                } else {
+                    self.end_snap(End::Cancel);
+                    return;
+                }
             }
-            SnapInput::Cancel => {
-                self.end_snap(false);
-                return;
-            }
+            SnapInput::Key { .. } | SnapInput::Char(_) | SnapInput::Wheel(_) => false,
+            SnapInput::Close => false,
         };
         if changed {
             if let Some(ov) = self.overlay.as_mut() {
@@ -765,10 +824,114 @@ impl App {
         }
     }
 
-    /// Closes the overlay (its GPU side and the frozen frames go now). With `take`, the
-    /// selection is cropped and copied and the thumb shows; otherwise nothing is kept
-    /// and the clipboard is not touched.
-    fn end_snap(&mut self, take: bool) {
+    /// The editing phase: everything goes to the editor, except a right click (which does
+    /// nothing here). Copy, save and cancel end the snap.
+    fn edit_input(&mut self, input: SnapInput, origin: (i32, i32)) {
+        let desk = |x: i32, y: i32| (x + origin.0, y + origin.1);
+        let ev = match input {
+            SnapInput::Press { x, y } => {
+                let (x, y) = desk(x, y);
+                EditInput::Press { x, y }
+            }
+            SnapInput::Motion { x, y } => {
+                let (x, y) = desk(x, y);
+                EditInput::Motion { x, y }
+            }
+            SnapInput::Release { x, y } => {
+                let (x, y) = desk(x, y);
+                EditInput::Release { x, y }
+            }
+            SnapInput::DoubleClick { x, y } => {
+                let (x, y) = desk(x, y);
+                EditInput::DoubleClick { x, y }
+            }
+            SnapInput::Key { vk, ctrl, shift } => EditInput::Key(Key {
+                code: KeyCode::from_vk(vk),
+                ctrl,
+                shift,
+            }),
+            SnapInput::Char(c) => EditInput::Char(c),
+            SnapInput::Wheel(n) => EditInput::Wheel(n),
+            SnapInput::RightPress | SnapInput::Close => return,
+        };
+        match self.snapper.edit(ev) {
+            Outcome::Nothing => {}
+            Outcome::Redraw => {
+                if let Some(ov) = self.overlay.as_mut() {
+                    ov.dirty = true;
+                }
+            }
+            Outcome::Copy => {
+                self.end_snap(End::Copy);
+                return;
+            }
+            Outcome::Save => {
+                let (dir, stamp) = self.save_target();
+                self.end_snap(End::Save { dir, stamp });
+                return;
+            }
+            Outcome::Cancel => {
+                self.end_snap(End::Cancel);
+                return;
+            }
+        }
+        self.sync_overlay_cursor();
+    }
+
+    /// Esc: the `HOTKEY_SNAP_ESC` hotkey and the overlay's own key both come here, so it
+    /// goes through the editor's steps (commit the text, drop the shape selection, then
+    /// cancel) rather than straight to a cancel.
+    fn snap_escape(&mut self) {
+        self.snap_input(SnapInput::Key {
+            vk: VK_ESCAPE as u16,
+            ctrl: false,
+            shift: false,
+        });
+    }
+
+    /// The overlay shows the cursor the editor asks for (the crosshair while selecting).
+    fn sync_overlay_cursor(&self) {
+        let kind = self
+            .snapper
+            .session()
+            .and_then(|s| s.editor.as_ref())
+            .map_or(CursorKind::Cross, |e| e.cursor_kind());
+        overlay::set_cursor(match kind {
+            CursorKind::Cross => overlay::Cursor::Cross,
+            CursorKind::IBeam => overlay::Cursor::IBeam,
+            CursorKind::SizeNwse => overlay::Cursor::SizeNwse,
+            CursorKind::SizeNesw => overlay::Cursor::SizeNesw,
+            CursorKind::SizeWe => overlay::Cursor::SizeWe,
+            CursorKind::SizeNs => overlay::Cursor::SizeNs,
+            CursorKind::Move => overlay::Cursor::Move,
+            CursorKind::Arrow => overlay::Cursor::Arrow,
+        });
+    }
+
+    /// Where a save goes: `[snap] save_dir`, named from the local time now.
+    fn save_target(&self) -> (PathBuf, Stamp) {
+        let profile = std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let (year, month, day, hour, minute, second) = system::local_datetime();
+        (
+            self.config.snap.save_dir(&profile),
+            Stamp {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+            },
+        )
+    }
+
+    /// Closes the overlay (its GPU side goes first), then ends the session: a copy or a
+    /// save renders the selection with its markup, copies it (and saves it) and shows
+    /// the thumb; a cancel keeps nothing and leaves the clipboard alone. Changed prefs
+    /// are written to `[snap.annotate]`, keeping the rest of the config.
+    fn end_snap(&mut self, how: End) {
         let Some(mut ov) = self.overlay.take() else {
             return;
         };
@@ -780,19 +943,16 @@ impl App {
         }
         self.last_frame = None;
         self.dirty = true;
-        if !take {
-            self.snapper.cancel();
-            return;
+        let ended = self.snapper.end(how, Instant::now());
+        for e in &ended.errors {
+            storage::log(&format!("snap: {e}"));
         }
-        match self.snapper.finish(Instant::now()) {
-            // Smaller than 2 x 2: cancelled.
-            None => {}
-            Some(result) => {
-                if let Err(e) = result {
-                    storage::log(&format!("snap: copy failed: {e}"));
-                }
-                self.show_thumb();
-            }
+        if let Some(prefs) = ended.prefs {
+            self.config.snap.annotate = AnnotateConfig::from_prefs(&prefs);
+            storage::save_config(&self.config);
+        }
+        if ended.taken {
+            self.show_thumb();
         }
     }
 
@@ -847,19 +1007,7 @@ impl App {
                 }
             }
             SnapAction::Save => {
-                let profile = std::env::var_os("USERPROFILE")
-                    .map(PathBuf::from)
-                    .unwrap_or_default();
-                let dir = self.config.snap.save_dir(&profile);
-                let (year, month, day, hour, minute, second) = system::local_datetime();
-                let stamp = Stamp {
-                    year,
-                    month,
-                    day,
-                    hour,
-                    minute,
-                    second,
-                };
+                let (dir, stamp) = self.save_target();
                 if let Err(e) = self.snapper.save(&dir, stamp) {
                     storage::log(&format!("snap: save failed: {e}"));
                 }
@@ -888,7 +1036,7 @@ impl App {
         }
     }
 
-    /// Draws one overlay frame from the selection.
+    /// Draws one overlay frame: the selection, or once released, the editor.
     fn render_overlay(&mut self) {
         let Some(ov) = self.overlay.as_mut() else {
             return;
@@ -901,8 +1049,16 @@ impl App {
         let cursor = sel.cursor();
         let selection = sel.selection();
         let hover = sel.hover();
-        let size = selection.or(hover).map(|r| size_label(r.w, r.h));
-        let text = loupe_label(pixel_at(&session.frames, cursor.0, cursor.1), cursor);
+        let editor = session.editor.as_ref();
+        let size = match editor {
+            Some(e) => Some(size_label(e.selection().w, e.selection().h)),
+            None => selection.or(hover).map(|r| size_label(r.w, r.h)),
+        };
+        let text = if editor.is_some() {
+            String::new()
+        } else {
+            loupe_label(pixel_at(&session.frames, cursor.0, cursor.1), cursor)
+        };
         let (monitor, dpi) = session
             .frames
             .iter()
@@ -918,6 +1074,11 @@ impl App {
             size_text: size.as_deref(),
             monitor,
             scale: dpi as f32 / 96.0,
+            edit: editor.map(|e| EditScene {
+                editor: e,
+                frames: &session.frames,
+                size_text: size.as_deref().unwrap_or_default(),
+            }),
         };
         let failed = match ov.renderer.as_mut().map(|r| r.render(&scene)) {
             Some(Err(e)) => {
@@ -927,7 +1088,7 @@ impl App {
             _ => false,
         };
         if failed {
-            self.end_snap(false);
+            self.end_snap(End::Cancel);
         }
     }
 
@@ -1321,7 +1482,7 @@ impl App {
     }
 
     fn quit(&mut self) {
-        self.end_snap(false);
+        self.end_snap(End::Cancel);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ALT);
         self.engine = None;
@@ -1443,7 +1604,7 @@ impl Handler for App {
             Event::Hotkey(HOTKEY_SNAP | HOTKEY_SNAP_ALT) | Event::PrintScreen => {
                 self.request_snap()
             }
-            Event::Hotkey(HOTKEY_SNAP_ESC) => self.end_snap(false),
+            Event::Hotkey(HOTKEY_SNAP_ESC) => self.snap_escape(),
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
             Event::TrayLeft => self.set_visible(!self.visible),
@@ -1451,7 +1612,7 @@ impl Handler for App {
             Event::DpiChanged => self.relayout(),
             Event::DisplayChange => {
                 // The monitors changed under the frozen frames: drop the snap.
-                self.end_snap(false);
+                self.end_snap(End::Cancel);
                 self.relayout();
             }
             Event::ThemesChanged => self.reload_themes(),

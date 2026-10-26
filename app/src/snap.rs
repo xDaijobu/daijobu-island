@@ -1,17 +1,21 @@
-//! The app's side of Snap: freeze, select, crop, copy, save, and the thumb's countdown.
-//! The screen and the clipboard sit behind traits, so this runs in unit tests with
-//! synthetic frames and a fake clipboard. The overlay window and its renderer are glue
-//! in `app.rs`.
+//! The app's side of Snap: freeze, select, annotate, render, copy, save, and the
+//! thumb's countdown. The screen and the clipboard sit behind traits, so this runs in
+//! unit tests with synthetic frames and a fake clipboard. The overlay window and its
+//! renderer are glue in `app.rs`.
 //!
-//! Memory: the frozen frames live only while the overlay is up (`Session`). After a
-//! release only the crop and its PNG are kept (`Shot`), until the thumb goes.
+//! Flow: `begin` freezes and starts selecting; `start_editing` (the release) hands the
+//! selection to the annotation editor; `edit` feeds it input; `end` closes the session:
+//! cancelled, or rendered with its markup and copied (and saved).
+//!
+//! Memory: the frozen frames live only while the overlay is up (`Session`). After that
+//! only the annotated image and its PNG are kept (`Shot`), until the thumb goes.
 
 use crate::storage;
 use dj_core::config::SnapHotkey;
 use dj_core::snap::{
-    crop, file_name, Bitmap, Countdown, IRect, MonitorFrame, Selector, Stamp, ThumbStatus,
-    THUMB_SECS,
+    file_name, Bitmap, Countdown, IRect, MonitorFrame, Selector, Stamp, ThumbStatus, THUMB_SECS,
 };
+use dj_core::snap_edit::{Display, EditInput, Editor, Outcome, Prefs, Rgba, TextMeasure};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -90,10 +94,53 @@ impl Clipboard for SystemClipboard {
     }
 }
 
-/// While the overlay is up: the frozen monitors and the selection.
+/// Measures text roughly (0.55 em per char) if the embedded font can't be loaded, so
+/// the editor still works; the output is drawn with the real font either way.
+pub struct RoughMeasure;
+
+impl TextMeasure for RoughMeasure {
+    fn width(&self, text: &str, px: f32) -> f32 {
+        text.chars().count() as f32 * px * 0.55
+    }
+
+    fn line_height(&self, px: f32) -> f32 {
+        px * 1.25
+    }
+}
+
+/// While the overlay is up: the frozen monitors, the selection, and once it is released
+/// the annotation editor.
 pub struct Session {
     pub frames: Vec<MonitorFrame>,
     pub selector: Selector,
+    pub editor: Option<Editor>,
+    /// The tool, colour and size the editor starts from; they are written back only if
+    /// the snap changed them.
+    prefs: Prefs,
+    accent: Rgba,
+}
+
+/// How a snap ends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum End {
+    /// Esc, ✕, a right click while selecting, or a too-small selection: nothing is
+    /// copied or saved.
+    Cancel,
+    /// Ctrl+C, Enter or the copy button.
+    Copy,
+    /// Ctrl+S or the save button: copied, and saved into `dir`.
+    Save { dir: PathBuf, stamp: Stamp },
+}
+
+/// What `end` did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Ended {
+    /// The prefs, if this snap changed them: write them to `[snap.annotate]`.
+    pub prefs: Option<Prefs>,
+    /// A new shot was made (and copied, if the clipboard allowed): show the thumb.
+    pub taken: bool,
+    /// What went wrong (drawing, copying, saving), for the log.
+    pub errors: Vec<String>,
 }
 
 /// The last snap, kept for the thumb's copy and save until the thumb goes.
@@ -111,15 +158,22 @@ pub struct Shot {
 pub struct Snapper {
     screen: Box<dyn Screen>,
     clipboard: Box<dyn Clipboard>,
+    /// The editor's text measurer (the font the markup is drawn with).
+    measure: Box<dyn TextMeasure>,
     session: Option<Session>,
     shot: Option<Shot>,
 }
 
 impl Snapper {
-    pub fn new(screen: Box<dyn Screen>, clipboard: Box<dyn Clipboard>) -> Self {
+    pub fn new(
+        screen: Box<dyn Screen>,
+        clipboard: Box<dyn Clipboard>,
+        measure: Box<dyn TextMeasure>,
+    ) -> Self {
         Self {
             screen,
             clipboard,
+            measure,
             session: None,
             shot: None,
         }
@@ -127,13 +181,25 @@ impl Snapper {
 
     /// Freezes every monitor and starts a selection over `desktop` at `cursor`. Click
     /// targets are the windows, then the monitors (a click on the bare desktop takes
-    /// the monitor under it).
-    pub fn begin(&mut self, desktop: IRect, cursor: (i32, i32)) -> Result<&Session, String> {
+    /// the monitor under it). `prefs` and `accent` are for the editor that follows.
+    pub fn begin(
+        &mut self,
+        desktop: IRect,
+        cursor: (i32, i32),
+        prefs: Prefs,
+        accent: Rgba,
+    ) -> Result<&Session, String> {
         let frames = self.screen.freeze()?;
         let mut targets = self.screen.windows();
         targets.extend(frames.iter().map(|f| f.rect));
         let selector = Selector::new(desktop, targets, cursor);
-        Ok(self.session.insert(Session { frames, selector }))
+        Ok(self.session.insert(Session {
+            frames,
+            selector,
+            editor: None,
+            prefs,
+            accent,
+        }))
     }
 
     pub fn session(&self) -> Option<&Session> {
@@ -144,18 +210,76 @@ impl Snapper {
         self.session.as_mut()
     }
 
-    /// Esc or a right click: the frames go, and the clipboard is not touched.
-    pub fn cancel(&mut self) {
-        self.session = None;
+    /// The selecting phase's release. True if the editor now has the selection (a drag
+    /// of at least 2 x 2, or a window/monitor click); false if it was too small, and
+    /// the app ends the snap. Nothing touches the clipboard here.
+    pub fn start_editing(&mut self) -> bool {
+        let Some(s) = self.session.as_mut() else {
+            return false;
+        };
+        if s.editor.is_some() {
+            return true;
+        }
+        let Some(rect) = s.selector.release() else {
+            return false;
+        };
+        let displays = s
+            .frames
+            .iter()
+            .map(|f| Display {
+                rect: f.rect,
+                scale: f.dpi as f32 / 96.0,
+            })
+            .collect();
+        s.editor = Some(Editor::new(
+            rect,
+            s.selector.desktop(),
+            displays,
+            s.prefs,
+            s.accent,
+            s.selector.cursor(),
+        ));
+        true
     }
 
-    /// The button went up. Cancelled (None) if the selection is too small; otherwise the
-    /// crop replaces the last shot and goes to the clipboard, and its countdown starts.
-    /// `Some(Err)` carries the reason the copy failed (the shot is kept for a retry).
-    pub fn finish(&mut self, now: Instant) -> Option<Result<(), String>> {
-        let mut session = self.session.take()?;
-        let rect = session.selector.release()?;
-        let bitmap = crop(&session.frames, rect);
+    /// Editor input (desktop px). Nothing while selecting.
+    pub fn edit(&mut self, ev: EditInput) -> Outcome {
+        let measure = self.measure.as_ref();
+        match self.session.as_mut().and_then(|s| s.editor.as_mut()) {
+            Some(e) => e.input(ev, measure),
+            None => Outcome::Nothing,
+        }
+    }
+
+    /// Ends the session (the frozen frames go). A copy or save renders the selection
+    /// with its markup, replaces the last shot with it, copies it (PNG + `CF_DIB`) and
+    /// starts the thumb's countdown; a save also writes it to `dir`. A cancel copies
+    /// and saves nothing. Either way, changed prefs are handed back once.
+    pub fn end(&mut self, how: End, now: Instant) -> Ended {
+        let mut ended = Ended::default();
+        let Some(session) = self.session.take() else {
+            return ended;
+        };
+        let Some(editor) = session.editor.as_ref() else {
+            return ended;
+        };
+        if editor.prefs() != session.prefs {
+            ended.prefs = Some(editor.prefs());
+        }
+        let save = match how {
+            End::Cancel => return ended,
+            End::Copy => None,
+            End::Save { dir, stamp } => Some((dir, stamp)),
+        };
+        let bitmap =
+            match dj_render::render_output(&session.frames, editor.selection(), editor.shapes()) {
+                Ok(b) => b,
+                Err(e) => {
+                    // Never fall back to the bare crop: pixelated secrets would leak.
+                    ended.errors.push(format!("cannot draw the markup: {e}"));
+                    return ended;
+                }
+            };
         drop(session);
         let mut shot = Shot {
             bitmap,
@@ -164,9 +288,17 @@ impl Snapper {
             saved: None,
             countdown: Countdown::start(Duration::from_secs(THUMB_SECS), now),
         };
-        let result = copy_shot(&mut shot, self.clipboard.as_mut());
+        if let Err(e) = copy_shot(&mut shot, self.clipboard.as_mut()) {
+            ended.errors.push(format!("copy failed: {e}"));
+        }
         self.shot = Some(shot);
-        Some(result)
+        ended.taken = true;
+        if let Some((dir, stamp)) = save {
+            if let Err(e) = self.save(&dir, stamp) {
+                ended.errors.push(format!("save failed: {e}"));
+            }
+        }
+        ended
     }
 
     pub fn shot(&self) -> Option<&Shot> {
@@ -277,12 +409,14 @@ fn write_new(dir: &Path, stamp: Stamp, bytes: &[u8]) -> Result<PathBuf, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dj_core::snap::crop;
+    use dj_core::snap_edit::{Key, KeyCode, Size, Tool, SWATCHES};
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// Two synthetic monitors, the left one at negative x; pixel (x, y) of a monitor is
-    /// [seed, x, y, 255].
-    fn frames() -> Vec<MonitorFrame> {
+    /// Two synthetic monitors, the second left of the first at negative x; pixel (x, y)
+    /// of a monitor is [seed, x, y, 255] (wrapping at 256).
+    fn layout(primary: (i32, i32), left_w: i32) -> Vec<MonitorFrame> {
         let mon = |rect: IRect, seed: u8| {
             let mut bitmap = Bitmap::black(rect.w as u32, rect.h as u32);
             for y in 0..rect.h {
@@ -300,14 +434,22 @@ mod tests {
             }
         };
         vec![
-            mon(IRect::new(0, 0, 64, 48), 1),
-            mon(IRect::new(-32, 0, 32, 48), 2),
+            mon(IRect::new(0, 0, primary.0, primary.1), 1),
+            mon(IRect::new(-left_w, 0, left_w, primary.1), 2),
         ]
     }
 
+    /// The small layout of the 7a tests.
+    fn frames() -> Vec<MonitorFrame> {
+        layout((64, 48), 32)
+    }
+
     const DESK: IRect = IRect::new(-32, 0, 96, 48);
+    /// A layout big enough for the editor's toolbar.
+    const BIG_DESK: IRect = IRect::new(-400, 0, 1600, 800);
 
     struct FakeScreen {
+        frames: Vec<MonitorFrame>,
         windows: Vec<IRect>,
         freezes: Rc<RefCell<u32>>,
     }
@@ -315,7 +457,7 @@ mod tests {
     impl Screen for FakeScreen {
         fn freeze(&mut self) -> Result<Vec<MonitorFrame>, String> {
             *self.freezes.borrow_mut() += 1;
-            Ok(frames())
+            Ok(self.frames.clone())
         }
 
         fn windows(&mut self) -> Vec<IRect> {
@@ -342,20 +484,81 @@ mod tests {
         }
     }
 
-    fn snapper(windows: Vec<IRect>) -> (Snapper, Puts, Rc<RefCell<bool>>) {
+    fn snapper_on(
+        frames: Vec<MonitorFrame>,
+        windows: Vec<IRect>,
+    ) -> (Snapper, Puts, Rc<RefCell<bool>>) {
         let clip = FakeClipboard::default();
         let (puts, fail) = (clip.puts.clone(), clip.fail.clone());
         let screen = FakeScreen {
+            frames,
             windows,
             freezes: Rc::default(),
         };
-        (Snapper::new(Box::new(screen), Box::new(clip)), puts, fail)
+        (
+            Snapper::new(Box::new(screen), Box::new(clip), Box::new(RoughMeasure)),
+            puts,
+            fail,
+        )
+    }
+
+    fn snapper(windows: Vec<IRect>) -> (Snapper, Puts, Rc<RefCell<bool>>) {
+        snapper_on(frames(), windows)
+    }
+
+    fn begin(s: &mut Snapper, desktop: IRect) {
+        s.begin(desktop, (0, 0), Prefs::default(), SWATCHES[3])
+            .unwrap();
     }
 
     fn drag(s: &mut Snapper, from: (i32, i32), to: (i32, i32)) {
         let sel = &mut s.session_mut().unwrap().selector;
         sel.press(from.0, from.1);
         sel.move_to(to.0, to.1);
+    }
+
+    /// The release, then a copy: what Ctrl+C right after the release does.
+    fn finish(s: &mut Snapper, now: Instant) -> Ended {
+        if !s.start_editing() {
+            return s.end(End::Cancel, now);
+        }
+        s.end(End::Copy, now)
+    }
+
+    fn key(vk: u16, ctrl: bool) -> EditInput {
+        EditInput::Key(Key {
+            code: KeyCode::from_vk(vk),
+            ctrl,
+            shift: false,
+        })
+    }
+
+    /// Selects (100, 100)-(400, 300) on the big layout and draws a red rect from
+    /// (150, 150) to (250, 250) in it.
+    fn annotated() -> (Snapper, Puts) {
+        let (mut s, puts, _) = snapper_on(layout((1200, 800), 400), vec![]);
+        begin(&mut s, BIG_DESK);
+        drag(&mut s, (100, 100), (400, 300));
+        assert!(s.start_editing());
+        assert_eq!(s.edit(key(0x52, false)), Outcome::Redraw, "R: rect");
+        s.edit(EditInput::Press { x: 150, y: 150 });
+        s.edit(EditInput::Motion { x: 250, y: 250 });
+        s.edit(EditInput::Release { x: 250, y: 250 });
+        assert_eq!(
+            s.session().unwrap().editor.as_ref().unwrap().shapes().len(),
+            1
+        );
+        (s, puts)
+    }
+
+    fn px(b: &Bitmap, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * b.width + x) * 4) as usize;
+        [
+            b.pixels[i],
+            b.pixels[i + 1],
+            b.pixels[i + 2],
+            b.pixels[i + 3],
+        ]
     }
 
     const STAMP: Stamp = Stamp {
@@ -400,15 +603,33 @@ mod tests {
     }
 
     #[test]
-    fn a_drag_copies_the_exact_pixels_as_png_and_dib() {
+    fn release_enters_editing_and_the_clipboard_is_untouched() {
         let (mut s, puts, _) = snapper(vec![]);
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
+        drag(&mut s, (-2, 3), (2, 5));
+        assert!(s.start_editing());
+        let editor = s.session().unwrap().editor.as_ref().unwrap();
+        assert_eq!(editor.selection(), IRect::new(-2, 3, 4, 2));
+        assert_eq!(editor.tool(), Tool::Arrow, "from the prefs");
+        assert!(puts.borrow().is_empty());
+        assert!(s.shot().is_none());
+        // While editing the release is idempotent and the frames stay.
+        assert!(s.start_editing());
+        assert!(s.session().is_some());
+    }
+
+    #[test]
+    fn a_copy_without_markup_puts_the_exact_pixels_as_png_and_dib() {
+        let (mut s, puts, _) = snapper(vec![]);
+        begin(&mut s, DESK);
         // Across the seam between the two monitors.
         drag(&mut s, (-2, 3), (2, 5));
-        assert_eq!(s.finish(Instant::now()), Some(Ok(())));
+        let ended = finish(&mut s, Instant::now());
+        assert!(ended.taken && ended.errors.is_empty() && ended.prefs.is_none());
         assert!(s.session().is_none(), "the frozen frames are gone");
         let shot = s.shot().unwrap();
         assert_eq!((shot.bitmap.width, shot.bitmap.height), (4, 2));
+        assert_eq!(shot.bitmap, crop(&frames(), IRect::new(-2, 3, 4, 2)));
         assert_eq!(shot.status, ThumbStatus::Copied);
         let puts = puts.borrow();
         assert_eq!(puts.len(), 1, "one clipboard session");
@@ -425,18 +646,120 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_c_copies_the_annotated_png_and_dib_and_shows_the_thumb() {
+        let (mut s, puts) = annotated();
+        assert!(puts.borrow().is_empty(), "drawing touches nothing");
+        assert_eq!(s.edit(key(0x43, true)), Outcome::Copy);
+        let ended = s.end(End::Copy, Instant::now());
+        assert!(ended.taken, "the thumb shows");
+        assert!(ended.errors.is_empty(), "{:?}", ended.errors);
+        let shot = s.shot().unwrap();
+        assert_eq!(shot.status, ThumbStatus::Copied);
+        let b = &shot.bitmap;
+        assert_eq!((b.width, b.height), (300, 200));
+        // The rect's left edge (desktop x 150) is output x 50, in red.
+        let red = SWATCHES[0];
+        assert_eq!(px(b, 50, 100), [red.b, red.g, red.r, 255]);
+        // Inside it: the frozen screen, desktop (200, 200).
+        assert_eq!(px(b, 100, 100), [1, 200, 200, 255]);
+        let plain = crop(&layout((1200, 800), 400), IRect::new(100, 100, 300, 200));
+        assert_ne!(*b, plain);
+        assert_eq!(px(b, 10, 10), px(&plain, 10, 10));
+        let puts = puts.borrow();
+        assert_eq!(puts.len(), 1);
+        let (png, dib) = &puts[0];
+        assert_eq!(dj_capture::png::decode(png).unwrap().pixels, b.pixels);
+        assert_eq!(*dib, dj_capture::dib::from_bitmap(b));
+    }
+
+    #[test]
+    fn ctrl_s_saves_and_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("Pictures").join("Daijobu");
+        let (mut s, puts) = annotated();
+        assert_eq!(s.edit(key(0x53, true)), Outcome::Save);
+        let ended = s.end(
+            End::Save {
+                dir: target.clone(),
+                stamp: STAMP,
+            },
+            Instant::now(),
+        );
+        assert!(ended.taken && ended.errors.is_empty(), "{:?}", ended.errors);
+        let shot = s.shot().unwrap();
+        let path = target.join("snap-2026-10-26_140309.png");
+        assert_eq!(shot.saved.as_ref(), Some(&path));
+        assert_eq!(shot.status, ThumbStatus::Saved);
+        let saved = dj_capture::png::decode(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.pixels, shot.bitmap.pixels, "the annotated image");
+        assert_eq!(puts.borrow().len(), 1, "and copied");
+        assert_eq!(fs::read(&path).unwrap(), puts.borrow()[0].0);
+    }
+
+    #[test]
+    fn esc_while_editing_copies_nothing() {
+        let (mut s, puts) = annotated();
+        assert_eq!(s.edit(key(0x1B, false)), Outcome::Cancel);
+        let ended = s.end(End::Cancel, Instant::now());
+        assert!(!ended.taken);
+        assert!(s.session().is_none());
+        assert!(s.shot().is_none());
+        assert!(puts.borrow().is_empty());
+        // Typing first: Esc commits the text and stays; the second one cancels.
+        let (mut s, puts) = annotated();
+        s.edit(key(0x54, false));
+        s.edit(EditInput::Press { x: 300, y: 200 });
+        s.edit(EditInput::Release { x: 300, y: 200 });
+        s.edit(EditInput::Char('a'));
+        assert_eq!(s.edit(key(0x1B, false)), Outcome::Redraw);
+        assert_eq!(s.edit(key(0x1B, false)), Outcome::Cancel);
+        s.end(End::Cancel, Instant::now());
+        assert!(puts.borrow().is_empty());
+    }
+
+    #[test]
+    fn prefs_come_back_once_on_close_and_only_when_they_changed() {
+        let (mut s, _, _) = snapper_on(layout((1200, 800), 400), vec![]);
+        begin(&mut s, BIG_DESK);
+        drag(&mut s, (100, 100), (400, 300));
+        s.start_editing();
+        s.edit(key(0x50, false));
+        s.edit(EditInput::Wheel(1));
+        let ended = s.end(End::Cancel, Instant::now());
+        let want = Prefs {
+            tool: Tool::Pen,
+            size: Size::L,
+            ..Prefs::default()
+        };
+        assert_eq!(ended.prefs, Some(want), "a cancel still keeps the choice");
+        // Only once: the session is gone.
+        assert_eq!(s.end(End::Cancel, Instant::now()), Ended::default());
+        // The next snap starts from them; no change means nothing to write.
+        s.begin(BIG_DESK, (0, 0), want, SWATCHES[3]).unwrap();
+        drag(&mut s, (100, 100), (400, 300));
+        s.start_editing();
+        assert_eq!(s.session().unwrap().editor.as_ref().unwrap().prefs(), want);
+        let ended = s.end(End::Copy, Instant::now());
+        assert_eq!(ended.prefs, None);
+        assert!(ended.taken);
+        // A snap cancelled while still selecting has nothing to write either.
+        begin(&mut s, BIG_DESK);
+        assert_eq!(s.end(End::Cancel, Instant::now()).prefs, None);
+    }
+
+    #[test]
     fn a_click_takes_the_window_under_the_cursor_or_the_monitor() {
         let win = IRect::new(4, 4, 10, 8);
         let (mut s, _, _) = snapper(vec![win]);
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         s.session_mut().unwrap().selector.press(6, 6);
-        s.finish(Instant::now());
+        finish(&mut s, Instant::now());
         let b = &s.shot().unwrap().bitmap;
         assert_eq!((b.width, b.height), (10, 8));
         // A click on the bare left monitor takes all of it.
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         s.session_mut().unwrap().selector.press(-10, 40);
-        s.finish(Instant::now());
+        finish(&mut s, Instant::now());
         let b = &s.shot().unwrap().bitmap;
         assert_eq!((b.width, b.height), (32, 48));
     }
@@ -444,15 +767,16 @@ mod tests {
     #[test]
     fn cancel_and_a_tiny_drag_never_touch_the_clipboard() {
         let (mut s, puts, _) = snapper(vec![]);
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         drag(&mut s, (1, 1), (30, 30));
-        s.cancel();
+        s.end(End::Cancel, Instant::now());
         assert!(s.session().is_none());
-        assert_eq!(s.finish(Instant::now()), None);
-        s.begin(DESK, (0, 0)).unwrap();
+        assert_eq!(s.end(End::Copy, Instant::now()), Ended::default());
+        begin(&mut s, DESK);
         drag(&mut s, (10, 10), (40, 40));
         drag(&mut s, (10, 10), (11, 40));
-        assert_eq!(s.finish(Instant::now()), None, "1 px wide");
+        assert!(!s.start_editing(), "1 px wide");
+        assert!(!finish(&mut s, Instant::now()).taken);
         assert!(s.session().is_none());
         assert!(puts.borrow().is_empty());
         assert!(s.shot().is_none());
@@ -462,9 +786,11 @@ mod tests {
     fn a_failed_copy_keeps_the_shot_for_a_retry() {
         let (mut s, puts, fail) = snapper(vec![]);
         *fail.borrow_mut() = true;
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         drag(&mut s, (0, 0), (8, 8));
-        assert_eq!(s.finish(Instant::now()), Some(Err("busy".into())));
+        let ended = finish(&mut s, Instant::now());
+        assert!(ended.taken);
+        assert_eq!(ended.errors, vec!["copy failed: busy".to_string()]);
         assert_eq!(s.shot().unwrap().status, ThumbStatus::CopyFailed);
         *fail.borrow_mut() = false;
         assert_eq!(s.copy(), Ok(()));
@@ -478,9 +804,9 @@ mod tests {
         let target = dir.path().join("Pictures").join("Daijobu");
         let (mut s, _, _) = snapper(vec![]);
         assert!(s.save(&target, STAMP).is_err(), "no shot yet");
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         drag(&mut s, (0, 0), (6, 4));
-        s.finish(Instant::now());
+        finish(&mut s, Instant::now());
         let first = s.save(&target, STAMP).unwrap();
         assert_eq!(first, target.join("snap-2026-10-26_140309.png"));
         assert_eq!(s.shot().unwrap().status, ThumbStatus::Saved);
@@ -500,10 +826,22 @@ mod tests {
         let blocker = dir.path().join("taken");
         fs::write(&blocker, b"x").unwrap();
         let (mut s, _, _) = snapper(vec![]);
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         drag(&mut s, (0, 0), (6, 4));
-        s.finish(Instant::now());
-        assert!(s.save(&blocker.join("sub"), STAMP).is_err());
+        assert!(s.start_editing());
+        let ended = s.end(
+            End::Save {
+                dir: blocker.join("sub"),
+                stamp: STAMP,
+            },
+            Instant::now(),
+        );
+        assert!(ended.taken, "still copied");
+        assert!(
+            ended.errors[0].starts_with("save failed"),
+            "{:?}",
+            ended.errors
+        );
         assert_eq!(s.shot().unwrap().status, ThumbStatus::SaveFailed);
     }
 
@@ -513,9 +851,9 @@ mod tests {
         let t0 = Instant::now();
         let sec = Duration::from_secs;
         assert_eq!(s.thumb_ms(t0), None, "nothing to time");
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         drag(&mut s, (0, 0), (6, 4));
-        s.finish(t0);
+        finish(&mut s, t0);
         assert_eq!(s.thumb_ms(t0), Some(6_005));
         assert!(!s.expired(t0 + sec(5)));
         // Hovering at 5 s pauses with 1 s left, for as long as it lasts.
@@ -549,9 +887,9 @@ mod tests {
         );
         let (mut s, _, _) = snapper(vec![]);
         let t0 = Instant::now();
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         drag(&mut s, (0, 0), (6, 4));
-        s.finish(t0);
+        finish(&mut s, t0);
         island.show_snap(&tokens);
         assert_eq!(island.state(), IslandState::SnapThumb);
         // What app.rs does when the one-shot timer fires.
@@ -567,14 +905,14 @@ mod tests {
     #[test]
     fn a_new_snap_replaces_the_last_shot() {
         let (mut s, puts, _) = snapper(vec![]);
-        s.begin(DESK, (0, 0)).unwrap();
+        begin(&mut s, DESK);
         drag(&mut s, (0, 0), (6, 4));
-        s.finish(Instant::now());
-        s.begin(DESK, (0, 0)).unwrap();
+        finish(&mut s, Instant::now());
+        begin(&mut s, DESK);
         // While the overlay is up, the old shot is still there for its thumb.
         assert!(s.shot().is_some());
         drag(&mut s, (0, 0), (9, 9));
-        s.finish(Instant::now());
+        finish(&mut s, Instant::now());
         let b = &s.shot().unwrap().bitmap;
         assert_eq!((b.width, b.height), (9, 9));
         assert_eq!(puts.borrow().len(), 2);
