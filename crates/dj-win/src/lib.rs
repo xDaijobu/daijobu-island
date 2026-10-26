@@ -1,11 +1,13 @@
 //! Win32 plumbing for Daijobu Island: the overlay window, message loop, tray,
 //! hotkeys, DPI, autostart, single instance, theme-directory watching, the
-//! default-device volume, the volume-key hook and in-memory sound playback.
+//! default-device volume, the volume-key hook, in-memory sound playback and the Snap
+//! overlay window.
 
 #[cfg(not(windows))]
 compile_error!("dj-win only supports Windows");
 
 pub mod hook;
+pub mod overlay;
 pub mod sound;
 pub mod system;
 pub mod tray;

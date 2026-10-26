@@ -126,12 +126,14 @@ dependencies = [
 name = "daijobu"
 version = "0.1.0"
 dependencies = [
+ "dj-capture",
  "dj-core",
  "dj-music",
  "dj-render",
  "dj-sweep",
  "dj-vitals",
  "dj-win",
+ "tempfile",
 ]
 
 [[package]]
@@ -142,6 +144,14 @@ checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
 dependencies = [
  "pem-rfc7468",
  "zeroize",
+]
+
+[[package]]
+name = "dj-capture"
+version = "0.1.0"
+dependencies = [
+ "dj-core",
+ "windows",
 ]
 
 [[package]]

@@ -20,7 +20,9 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 4 | **Vitals (compact)** | ✅ merged (PR #4), live test pending | — | Haiku started, Opus 5.5 finished · lock-icon fix by the coordinator after the first live run |
 | 5 | **Vitals + Sweep**: Sweep merged into the Vitals panel (diagnose → clean), full vitals (disk I/O, top processes) | ✅ | PR #6 + `stage-5-safety-fixes` | Opus 5.5 (4 agents: sweep, wiring, render, safety review) · fixes and live test by the coordinator · [`stage-5-report.md`](stage-5-report.md) |
 | 6 | **Timer / Pomodoro**: focus/break cycles, chime alert, mini timer on Music compact | ✅ | `stage-6-timer` | Opus 5.5 agent (headless) · live test by the coordinator · [`stage-6-report.md`](stage-6-report.md) |
-| 7 | Snap + Snap stack | 🔒 | — | |
+| 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
+| 7b | Snap: annotations, pin, OCR | 🔒 | — | after 7a |
+| 7c | Snap stack: floating previews, countdown, multi-select, OLE drag-out | 🔒 | — | after 7b |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -268,6 +270,60 @@ Headless: fmt, clippy and test only, `CARGO_BUILD_JOBS=2`. Don't run the exe and
 ### Log
 - 2026-10-26: stage defined with the user (Pomodoro, chime alert that waits for a click, mini timer on Music compact, panel presets + config).
 - 2026-10-26: built by one Opus 5.5 agent (234 tests). Coordinator re-verified fmt, clippy, test and release, then live-tested the panel, compact, pause, done inline, the alert, continue, the long break, reset, presets and idle CPU 0. Not verified live: chime audibility, the Music compact arc, sleep.
+
+---
+
+## Stage 7a: Snap core
+
+**Goal:** a Lightshot-style screenshot that never leaves the island's look. Press PrtSc, drag a region (or click a window), release, and paste. The image is already on the clipboard, and the island shows what you took.
+
+Snap is split into three stages: **7a** core (this one), **7b** annotations + pin + OCR, **7c** the Snap stack (floating previews, countdown, multi-select, OLE drag-out). The 7b/7c features stay out of this stage.
+
+### Scope
+- [x] **Unlock Snap** in the feature registry (5 of 12 ready). Clicking the tile starts a snap (the island collapses first, so it isn't in the shot).
+- [x] **Hotkey:** PrtSc (`VK_SNAPSHOT`, no modifiers) through `RegisterHotKey`. If registration fails (for example, Windows' "Use the Print screen key to open screen capture" setting holds it), fall back to **Ctrl+Shift+S**, and write the reason to the app log. `[snap] hotkey = "PrtSc"` in config accepts `"PrtSc"`, `"Ctrl+Shift+S"` or `"Ctrl+Alt+S"`.
+- [x] **`crates/dj-capture`** (Win32 + D3D11/DXGI; the only new crate):
+  - **Freeze:** capture every monitor once, before the overlay shows. DXGI Desktop Duplication per output, with GDI `BitBlt` from the screen DC as the fallback. The result is one BGRA frame per monitor, with its desktop rect and DPI.
+  - **Window rects** for snapping: `EnumWindows` → visible, not minimised, not cloaked (`DWMWA_CLOAKED`), not tool windows, not our own windows, with the size from `DWMWA_EXTENDED_FRAME_BOUNDS`. Z-ordered top to bottom.
+  - **PNG encode** through WIC (`IWICImagingFactory`, built into Windows; no new crates).
+  - **Clipboard:** `CF_DIB` (top-down converted to bottom-up, 32-bit) plus the registered `"PNG"` format, in one `OpenClipboard`/`EmptyClipboard` session.
+  - All `unsafe` stays in this crate (and existing platform crates), each block with a `// SAFETY:` comment.
+- [x] **`dj-core::snap`** (pure, tested): selection geometry in physical desktop px, which can be negative on left or top monitors.
+  - drag in any direction, normalised to a rect
+  - a click with no drag selects the window under the cursor (topmost hit from the rect list)
+  - arrow keys nudge the selection by 1 px (Shift: 10 px)
+  - clamping to the virtual desktop
+  - a minimum size of 2×2 (anything smaller cancels)
+  - loupe sampling: a 15×15 px grid around the cursor, clamped at the edges
+  - the size label and hex colour text
+  - the file name `snap-YYYY-MM-DD_HHMMSS.png`, with `-2`, `-3`… when the name is taken
+- [x] **Overlay window:** a separate topmost `WS_POPUP` covering the whole virtual desktop, drawn with Skia on the existing DComp/D3D12 path. It shows the frozen frame, dims (about 55%) outside the selection, a dashed selection outline, the size label, and the loupe (8× magnified, pixelated, with a crosshair and `#E0A458 · 812,344`). Hovering highlights the window under the cursor before any drag. Esc or a right click cancels. The cursor is a crosshair. It renders only on input (no idle loop). It's created when the snap starts and destroyed after it, so the swap-chain rule for the island window is unaffected.
+- [x] **On release:** crop from the frozen frame (across monitors if the rect spans several). Copy it to the clipboard (PNG + CF_DIB), close the overlay, and show the **snap thumb** in the island.
+- [x] **Snap thumb** 330×72 (r 26, per the plan's size): a thumbnail (76×48, r 8, aspect-fit), `snap · 612×388`, `✓ copied`, and **copy** and **save** buttons. Activity priority sits right below the OSD (above timer done and media). It disappears after 6 s; hovering pauses the countdown. A click elsewhere on the thumb dismisses it. After it goes, the island returns to its rest state (Music/Timer compact or Idle).
+- [x] **Save:** PNG to `[snap] save_dir` (default `%USERPROFILE%\Pictures\Daijobu`, created if missing), and the thumb then shows `saved`. The save never overwrites (see the naming rule). Failures show `save failed` and are written to the app log.
+- [x] **Multi-monitor and DPI:** the overlay spans every monitor, the selection may cross them, and the output is in physical pixels (no scaling).
+- [x] **Idle CPU ≈ 0:** nothing is captured or kept in memory outside a snap. The frozen frames are freed when the overlay closes; only the last crop is kept, for the thumb's copy/save, until the thumb goes.
+- [x] Tests:
+  - selection geometry (directions, click-to-window with z-order, nudge, clamps, negative coordinates, the minimum size)
+  - loupe sampling at the edges
+  - hex and size text
+  - file naming and collisions
+  - config parsing
+  - the snap-thumb priority and timeout in the island
+  - DIB conversion (row order, stride)
+  - a WIC PNG encode→decode round trip on a synthetic bitmap (no screen capture in tests)
+
+  `build --release`, `clippy -D warnings` and `test` pass.
+
+### Acceptance
+Press PrtSc. The screen freezes under a dimmed overlay, the loupe follows the cursor with coordinates and hex, and hovering a window outlines it. Drag a region and release: paste into Paint or a chat and the exact pixels appear. The island shows the snap thumb with the size and `✓ copied`; **save** writes a PNG to `Pictures\Daijobu`. Esc cancels without touching the clipboard. Idle CPU is about 0 between snaps.
+
+### Rules for the agent
+**Headless:** fmt, clippy and test only, `CARGO_BUILD_JOBS` from the env script. Don't run the exe, don't capture the real screen, and don't touch the real clipboard in tests (put the clipboard behind a trait, or test only the byte conversion). The coordinator does the live test.
+
+### Log
+- 2026-10-26: Snap split into 7a/7b/7c with the user. 7a defined: PrtSc with a Ctrl+Shift+S fallback, auto-copy on release plus the island thumb, save to `Pictures\Daijobu` without a dialog.
+- 2026-10-26: built by one Opus 5.5 agent (284 tests, new crate `dj-capture`). The coordinator re-verified fmt, clippy, test and release. Live test with the user passed (freeze, loupe, window snap, auto-copy PNG + DIB, save, window click). Added at the user's request: after save, the button reads **open** and reveals the file in Explorer.
 
 ---
 

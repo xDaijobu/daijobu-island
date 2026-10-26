@@ -16,3 +16,7 @@ dj-sweep = { path = "../crates/dj-sweep" }
 dj-vitals = { path = "../crates/dj-vitals" }
 dj-win = { path = "../crates/dj-win" }
 dj-music = { path = "../crates/dj-music" }
+dj-capture = { path = "../crates/dj-capture" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

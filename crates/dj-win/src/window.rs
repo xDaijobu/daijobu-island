@@ -16,7 +16,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, ReleaseCapture, SetCapture, TrackMouseEvent, UnregisterHotKey,
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, TME_LEAVE, TRACKMOUSEEVENT,
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -84,6 +84,8 @@ pub enum Event {
     VitalsReady,
     /// The sweep worker queued results.
     SweepReady,
+    /// Input on the Snap overlay window (see [`crate::overlay`]).
+    Snap(crate::overlay::SnapInput),
 }
 
 pub trait Handler {
@@ -266,9 +268,22 @@ pub fn quit() {
 }
 
 pub const MOD_CTRL_ALT: u32 = MOD_CONTROL.0 | MOD_ALT.0;
+pub const MOD_CTRL_SHIFT: u32 = MOD_CONTROL.0 | MOD_SHIFT.0;
+/// No modifiers (PrtSc on its own).
+pub const MOD_NONE: u32 = 0;
 
 /// Registers a global hotkey. Returns false if another app already owns it.
 pub fn register_hotkey(hwnd: HWND, id: i32, modifiers: u32, vk: u32) -> bool {
+    try_register_hotkey(hwnd, id, modifiers, vk).is_ok()
+}
+
+/// Like [`register_hotkey`], with the reason it failed (for the log).
+pub fn try_register_hotkey(
+    hwnd: HWND,
+    id: i32,
+    modifiers: u32,
+    vk: u32,
+) -> std::result::Result<(), String> {
     // SAFETY: valid window handle.
     unsafe {
         RegisterHotKey(
@@ -277,8 +292,8 @@ pub fn register_hotkey(hwnd: HWND, id: i32, modifiers: u32, vk: u32) -> bool {
             HOT_KEY_MODIFIERS(modifiers) | MOD_NOREPEAT,
             vk,
         )
-        .is_ok()
     }
+    .map_err(|e| e.message())
 }
 
 pub fn unregister_hotkey(hwnd: HWND, id: i32) {

@@ -15,6 +15,7 @@ pub struct Config {
     pub vitals: VitalsConfig,
     pub sweep: SweepConfig,
     pub timer: TimerConfig,
+    pub snap: SnapConfig,
 }
 
 /// `[music]` section. The YouTube Music profile itself lives in `~/.daijobu/ytmusic/`.
@@ -136,6 +137,104 @@ impl TimerConfig {
     }
 }
 
+/// A Snap hotkey the config can name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapHotkey {
+    /// PrtSc, no modifiers.
+    PrtSc,
+    CtrlShiftS,
+    CtrlAltS,
+}
+
+impl SnapHotkey {
+    /// The fallback when the configured key can't be registered.
+    pub const FALLBACK: SnapHotkey = SnapHotkey::CtrlShiftS;
+
+    /// Reads `"PrtSc"`, `"Ctrl+Shift+S"` or `"Ctrl+Alt+S"`. Case, spaces and the order of
+    /// the modifiers don't matter. Anything else is None.
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut parts: Vec<String> = s
+            .split('+')
+            .map(|p| p.trim().to_ascii_lowercase())
+            .collect();
+        let key = parts.pop()?;
+        parts.sort();
+        match (parts.as_slice(), key.as_str()) {
+            ([], "prtsc" | "printscreen" | "print") => Some(Self::PrtSc),
+            ([a, b], "s") if a == "ctrl" && b == "shift" => Some(Self::CtrlShiftS),
+            ([a, b], "s") if a == "alt" && b == "ctrl" => Some(Self::CtrlAltS),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PrtSc => "PrtSc",
+            Self::CtrlShiftS => "Ctrl+Shift+S",
+            Self::CtrlAltS => "Ctrl+Alt+S",
+        }
+    }
+
+    /// The keys to try, in order: this one, then the fallback.
+    pub fn candidates(self) -> Vec<SnapHotkey> {
+        if self == Self::FALLBACK {
+            vec![self]
+        } else {
+            vec![self, Self::FALLBACK]
+        }
+    }
+}
+
+/// `[snap]` section.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapConfig {
+    /// `"PrtSc"`, `"Ctrl+Shift+S"` or `"Ctrl+Alt+S"`. Anything else means PrtSc.
+    pub hotkey: String,
+    /// Where **save** writes. A leading `~` is the user profile; a relative or blank
+    /// path falls back to the default.
+    pub save_dir: String,
+}
+
+/// The default `[snap] save_dir`.
+pub const SNAP_SAVE_DIR: &str = "~/Pictures/Daijobu";
+
+impl Default for SnapConfig {
+    fn default() -> Self {
+        Self {
+            hotkey: SnapHotkey::PrtSc.label().to_string(),
+            save_dir: SNAP_SAVE_DIR.to_string(),
+        }
+    }
+}
+
+impl SnapConfig {
+    pub fn hotkey(&self) -> SnapHotkey {
+        SnapHotkey::parse(&self.hotkey).unwrap_or(SnapHotkey::PrtSc)
+    }
+
+    /// The save folder: `~` becomes `profile`, and a relative or blank path (or `~`
+    /// without a profile) gives `profile\Pictures\Daijobu`. Pure; nothing is created.
+    pub fn save_dir(&self, profile: &Path) -> PathBuf {
+        let default = profile.join("Pictures").join("Daijobu");
+        let expand = |s: &str| -> PathBuf {
+            if s == "~" {
+                profile.to_path_buf()
+            } else if let Some(rest) = s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\")) {
+                profile.join(rest)
+            } else {
+                PathBuf::from(s)
+            }
+        };
+        let p = expand(self.save_dir.trim());
+        if p.is_absolute() {
+            p
+        } else {
+            default
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -146,6 +245,7 @@ impl Default for Config {
             vitals: VitalsConfig::default(),
             sweep: SweepConfig::default(),
             timer: TimerConfig::default(),
+            snap: SnapConfig::default(),
         }
     }
 }
@@ -196,6 +296,10 @@ mod tests {
                 focus_min: 50,
                 chime: false,
                 ..TimerConfig::default()
+            },
+            snap: SnapConfig {
+                hotkey: "Ctrl+Shift+S".into(),
+                save_dir: "D:/shots".into(),
             },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);
@@ -279,6 +383,87 @@ mod tests {
         assert_eq!(edge.timer.settings(), Settings::minutes(180, 1, 15, 4));
         let top = Config::parse("[timer]\nevery = 12\n");
         assert_eq!(top.timer.settings().every, 12);
+    }
+
+    #[test]
+    fn snap_defaults_and_reads_the_snap_table() {
+        let d = Config::parse("theme = \"x\"").snap;
+        assert_eq!(d, SnapConfig::default());
+        assert_eq!(d.hotkey(), SnapHotkey::PrtSc);
+        assert_eq!(d.save_dir, "~/Pictures/Daijobu");
+        let c = Config::parse(
+            "theme = \"paper-zine\"\n[snap]\nhotkey = \"Ctrl+Alt+S\"\nsave_dir = \"D:/shots\"\n",
+        );
+        assert_eq!(c.snap.hotkey(), SnapHotkey::CtrlAltS);
+        assert_eq!(
+            c.snap.save_dir(Path::new("C:/Users/me")),
+            Path::new("D:/shots")
+        );
+        assert_eq!(c.theme, "paper-zine");
+        assert_eq!(Config::parse(&c.to_toml()), c);
+    }
+
+    #[test]
+    fn snap_hotkey_names() {
+        for (s, want) in [
+            ("PrtSc", Some(SnapHotkey::PrtSc)),
+            ("prtsc", Some(SnapHotkey::PrtSc)),
+            ("Ctrl+Shift+S", Some(SnapHotkey::CtrlShiftS)),
+            ("shift + ctrl + s", Some(SnapHotkey::CtrlShiftS)),
+            ("Ctrl+Alt+S", Some(SnapHotkey::CtrlAltS)),
+            ("Alt+Ctrl+s", Some(SnapHotkey::CtrlAltS)),
+            ("Ctrl+S", None),
+            ("Ctrl+Shift+X", None),
+            ("Win+Shift+S", None),
+            ("", None),
+        ] {
+            assert_eq!(SnapHotkey::parse(s), want, "{s:?}");
+        }
+        // An unknown name means PrtSc, and the rest of the file still reads.
+        let c = Config::parse("[snap]\nhotkey = \"F13\"\n[timer]\nfocus_min = 50\n");
+        assert_eq!(c.snap.hotkey(), SnapHotkey::PrtSc);
+        assert_eq!(c.timer.focus_min, 50);
+        for k in [
+            SnapHotkey::PrtSc,
+            SnapHotkey::CtrlShiftS,
+            SnapHotkey::CtrlAltS,
+        ] {
+            assert_eq!(SnapHotkey::parse(k.label()), Some(k));
+        }
+    }
+
+    #[test]
+    fn snap_hotkey_falls_back_to_ctrl_shift_s() {
+        use SnapHotkey::*;
+        assert_eq!(PrtSc.candidates(), [PrtSc, CtrlShiftS]);
+        assert_eq!(CtrlAltS.candidates(), [CtrlAltS, CtrlShiftS]);
+        assert_eq!(CtrlShiftS.candidates(), [CtrlShiftS]);
+    }
+
+    #[test]
+    fn snap_save_dir_expands_the_profile_and_falls_back() {
+        let p = Path::new("C:/Users/me");
+        let dir = |s: &str| {
+            SnapConfig {
+                save_dir: s.into(),
+                ..SnapConfig::default()
+            }
+            .save_dir(p)
+        };
+        let default = p.join("Pictures").join("Daijobu");
+        assert_eq!(dir("~/Pictures/Daijobu"), default);
+        assert_eq!(dir(r"~\Shots"), p.join("Shots"));
+        assert_eq!(dir("~"), p.to_path_buf());
+        assert_eq!(dir("E:/snaps"), PathBuf::from("E:/snaps"));
+        for relative in ["", "  ", "shots", r"..\up", "C:no-slash", r"\no-drive"] {
+            assert_eq!(dir(relative), default, "{relative:?}");
+        }
+        // No profile: `~` paths are relative, so they fall back too (to a relative
+        // default, which the app never gets: it always has USERPROFILE).
+        assert_eq!(
+            SnapConfig::default().save_dir(Path::new("")),
+            Path::new("Pictures").join("Daijobu")
+        );
     }
 
     #[test]

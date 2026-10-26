@@ -133,6 +133,20 @@ pub fn open_url(url: &str) -> bool {
     r.0 as isize > 32
 }
 
+/// Local wall-clock date and time: `(year, month, day, hour, minute, second)`.
+pub fn local_datetime() -> (u16, u8, u8, u8, u8, u8) {
+    // SAFETY: no pointers involved.
+    let t = unsafe { GetLocalTime() };
+    (
+        t.wYear,
+        t.wMonth as u8,
+        t.wDay as u8,
+        t.wHour as u8,
+        t.wMinute as u8,
+        t.wSecond as u8,
+    )
+}
+
 pub fn local_time() -> (u32, u32, u32) {
     // SAFETY: no pointers involved.
     let t = unsafe { GetLocalTime() };
@@ -263,5 +277,12 @@ mod tests {
     fn local_time_is_sane() {
         let (h, m, s) = local_time();
         assert!(h < 24 && m < 60 && s < 61);
+    }
+
+    #[test]
+    fn local_datetime_is_sane() {
+        let (y, mo, d, h, mi, s) = local_datetime();
+        assert!(y >= 2024 && (1..=12).contains(&mo) && (1..=31).contains(&d));
+        assert!(h < 24 && mi < 60 && s < 61);
     }
 }

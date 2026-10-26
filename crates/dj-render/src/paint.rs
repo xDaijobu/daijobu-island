@@ -5,6 +5,7 @@
 use crate::fonts::{Fonts, Weight};
 use crate::fx::Effects;
 use crate::icons::{draw_icon, draw_lock, draw_volume_icon};
+use crate::snap::SnapFrame;
 use crate::vitals::{format_rate, ring_sweep, spark_points};
 use dj_core::color::Rgb;
 use dj_core::features::{Availability, Icon, FEATURES};
@@ -43,6 +44,8 @@ pub struct Frame<'a> {
     pub estimate: Estimate,
     /// The Pomodoro, for the Timer views and the arc on Music compact.
     pub timer: &'a TimerView,
+    /// The snap thumb's size and status. The app keeps it until the thumb has faded out.
+    pub snap: Option<SnapFrame>,
 }
 
 /// What the Music views draw. Built by the app from the Music session.
@@ -65,6 +68,8 @@ pub struct Painter {
     pub(crate) fx: Effects,
     /// Cover art, decoded and downscaled by `set_art`.
     pub(crate) art: Option<Image>,
+    /// The snap thumb's small copy of the last shot (`set_snap_shot`).
+    pub(crate) snap_shot: Option<Image>,
 }
 
 pub(crate) fn col(c: Rgb, alpha: f32) -> Color {
@@ -141,6 +146,7 @@ impl Painter {
             fonts: Fonts::new()?,
             fx: Effects::new()?,
             art: None,
+            snap_shot: None,
         })
     }
 
@@ -193,6 +199,7 @@ impl Painter {
         let timer_op = smoothstep(0.35, 1.0, lay.timer) * not_osd;
         let timer_compact_op = smoothstep(0.35, 1.0, lay.timer_compact) * not_osd;
         let alert_op = smoothstep(0.35, 1.0, lay.alert) * not_osd;
+        let snap_op = smoothstep(0.35, 1.0, lay.snap) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -237,6 +244,11 @@ impl Painter {
         if alert_op > 0.01 {
             begin_layer(canvas, &rect, alert_op, center, s);
             self.timer_alert(canvas, f, &rect);
+            canvas.restore();
+        }
+        if snap_op > 0.01 {
+            begin_layer(canvas, &rect, snap_op, center, s);
+            self.snap_thumb(canvas, f, &rect);
             canvas.restore();
         }
         if osd_a > 0.01 {

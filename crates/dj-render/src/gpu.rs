@@ -2,8 +2,12 @@
 //!
 //! The swap chain is created once at the largest state's size; the pill animates
 //! inside it, so there is never a `ResizeBuffers`. A DPI change rebuilds everything.
+//! The Snap overlay (`snap::SnapOverlay`) builds its own device and chain with the same
+//! helpers, per snap.
 
 use crate::paint::{Frame, Painter};
+use dj_core::color::Rgb;
+use dj_core::snap::Bitmap;
 use skia_safe::gpu::{
     self, backend_render_targets,
     d3d::{BackendContext, TextureResourceInfo},
@@ -51,32 +55,25 @@ impl std::fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
-fn setup<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> RenderError {
+pub(crate) fn setup<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> RenderError {
     move |e| RenderError::Setup(format!("{what}: {e}"))
 }
 
-pub struct Renderer {
-    // Field order is drop order: Skia objects must go before the D3D objects they use.
-    surfaces: Vec<Surface>,
-    painter: Painter,
-    ctx: gpu::DirectContext,
-    swap_chain: IDXGISwapChain3,
-    _visual: IDCompositionVisual2,
-    _target: IDCompositionTarget,
-    _dcomp: IDCompositionDesktopDevice,
-    _queue: ID3D12CommandQueue,
+/// A D3D12 device, its direct queue and a Skia context on it. The context is the first
+/// field, so it drops first.
+pub(crate) struct Gpu {
+    pub ctx: gpu::DirectContext,
+    pub queue: ID3D12CommandQueue,
+    /// Kept alive for the queue and the context.
     _device: ID3D12Device,
-    width: u32,
-    height: u32,
+    pub factory: IDXGIFactory4,
 }
 
-impl Renderer {
-    /// `width`/`height` are the window's client size in device pixels.
-    pub fn new(hwnd: isize, width: u32, height: u32) -> Result<Self, RenderError> {
-        let hwnd = HWND(hwnd as *mut _);
-        // SAFETY: plain COM creation calls; every out-parameter and descriptor
-        // lives for the duration of its call and all interfaces are ref-counted
-        // by the `windows` crate.
+impl Gpu {
+    pub fn new() -> Result<Self, RenderError> {
+        // SAFETY: plain COM creation calls; every out-parameter and descriptor lives for
+        // the duration of its call and all interfaces are ref-counted by the `windows`
+        // crate.
         unsafe {
             let factory: IDXGIFactory4 = CreateDXGIFactory1().map_err(setup("DXGI factory"))?;
             let (adapter, device) = pick_adapter(&factory)?;
@@ -86,7 +83,6 @@ impl Renderer {
                     ..Default::default()
                 })
                 .map_err(setup("command queue"))?;
-
             let backend = BackendContext {
                 adapter,
                 device: device.clone(),
@@ -94,12 +90,39 @@ impl Renderer {
                 memory_allocator: None,
                 protected_context: Protected::No,
             };
-            let mut ctx = gpu::direct_contexts::make_d3d(&backend, None)
+            let ctx = gpu::direct_contexts::make_d3d(&backend, None)
                 .ok_or_else(|| RenderError::Setup("Skia D3D context".into()))?;
+            Ok(Self {
+                ctx,
+                queue,
+                _device: device,
+                factory,
+            })
+        }
+    }
+}
 
-            let swap_chain: IDXGISwapChain3 = factory
+/// A composition swap chain on a window, its DirectComposition tree, and a Skia surface
+/// per buffer. The surfaces must go before the context they were made with: owners
+/// clear `surfaces` (and sync the GPU) in their `Drop` before any field drops.
+pub(crate) struct Chain {
+    pub surfaces: Vec<Surface>,
+    pub swap_chain: IDXGISwapChain3,
+    _visual: IDCompositionVisual2,
+    _target: IDCompositionTarget,
+    _dcomp: IDCompositionDesktopDevice,
+}
+
+impl Chain {
+    /// `width`/`height` are the window's client size in device pixels.
+    pub fn new(gpu: &mut Gpu, hwnd: isize, width: u32, height: u32) -> Result<Self, RenderError> {
+        let hwnd = HWND(hwnd as *mut _);
+        // SAFETY: as in `Gpu::new`; the window handle belongs to this thread.
+        unsafe {
+            let swap_chain: IDXGISwapChain3 = gpu
+                .factory
                 .CreateSwapChainForComposition(
-                    &queue,
+                    &gpu.queue,
                     &DXGI_SWAP_CHAIN_DESC1 {
                         Width: width,
                         Height: height,
@@ -154,7 +177,7 @@ impl Renderer {
                     },
                 );
                 let surface = surfaces::wrap_backend_render_target(
-                    &mut ctx,
+                    &mut gpu.ctx,
                     &target,
                     SurfaceOrigin::TopLeft,
                     ColorType::BGRA8888,
@@ -164,53 +187,32 @@ impl Renderer {
                 .ok_or_else(|| RenderError::Setup("wrap swap chain buffer".into()))?;
                 surfaces.push(surface);
             }
-
-            let painter = Painter::new().map_err(RenderError::Setup)?;
             Ok(Self {
                 surfaces,
-                painter,
-                ctx,
                 swap_chain,
                 _visual: visual,
                 _target: target,
                 _dcomp: dcomp,
-                _queue: queue,
-                _device: device,
-                width,
-                height,
             })
         }
     }
 
-    pub fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    /// Decodes cover art for the Music views. Returns the cover's average colour.
-    pub fn set_art(&mut self, encoded: &[u8]) -> Option<dj_core::color::Rgb> {
-        self.painter.set_art(encoded)
-    }
-
-    pub fn clear_art(&mut self) {
-        self.painter.clear_art();
-    }
-
-    /// Draws one frame and presents it (`Present(1)` paces animation to vsync).
-    pub fn render(&mut self, frame: &Frame) -> Result<(), RenderError> {
+    /// The surface to draw the next frame on.
+    pub fn back_buffer(&mut self) -> &mut Surface {
         // SAFETY: the swap chain is alive for `self`'s lifetime.
         let index = unsafe { self.swap_chain.GetCurrentBackBufferIndex() } as usize;
-        let surface = &mut self.surfaces[index];
-        let canvas = surface.canvas();
-        canvas.clear(Color::TRANSPARENT);
-        self.painter.paint(canvas, frame);
+        &mut self.surfaces[index]
+    }
 
-        self.ctx.flush_surface_with_access(
+    /// Flushes the back buffer and presents it (`Present(1)`: paced to vsync).
+    pub fn present(&mut self, ctx: &mut gpu::DirectContext) -> Result<(), RenderError> {
+        let surface = self.back_buffer();
+        ctx.flush_surface_with_access(
             surface,
             skia_safe::surface::BackendSurfaceAccess::Present,
             &FlushInfo::default(),
         );
-        self.ctx.submit(gpu::SubmitInfo::default());
-
+        ctx.submit(gpu::SubmitInfo::default());
         // SAFETY: as above.
         let hr = unsafe { self.swap_chain.Present(1, DXGI_PRESENT(0)) };
         if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
@@ -223,12 +225,73 @@ impl Renderer {
     }
 }
 
+pub struct Renderer {
+    // Field order is drop order: Skia objects go before the D3D objects they use, and
+    // `Drop` clears the chain's surfaces before any of them.
+    painter: Painter,
+    gpu: Gpu,
+    chain: Chain,
+    width: u32,
+    height: u32,
+}
+
+impl Renderer {
+    /// `width`/`height` are the window's client size in device pixels.
+    pub fn new(hwnd: isize, width: u32, height: u32) -> Result<Self, RenderError> {
+        let mut gpu = Gpu::new()?;
+        let chain = Chain::new(&mut gpu, hwnd, width, height)?;
+        let painter = Painter::new().map_err(RenderError::Setup)?;
+        Ok(Self {
+            painter,
+            gpu,
+            chain,
+            width,
+            height,
+        })
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Decodes cover art for the Music views. Returns the cover's average colour.
+    pub fn set_art(&mut self, encoded: &[u8]) -> Option<Rgb> {
+        self.painter.set_art(encoded)
+    }
+
+    pub fn clear_art(&mut self) {
+        self.painter.clear_art();
+    }
+
+    /// Makes the snap thumb's small copy of a shot, once. False if Skia refused it.
+    pub fn set_snap_shot(&mut self, shot: &Bitmap) -> bool {
+        self.painter.set_snap_shot(shot)
+    }
+
+    /// Drops the thumb's copy (after the thumb has faded out).
+    pub fn clear_snap_shot(&mut self) {
+        self.painter.clear_snap_shot();
+    }
+
+    pub fn has_snap_shot(&self) -> bool {
+        self.painter.snap_shot.is_some()
+    }
+
+    /// Draws one frame and presents it (`Present(1)` paces animation to vsync).
+    pub fn render(&mut self, frame: &Frame) -> Result<(), RenderError> {
+        let canvas = self.chain.back_buffer().canvas();
+        canvas.clear(Color::TRANSPARENT);
+        self.painter.paint(canvas, frame);
+        self.chain.present(&mut self.gpu.ctx)
+    }
+}
+
 impl Drop for Renderer {
     fn drop(&mut self) {
         // Wait for in-flight GPU work, then release the wrapped buffers before the
         // swap chain goes away.
-        self.surfaces.clear();
-        self.ctx.flush_submit_and_sync_cpu();
+        self.chain.surfaces.clear();
+        self.gpu.ctx.flush_submit_and_sync_cpu();
     }
 }
 

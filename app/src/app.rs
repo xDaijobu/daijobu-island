@@ -2,23 +2,29 @@
 //! Win32 events.
 
 use crate::chime::SystemChime;
+use crate::snap::{
+    self as snapper, Snapper, SystemClipboard, SystemScreen, HOTKEY_SNAP, HOTKEY_SNAP_ESC,
+    START_DELAY_MS, TIMER_SNAP_START, TIMER_SNAP_THUMB, VK_ESCAPE,
+};
 use crate::storage;
 use crate::sweep::{Job, Msg, ScanId, Sweeper};
 use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
-use dj_core::config::Config;
+use dj_core::config::{Config, SnapHotkey};
 use dj_core::features::FEATURES;
-use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, TimerAction};
+use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, SnapAction, TimerAction};
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
+use dj_core::snap::{loupe_label, pixel_at, size_label, IRect, Loupe, Stamp};
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
-use dj_render::{Frame, MusicFrame, RenderError, Renderer};
+use dj_render::{Frame, MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene};
+use dj_win::overlay::{self, SnapInput};
 use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
 use dj_win::{hook, system, volume, window, Event, Handler, HICON, HWND};
 use std::path::PathBuf;
@@ -47,7 +53,19 @@ const FIRST_DT: f32 = 1.0 / 120.0;
 const MAX_DT: f32 = 0.05;
 const REGION_PAD: i32 = 2;
 
-type IRect = (i32, i32, i32, i32);
+/// Device-px edges `(left, top, right, bottom)` of the pill in the window.
+type Edges = (i32, i32, i32, i32);
+
+/// The Snap overlay while a snap is in progress: its window and its renderer.
+struct Overlay {
+    hwnd: HWND,
+    /// Dropped before the window is destroyed.
+    renderer: Option<SnapOverlay>,
+    /// The window's desktop origin (the virtual screen's top-left; can be negative).
+    origin: (i32, i32),
+    /// Input changed what it shows: draw one frame.
+    dirty: bool,
+}
 
 pub struct App {
     hwnd: HWND,
@@ -64,7 +82,7 @@ pub struct App {
     dirty: bool,
     started: Instant,
     last_frame: Option<Instant>,
-    last_rect: Option<IRect>,
+    last_rect: Option<Edges>,
     icon: Option<HICON>,
     exe: PathBuf,
     /// The default render endpoint. None if the audio stack is unavailable.
@@ -99,6 +117,17 @@ pub struct App {
     deadline_armed: Option<Instant>,
     /// The one-shot `TIMER_DIGITS` redraw is armed.
     digits_armed: bool,
+    /// Snap: the frozen frames while the overlay is up, then the last shot while its
+    /// thumb is.
+    snapper: Snapper,
+    overlay: Option<Overlay>,
+    /// A snap waits for the island to finish collapsing, and `TIMER_SNAP_START` is armed.
+    snap_pending: bool,
+    snap_start_armed: bool,
+    /// The one-shot `TIMER_SNAP_THUMB` is armed.
+    thumb_armed: bool,
+    /// What the thumb shows. Kept after the shot goes, until the thumb has faded out.
+    snap_frame: Option<SnapFrame>,
 }
 
 impl App {
@@ -172,6 +201,17 @@ impl App {
             timer,
             deadline_armed: None,
             digits_armed: false,
+            snapper: Snapper::new(
+                Box::new(SystemScreen),
+                Box::new(SystemClipboard {
+                    owner: hwnd.0 as isize,
+                }),
+            ),
+            overlay: None,
+            snap_pending: false,
+            snap_start_armed: false,
+            thumb_armed: false,
+            snap_frame: None,
         };
         app.relayout();
         app.install_shell_integration();
@@ -197,6 +237,7 @@ impl App {
         if !window::register_hotkey(self.hwnd, HOTKEY_THEME, window::MOD_CTRL_ALT, VK_T) {
             storage::log("Ctrl+Alt+T is already taken by another app");
         }
+        self.register_snap_hotkey();
         system::install_topmost_hook(self.hwnd);
         system::watch_dir(self.hwnd, &storage::themes_dir());
         self.install_volume();
@@ -493,6 +534,344 @@ impl App {
         }
     }
 
+    // ---- Snap ----
+
+    /// Registers `[snap] hotkey`, falling back to Ctrl+Shift+S. Every failure and its
+    /// reason goes to the log.
+    fn register_snap_hotkey(&mut self) {
+        let raw = self.config.snap.hotkey.clone();
+        if SnapHotkey::parse(&raw).is_none() {
+            storage::log(&format!("snap: unknown hotkey {raw:?}, using PrtSc"));
+        }
+        let want = self.config.snap.hotkey();
+        let mut reasons = Vec::new();
+        for key in want.candidates() {
+            let (mods, vk) = snapper::hotkey_keys(key);
+            match window::try_register_hotkey(self.hwnd, HOTKEY_SNAP, mods, vk) {
+                Ok(()) => {
+                    if key != want {
+                        storage::log(&format!(
+                            "snap: {} is not available ({}), using {}",
+                            want.label(),
+                            reasons.join("; "),
+                            key.label()
+                        ));
+                    }
+                    return;
+                }
+                Err(e) => {
+                    let hint = if key == SnapHotkey::PrtSc {
+                        " (Windows' \"Use the Print screen key to open screen capture\" \
+                         setting may hold it)"
+                    } else {
+                        ""
+                    };
+                    reasons.push(format!("{}: {}{hint}", key.label(), e.trim()));
+                }
+            }
+        }
+        storage::log(&format!(
+            "snap: no hotkey registered ({})",
+            reasons.join("; ")
+        ));
+    }
+
+    /// PrtSc or the Home tile. Any open panel collapses first (so it isn't in the
+    /// shot) and the freeze waits until the island is still; a resting island is
+    /// frozen at once. A thumb that is still up goes first.
+    fn request_snap(&mut self) {
+        if self.overlay.is_some() || self.snap_pending {
+            return;
+        }
+        let tokens = self.anim.current().clone();
+        let before = self.island.state();
+        if self.island.snap_shown() {
+            self.snapper.dismiss();
+            self.island.hide_snap(&tokens);
+        }
+        self.island.collapse(&tokens);
+        // Only a state change (a panel or an old thumb going) is worth waiting for; a
+        // resting island is part of the screen like the taskbar.
+        if self.visible && self.island.state() != before {
+            self.snap_pending = true;
+            self.dirty = true;
+        } else {
+            self.begin_snap();
+        }
+    }
+
+    /// Freezes the screen and puts the overlay up over the whole virtual desktop.
+    fn begin_snap(&mut self) {
+        self.snap_pending = false;
+        if self.overlay.is_some() {
+            return;
+        }
+        let (vx, vy, vw, vh) = overlay::virtual_screen();
+        if vw <= 0 || vh <= 0 {
+            storage::log("snap: no virtual screen");
+            return;
+        }
+        let desktop = IRect::new(vx, vy, vw, vh);
+        let frames = match self.snapper.begin(desktop, overlay::cursor_pos()) {
+            Ok(session) => &session.frames,
+            Err(e) => {
+                storage::log(&format!("snap: cannot capture the screen: {e}"));
+                return;
+            }
+        };
+        let hwnd = match overlay::create(vx, vy, vw, vh) {
+            Ok(h) => h,
+            Err(e) => {
+                storage::log(&format!("snap: cannot create the overlay: {e}"));
+                self.snapper.cancel();
+                return;
+            }
+        };
+        let renderer =
+            match SnapOverlay::new(hwnd.0 as isize, (vx, vy), vw as u32, vh as u32, frames) {
+                Ok(r) => r,
+                Err(e) => {
+                    storage::log(&format!("snap: overlay renderer: {e}"));
+                    overlay::destroy(hwnd);
+                    self.snapper.cancel();
+                    return;
+                }
+            };
+        self.overlay = Some(Overlay {
+            hwnd,
+            renderer: Some(renderer),
+            origin: (vx, vy),
+            dirty: true,
+        });
+        // The island is topmost too and re-asserts it on every foreground change, so it
+        // hides while the overlay is up (`visible` is the user's choice and stays).
+        window::set_visible(self.hwnd, false);
+        // Esc works even if the overlay didn't get the keyboard.
+        if let Err(e) =
+            window::try_register_hotkey(self.hwnd, HOTKEY_SNAP_ESC, window::MOD_NONE, VK_ESCAPE)
+        {
+            storage::log(&format!("snap: Esc hotkey: {}", e.trim()));
+        }
+        // Draw the first frame before showing, so the live desktop never flashes through.
+        self.render_overlay();
+        if let Some(ov) = &self.overlay {
+            overlay::show(ov.hwnd);
+        }
+    }
+
+    /// Overlay input, in the overlay's client px.
+    fn snap_input(&mut self, input: SnapInput) {
+        let Some(origin) = self.overlay.as_ref().map(|o| o.origin) else {
+            return;
+        };
+        let Some(session) = self.snapper.session_mut() else {
+            return;
+        };
+        let sel = &mut session.selector;
+        let desk = |x: i32, y: i32| (x + origin.0, y + origin.1);
+        let changed = match input {
+            SnapInput::Press { x, y } => {
+                let (x, y) = desk(x, y);
+                sel.press(x, y);
+                true
+            }
+            SnapInput::Motion { x, y } => {
+                let (x, y) = desk(x, y);
+                sel.move_to(x, y)
+            }
+            SnapInput::Arrow { dx, dy, big } => {
+                let (x, y) = sel.nudge(dx, dy, big);
+                // The pointer follows, so the next mouse move agrees with the nudge.
+                overlay::set_cursor_pos(x, y);
+                true
+            }
+            // A release without a press on the overlay (the button was already down
+            // when it opened) is ignored.
+            SnapInput::Release { .. } if !sel.is_pressed() => false,
+            SnapInput::Release { x, y } => {
+                let (x, y) = desk(x, y);
+                sel.move_to(x, y);
+                self.end_snap(true);
+                return;
+            }
+            SnapInput::Cancel => {
+                self.end_snap(false);
+                return;
+            }
+        };
+        if changed {
+            if let Some(ov) = self.overlay.as_mut() {
+                ov.dirty = true;
+            }
+        }
+    }
+
+    /// Closes the overlay (its GPU side and the frozen frames go now). With `take`, the
+    /// selection is cropped and copied and the thumb shows; otherwise nothing is kept
+    /// and the clipboard is not touched.
+    fn end_snap(&mut self, take: bool) {
+        let Some(mut ov) = self.overlay.take() else {
+            return;
+        };
+        ov.renderer = None;
+        overlay::destroy(ov.hwnd);
+        window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ESC);
+        if self.visible {
+            window::set_visible(self.hwnd, true);
+        }
+        self.last_frame = None;
+        self.dirty = true;
+        if !take {
+            self.snapper.cancel();
+            return;
+        }
+        match self.snapper.finish(Instant::now()) {
+            // Smaller than 2 x 2: cancelled.
+            None => {}
+            Some(result) => {
+                if let Err(e) = result {
+                    storage::log(&format!("snap: copy failed: {e}"));
+                }
+                self.show_thumb();
+            }
+        }
+    }
+
+    /// The fresh shot goes into the island's thumb with a new countdown.
+    fn show_thumb(&mut self) {
+        if self.thumb_armed {
+            window::kill_timer(self.hwnd, TIMER_SNAP_THUMB);
+            self.thumb_armed = false;
+        }
+        self.restore_snap_shot();
+        self.update_snap_frame();
+        let tokens = self.anim.current().clone();
+        self.island.show_snap(&tokens);
+    }
+
+    /// Gives the renderer the thumb's copy of the shot (after a snap, or after the
+    /// renderer was rebuilt).
+    fn restore_snap_shot(&mut self) {
+        if let (Some(r), Some(shot)) = (self.renderer.as_mut(), self.snapper.shot()) {
+            if !r.set_snap_shot(&shot.bitmap) {
+                storage::log("snap: cannot make the thumbnail");
+            }
+        }
+    }
+
+    fn update_snap_frame(&mut self) {
+        if let Some(shot) = self.snapper.shot() {
+            self.snap_frame = Some(SnapFrame {
+                width: shot.bitmap.width,
+                height: shot.bitmap.height,
+                status: shot.status,
+                saved: shot.saved.is_some(),
+            });
+        }
+    }
+
+    /// Copy, save or dismiss from the thumb.
+    fn snap_action(&mut self, action: SnapAction) {
+        match action {
+            SnapAction::Copy => {
+                if let Err(e) = self.snapper.copy() {
+                    storage::log(&format!("snap: copy failed: {e}"));
+                }
+            }
+            // Once saved, the button reads "open": show the file in Explorer.
+            SnapAction::Save if self.snapper.shot().is_some_and(|s| s.saved.is_some()) => {
+                let path = self.snapper.shot().and_then(|s| s.saved.clone());
+                if let Some(path) = path {
+                    if let Err(e) = dj_sweep::Ops::reveal(&dj_sweep::WinOps, &path) {
+                        storage::log(&format!("snap: cannot open explorer: {e}"));
+                    }
+                }
+            }
+            SnapAction::Save => {
+                let profile = std::env::var_os("USERPROFILE")
+                    .map(PathBuf::from)
+                    .unwrap_or_default();
+                let dir = self.config.snap.save_dir(&profile);
+                let (year, month, day, hour, minute, second) = system::local_datetime();
+                let stamp = Stamp {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                };
+                if let Err(e) = self.snapper.save(&dir, stamp) {
+                    storage::log(&format!("snap: save failed: {e}"));
+                }
+            }
+            // The island has gone to its rest state already.
+            SnapAction::Dismiss => self.snapper.dismiss(),
+        }
+        self.update_snap_frame();
+        self.dirty = true;
+    }
+
+    /// Pauses the thumb's countdown while hovered and keeps its one-shot timer in step.
+    fn sync_snap(&mut self) {
+        let now = Instant::now();
+        self.snapper.set_hover(self.island.snap_hovered(), now);
+        match self.snapper.thumb_ms(now) {
+            Some(ms) if !self.thumb_armed => {
+                window::set_timer(self.hwnd, TIMER_SNAP_THUMB, ms);
+                self.thumb_armed = true;
+            }
+            None if self.thumb_armed => {
+                window::kill_timer(self.hwnd, TIMER_SNAP_THUMB);
+                self.thumb_armed = false;
+            }
+            _ => {}
+        }
+    }
+
+    /// Draws one overlay frame from the selection.
+    fn render_overlay(&mut self) {
+        let Some(ov) = self.overlay.as_mut() else {
+            return;
+        };
+        ov.dirty = false;
+        let Some(session) = self.snapper.session() else {
+            return;
+        };
+        let sel = &session.selector;
+        let cursor = sel.cursor();
+        let selection = sel.selection();
+        let hover = sel.hover();
+        let size = selection.or(hover).map(|r| size_label(r.w, r.h));
+        let text = loupe_label(pixel_at(&session.frames, cursor.0, cursor.1), cursor);
+        let (monitor, dpi) = session
+            .frames
+            .iter()
+            .find(|f| f.rect.contains(cursor.0, cursor.1))
+            .map_or((sel.desktop(), 96), |f| (f.rect, f.dpi));
+        let scene = SnapScene {
+            tokens: self.anim.current(),
+            cursor,
+            selection,
+            hover,
+            loupe: Loupe::at(cursor, sel.desktop()),
+            loupe_text: &text,
+            size_text: size.as_deref(),
+            monitor,
+            scale: dpi as f32 / 96.0,
+        };
+        let failed = match ov.renderer.as_mut().map(|r| r.render(&scene)) {
+            Some(Err(e)) => {
+                storage::log(&format!("snap: overlay render: {e}"));
+                true
+            }
+            _ => false,
+        };
+        if failed {
+            self.end_snap(false);
+        }
+    }
+
     // ---- Timer ----
 
     /// The timer's digits are on screen: Timer compact or panel, or Music compact with
@@ -578,6 +957,7 @@ impl App {
             self.win_px = (w, h);
             self.last_rect = None;
             self.renderer = self.create_renderer(w, h);
+            self.restore_snap_shot();
         }
         self.scale = scale;
         self.dirty = true;
@@ -632,7 +1012,13 @@ impl App {
 
     fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
-        window::set_visible(self.hwnd, visible);
+        // The island stays hidden while the Snap overlay is up; it comes back after.
+        window::set_visible(self.hwnd, visible && self.overlay.is_none());
+        if !visible && self.snap_pending && !self.snap_start_armed {
+            // Hidden mid-collapse: no frame will see it settle, so start now-ish.
+            window::set_timer(self.hwnd, TIMER_SNAP_START, START_DELAY_MS);
+            self.snap_start_armed = true;
+        }
         self.last_frame = None;
         self.dirty = visible;
         self.sync_vu_timer();
@@ -876,6 +1262,8 @@ impl App {
     }
 
     fn quit(&mut self) {
+        self.end_snap(false);
+        window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
         self.engine = None;
         hook::uninstall();
         self.mixer = None; // unregisters the audio callbacks
@@ -885,7 +1273,7 @@ impl App {
         window::quit();
     }
 
-    fn device_rect(&self) -> IRect {
+    fn device_rect(&self) -> Edges {
         let r = self.island.view().rect;
         let s = self.scale;
         (
@@ -896,7 +1284,7 @@ impl App {
         )
     }
 
-    fn set_region(&self, (l, t, r, b): IRect) {
+    fn set_region(&self, (l, t, r, b): Edges) {
         window::set_hit_region(
             self.hwnd,
             (l - REGION_PAD).max(0),
@@ -929,6 +1317,8 @@ impl Handler for App {
                     ClickOutcome::Open(i) if FEATURES[i].id == "timer" => {
                         self.island.open_timer(&tokens);
                     }
+                    ClickOutcome::Open(i) if FEATURES[i].id == "snap" => self.request_snap(),
+                    ClickOutcome::Snap(action) => self.snap_action(action),
                     ClickOutcome::Timer(action) => self.timer_action(action),
                     // A clean that is still running keeps its view; otherwise preview afresh.
                     ClickOutcome::OpenSweep if !self.cleaning => self.start_preview(),
@@ -989,10 +1379,18 @@ impl Handler for App {
             }
             Event::Hotkey(HOTKEY_TOGGLE) => self.set_visible(!self.visible),
             Event::Hotkey(HOTKEY_THEME) => self.cycle_theme(),
+            Event::Hotkey(HOTKEY_SNAP) => self.request_snap(),
+            Event::Hotkey(HOTKEY_SNAP_ESC) => self.end_snap(false),
             Event::Hotkey(_) => {}
+            Event::Snap(input) => self.snap_input(input),
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
-            Event::DpiChanged | Event::DisplayChange => self.relayout(),
+            Event::DpiChanged => self.relayout(),
+            Event::DisplayChange => {
+                // The monitors changed under the frozen frames: drop the snap.
+                self.end_snap(false);
+                self.relayout();
+            }
             Event::ThemesChanged => self.reload_themes(),
             Event::Timer(TIMER_CLOCK) => {
                 self.arm_clock_timer();
@@ -1020,6 +1418,24 @@ impl Handler for App {
                 self.dirty = true;
                 self.check_timer();
             }
+            Event::Timer(TIMER_SNAP_START) => {
+                window::kill_timer(self.hwnd, TIMER_SNAP_START);
+                self.snap_start_armed = false;
+                if self.snap_pending {
+                    self.begin_snap();
+                }
+            }
+            Event::Timer(TIMER_SNAP_THUMB) => {
+                window::kill_timer(self.hwnd, TIMER_SNAP_THUMB);
+                self.thumb_armed = false;
+                // `sync_snap` re-arms it if it fired early or the thumb is hovered.
+                if self.snapper.expired(Instant::now()) {
+                    self.snapper.dismiss();
+                    let tokens = self.anim.current().clone();
+                    self.island.hide_snap(&tokens);
+                    self.dirty = true;
+                }
+            }
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => self.drain_art(),
@@ -1035,13 +1451,22 @@ impl Handler for App {
         self.sync_vitals();
         self.sync_sweep();
         self.sync_timer();
+        self.sync_snap();
     }
 
     fn wants_frame(&self) -> bool {
+        // While a snap is up, only the overlay draws, and only after input.
+        if let Some(ov) = &self.overlay {
+            return ov.dirty;
+        }
         self.visible && (self.dirty || self.island.is_animating() || self.anim.animating())
     }
 
     fn frame(&mut self) {
+        if self.overlay.is_some() {
+            self.render_overlay();
+            return;
+        }
         let now = Instant::now();
         let dt = self
             .last_frame
@@ -1067,6 +1492,7 @@ impl Handler for App {
 
         if self.renderer.is_none() {
             self.renderer = self.create_renderer(self.win_px.0, self.win_px.1);
+            self.restore_snap_shot();
         }
         let view = self.island.view();
         let (h, m, _) = system::local_time();
@@ -1099,6 +1525,7 @@ impl Handler for App {
             sweep: &self.sweep,
             estimate,
             timer: &timer,
+            snap: self.snap_frame,
         };
         match renderer.render(&frame) {
             Ok(()) => {}
@@ -1116,6 +1543,18 @@ impl Handler for App {
             // Settled: one final tight region, and the next animation restarts its clock.
             self.set_region(rect);
             self.last_frame = None;
+        }
+        // The thumb has faded out: drop its small copy of the shot.
+        if self.snap_frame.is_some() && !self.island.snap_shown() && view.layers.snap <= 0.0 {
+            self.snap_frame = None;
+            if let Some(r) = self.renderer.as_mut() {
+                r.clear_snap_shot();
+            }
+        }
+        // A snap waits for the collapse: freeze shortly after the island is still.
+        if self.snap_pending && !self.snap_start_armed && !self.island.is_animating() {
+            window::set_timer(self.hwnd, TIMER_SNAP_START, START_DELAY_MS);
+            self.snap_start_armed = true;
         }
     }
 }
