@@ -31,7 +31,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
-| 11 | **dj CLI**: `dj progress / done / notify / theme / snap` through a per-user named pipe; progress and notice pills on the island | 🟡 contract | `xDaijobu/stage-11-dj-cli` | defined by the coordinator while the user was away (assumptions marked) · [`stage-11-plan.md`](stage-11-plan.md) |
+| 11 | **dj CLI**: `dj progress / done / notify / theme / snap` through a per-user named pipe; progress and notice pills on the island | 🟡 built, live test pending | `xDaijobu/stage-11-dj-cli` | built while the user was away (assumptions marked) · [`stage-11-plan.md`](stage-11-plan.md) · [`stage-11-report.md`](stage-11-report.md) |
 | 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | ✅ | `xDaijobu/stage-12a-tile` | coordinator (Opus 5.5) + parallel Sonnet 5.5 workers · 747 tests · live test with the user · [`stage-12a-report.md`](stage-12a-report.md) |
 | 12b | Scenes: save / restore window arrangements, launch missing apps, theme + pomodoro | 🔒 | — | after 12a |
 | 12c | Boot Scene: a scene after login, with progress in the island | 🔒 | — | after 12b |
