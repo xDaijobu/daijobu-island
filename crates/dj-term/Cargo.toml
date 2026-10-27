@@ -1,0 +1,13 @@
+[package]
+name = "dj-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dj-core = { path = "../dj-core" }
+alacritty_terminal = "0.26"
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+] }
