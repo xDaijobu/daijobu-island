@@ -288,10 +288,15 @@ impl App {
             storage::log(&format!("tile: {e}"));
         }
         let tiler = Tiler::new(Box::new(SystemWindows), config.tile.clone(), &custom);
+        let (pinned, errors) = dj_core::term_tabs::parse_pinned(&storage::read_terminal_tabs());
+        for e in errors {
+            storage::log(&format!("terminal tabs: {e}"));
+        }
         let terminal = Terminal::new(
             config.terminal.clone(),
             Box::new(SessionSpawner { hwnd: raw }),
             Box::new(TextClipboard { owner: raw }),
+            pinned,
         );
         let mut app = Self {
             hwnd,
@@ -1475,7 +1480,7 @@ impl App {
         let held = window::is_foreground(self.hwnd);
         window::set_keyboard(self.hwnd, false);
         self.terminal.set_focused(false);
-        self.terminal.release();
+        self.terminal.on_hide();
         let prev = std::mem::take(&mut self.term_prev);
         if give_back && held {
             window::give_back_keyboard(prev);
@@ -1489,6 +1494,10 @@ impl App {
     fn sync_terminal(&mut self) {
         if self.term_keyboard && !self.island.terminal_open() {
             self.release_keyboard(true);
+        }
+        // Pinned tabs changed (pinned, unpinned, closed, reordered): saved for the next run.
+        if let Some(toml) = self.terminal.take_save() {
+            storage::save_terminal_tabs(&toml);
         }
     }
 
@@ -2527,7 +2536,8 @@ impl Handler for App {
             }
             Event::Release => {
                 self.island.release();
-                self.terminal.release();
+                let outcome = self.terminal.release();
+                self.term_outcome(outcome);
             }
             Event::VolumeChanged => self.show_volume(),
             Event::DefaultDeviceChanged => {
@@ -2719,7 +2729,15 @@ impl Handler for App {
                 self.term_outcome(outcome);
             }
             Event::RightClick { x, y } if self.terminal_input() && self.over_panel(x, y) => {
-                let outcome = self.terminal.right_click();
+                let (lx, ly) = self.island_point(x, y);
+                let (px, py) = Self::terminal_local(lx, ly);
+                let outcome = self.terminal.right_click(px, py);
+                self.term_outcome(outcome);
+            }
+            Event::MiddleClick { x, y } if self.terminal_input() && self.over_panel(x, y) => {
+                let (lx, ly) = self.island_point(x, y);
+                let (px, py) = Self::terminal_local(lx, ly);
+                let outcome = self.terminal.middle_click(px, py);
                 self.term_outcome(outcome);
             }
             Event::DoubleClick { x, y } if self.island.terminal_open() => {
@@ -2851,8 +2869,6 @@ impl Handler for App {
         let term_palette = termcore::palette(self.anim.current());
         let term_view = (view.layers.terminal > 0.0).then(|| self.terminal.view(&term_palette));
         let term_config = self.terminal.config();
-        // No tab bar until the controller keeps tabs: the header shows the title.
-        let no_tabs = dj_core::term_tabs::TabBarView::default();
         let terminal = term_view.as_ref().map(|v| TerminalPanel {
             title: &v.title,
             screen: &v.screen,
@@ -2861,7 +2877,7 @@ impl Handler for App {
             font_size: term_config.font_size,
             notice: v.notice.as_deref(),
             close_hover: v.close_hover,
-            tabs: &no_tabs,
+            tabs: &v.tabs,
         });
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;

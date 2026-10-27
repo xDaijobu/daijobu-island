@@ -894,7 +894,9 @@ pub struct PinnedTab {
     /// The tab's name; may be empty (the app then names it after the shell).
     #[serde(default)]
     pub title: String,
-    /// The program to start. Required.
+    /// The program to start; empty (or left out) is the default shell, as `[terminal]
+    /// shell = ""`.
+    #[serde(default)]
     pub shell: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -906,8 +908,8 @@ pub struct PinnedTab {
 /// Reads `terminal-tabs.toml`: the valid pinned tabs (at most `MAX_TABS`, in file order),
 /// and one message per problem. A syntax error (or a `pinned` that is not an array of
 /// tables) rejects the whole file with one message. A bad entry (not a table, a wrong
-/// type, no `shell`) is skipped and never takes the others down. `title`, `args` and `cwd`
-/// may be left out.
+/// type) is skipped and never takes the others down. Every field may be left out; no
+/// `shell` is the default shell.
 ///
 /// ```toml
 /// [[pinned]]
@@ -970,9 +972,6 @@ fn read_pinned(n: usize, entry: &Value) -> Result<PinnedTab, String> {
         .clone()
         .try_into()
         .map_err(|e: toml::de::Error| format!("pinned tab {n}: {}", e.message()))?;
-    if tab.shell.trim().is_empty() {
-        return Err(format!("pinned tab {n}: `shell` is empty"));
-    }
     Ok(tab)
 }
 
@@ -2586,15 +2585,14 @@ shell = "cmd.exe"
 args = ["/k"]
 "#,
         );
+        // No shell, or a blank one, is the default shell.
         assert_eq!(
             tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
-            ["ok one", "ok two"]
+            ["ok one", "no shell", "blank shell", "ok two"]
         );
-        assert_eq!(notes.len(), 4, "{notes:?}");
-        assert!(notes[0].starts_with("pinned tab 2:"), "{notes:?}");
-        assert!(notes[1].starts_with("pinned tab 3:"), "{notes:?}");
-        assert!(notes[2].starts_with("pinned tab 4:"), "{notes:?}");
-        assert!(notes[3].starts_with("pinned tab 5:"), "{notes:?}");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes[0].starts_with("pinned tab 4:"), "{notes:?}");
+        assert!(notes[1].starts_with("pinned tab 5:"), "{notes:?}");
     }
 
     #[test]
@@ -2639,7 +2637,7 @@ args = ["/k"]
         assert!(notes.is_empty(), "{notes:?}");
         // Bad entries do not count against the limit.
         let mut text = src(MAX_TABS);
-        text.push_str("[[pinned]]\ntitle = \"no shell\"\n");
+        text.push_str("[[pinned]]\ntitle = 5\n");
         let (tabs, notes) = parse_pinned(&text);
         assert_eq!(tabs.len(), MAX_TABS);
         assert_eq!(notes.len(), 1, "{notes:?}");

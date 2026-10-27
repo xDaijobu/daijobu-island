@@ -1,12 +1,16 @@
-//! The terminal panel's controller: the shell session behind it, what the keyboard and the
-//! mouse do to it, and what the panel shows. The session, the spawner and the clipboard
-//! are traits, so the tests drive it with fakes; the app plugs in `dj_term` and
-//! `dj_win::clipboard`.
+//! The terminal panel's controller: its tabs and the shell session behind each, what the
+//! keyboard and the mouse do to them, and what the panel shows. Sessions, the spawner and
+//! the clipboard are traits, so the tests drive it with fakes; the app plugs in `dj_term`
+//! and `dj_win::clipboard`.
 
 use dj_core::config::TerminalConfig;
-use dj_core::layout::{Rect, TERM_CLOSE};
+use dj_core::layout::{TERM_CLOSE, TERM_HEADER_H, TERM_TEXT};
+use dj_core::term_tabs::{
+    self as tabs, MenuAction, PinnedTab, Press, Release, TabBarView, TabId, TabKey, Tabs,
+};
 use dj_core::terminal::{self as term, KeyAction, Modes, Mods, Palette, Screen, WheelAccum};
 use dj_term::{SpawnOptions, TermEvent};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// `Ctrl+Alt+``: open or close the panel.
@@ -27,7 +31,8 @@ pub trait Backend {
     fn selection_text(&self) -> Option<String>;
     fn modes(&self) -> Modes;
     fn screen(&self, palette: &Palette, focused: bool) -> Screen;
-    fn take_events(&mut self) -> Vec<TermEvent>;
+    /// Whether it printed since the last call, and its title / bell / exit events.
+    fn drain(&mut self) -> (bool, Vec<TermEvent>);
 }
 
 impl Backend for dj_term::Session {
@@ -64,8 +69,8 @@ impl Backend for dj_term::Session {
     fn screen(&self, palette: &Palette, focused: bool) -> Screen {
         dj_term::Session::screen(self, palette, focused)
     }
-    fn take_events(&mut self) -> Vec<TermEvent> {
-        dj_term::Session::take_events(self)
+    fn drain(&mut self) -> (bool, Vec<TermEvent>) {
+        dj_term::Session::drain(self)
     }
 }
 
@@ -114,340 +119,45 @@ pub enum Outcome {
     None,
     /// The panel shows something new.
     Redraw,
-    /// The close button: collapse the panel and give the keyboard back.
+    /// The close button, or the last tab closed: collapse the panel and give the keyboard
+    /// back.
     Close,
 }
 
 /// What the panel draws this frame.
 pub struct View {
+    /// The active tab's title (the header's text when there are no tabs to draw).
     pub title: String,
     pub screen: Screen,
     pub notice: Option<String>,
     pub close_hover: bool,
+    pub tabs: TabBarView,
 }
 
-pub struct Terminal {
-    config: TerminalConfig,
-    spawner: Box<dyn Spawner>,
-    clipboard: Box<dyn Clipboard>,
+/// What a tab's shell is started with (kept to restart it, and to save a pinned tab).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Spec {
+    shell: String,
+    args: Vec<String>,
+    /// As configured or saved: empty is the user's home.
+    cwd: String,
+}
+
+/// One tab's shell.
+struct Tab {
+    spec: Spec,
     session: Option<Box<dyn Backend>>,
-    /// The program the session runs (its file stem titles the header until the shell
-    /// sets a title).
+    /// The program actually run (its file stem names the tab until the shell sets a title).
     program: String,
-    /// One cell in device px, the scale it was measured at, and the grid that fits.
-    cell: (u16, u16),
-    scale: f32,
-    grid: (u16, u16),
+    /// The shell's own title, or the saved name of a restored pinned tab.
     title: Option<String>,
     /// The shell ended (with its exit code, if known), or never started.
     exited: Option<Option<i32>>,
     failed: Option<String>,
-    /// The `WM_CHAR` that follows a key already sent (or used as a shortcut) is dropped.
-    skip_char: bool,
-    selecting: bool,
-    focused: bool,
-    close_hover: bool,
-    /// A touchpad's small wheel steps add up to whole lines.
-    wheel: WheelAccum,
 }
 
-impl Terminal {
-    pub fn new(
-        config: TerminalConfig,
-        spawner: Box<dyn Spawner>,
-        clipboard: Box<dyn Clipboard>,
-    ) -> Self {
-        Terminal {
-            config,
-            spawner,
-            clipboard,
-            session: None,
-            program: String::new(),
-            cell: (8, 16),
-            scale: 1.0,
-            grid: (80, 24),
-            title: None,
-            exited: None,
-            failed: None,
-            skip_char: false,
-            selecting: false,
-            focused: false,
-            close_hover: false,
-            wheel: WheelAccum::default(),
-        }
-    }
-
-    pub fn config(&self) -> &TerminalConfig {
-        &self.config
-    }
-
-    /// The panel opens with cells of `cell` device px at `scale`: the shell starts on the
-    /// first open (or after it failed to), and a running one is resized if the grid
-    /// changed.
-    pub fn open(&mut self, cell: (u16, u16), scale: f32) {
-        self.measure(cell, scale);
-        if self.session.is_none() && self.exited.is_none() {
-            self.start();
-        }
-    }
-
-    /// New cell metrics (a DPI or font change): resizes the grid if it changed.
-    pub fn measure(&mut self, cell: (u16, u16), scale: f32) {
-        self.cell = cell;
-        self.scale = scale;
-        let grid = term::grid_fit(cell.0, cell.1, scale);
-        if grid != self.grid {
-            self.grid = grid;
-            if let Some(s) = self.session.as_mut() {
-                s.resize(grid.0, grid.1, cell.0, cell.1);
-            }
-        }
-    }
-
-    /// The panel has the keyboard (a block cursor) or not (a hollow one).
-    pub fn set_focused(&mut self, focused: bool) {
-        self.focused = focused;
-    }
-
-    fn start(&mut self) {
-        let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
-        let cwd = if self.config.cwd.trim().is_empty() {
-            home
-        } else {
-            Some(PathBuf::from(self.config.cwd.trim()))
-        };
-        let (program, args) = dj_term::resolve_shell(&self.config.shell, &self.config.args);
-        let opts = SpawnOptions {
-            program: program.clone(),
-            args,
-            cwd,
-            cols: self.grid.0,
-            rows: self.grid.1,
-            cell_w: self.cell.0,
-            cell_h: self.cell.1,
-            scrollback: self.config.scrollback as usize,
-        };
-        self.program = program;
-        self.title = None;
-        self.exited = None;
-        self.failed = None;
-        match self.spawner.spawn(&opts) {
-            Ok(s) => self.session = Some(s),
-            Err(e) => {
-                self.session = None;
-                self.exited = Some(None);
-                self.failed = Some(e);
-            }
-        }
-    }
-
-    /// The shell is gone (exited, or failed to start): Enter starts a new one.
-    fn ended(&self) -> bool {
-        self.exited.is_some()
-    }
-
-    /// A key went down while the panel has the keyboard.
-    pub fn key(&mut self, vk: u16, mods: Mods) -> Outcome {
-        // A char only ever follows its own key, so a new key ends any skip.
-        self.skip_char = false;
-        if self.ended() {
-            if vk == VK_RETURN {
-                self.skip_char = true;
-                self.session = None;
-                self.start();
-                return Outcome::Redraw;
-            }
-            return Outcome::None;
-        }
-        let Some(s) = self.session.as_mut() else {
-            return Outcome::None;
-        };
-        let action = term::on_key(vk, mods, s.modes(), s.has_selection());
-        // Ctrl+C / Ctrl+V and the keys sent here also make a char that must not follow.
-        self.skip_char = action.skips_char(vk);
-        match action {
-            KeyAction::Send(bytes) | KeyAction::SendSkipChar(bytes) => {
-                Self::send(s.as_mut(), bytes);
-                Outcome::Redraw
-            }
-            KeyAction::Copy => self.copy(),
-            KeyAction::Paste => self.paste(),
-            KeyAction::PassToChar => Outcome::None,
-        }
-    }
-
-    /// A character typed while the panel has the keyboard.
-    pub fn char(&mut self, ch: char, mods: Mods) -> Outcome {
-        if std::mem::take(&mut self.skip_char) || self.ended() {
-            return Outcome::None;
-        }
-        let Some(s) = self.session.as_mut() else {
-            return Outcome::None;
-        };
-        Self::send(s.as_mut(), term::on_char(ch, mods));
-        Outcome::Redraw
-    }
-
-    /// Typing follows the output again and drops the selection, as in Windows Terminal.
-    fn send(s: &mut dyn Backend, bytes: Vec<u8>) {
-        if bytes.is_empty() {
-            return;
-        }
-        s.select_clear();
-        s.scroll_to_bottom();
-        s.write(bytes);
-    }
-
-    fn copy(&mut self) -> Outcome {
-        let Some(s) = self.session.as_mut() else {
-            return Outcome::None;
-        };
-        if let Some(text) = s.selection_text().filter(|t| !t.is_empty()) {
-            self.clipboard.set(&text);
-        }
-        s.select_clear();
-        Outcome::Redraw
-    }
-
-    fn paste(&mut self) -> Outcome {
-        let Some(text) = self.clipboard.get().filter(|t| !t.is_empty()) else {
-            return Outcome::None;
-        };
-        let Some(s) = self.session.as_mut() else {
-            return Outcome::None;
-        };
-        let bytes = term::paste_bytes(&text, s.modes());
-        Self::send(s.as_mut(), bytes);
-        Outcome::Redraw
-    }
-
-    /// The cell under a panel-local point, if the session is up.
-    fn cell_at(&self, x: f32, y: f32) -> Option<(usize, usize, bool)> {
-        self.session.as_ref()?;
-        let (cw, ch) = self.cell;
-        term::cell_at(x, y, cw, ch, self.scale, self.grid.0, self.grid.1)
-    }
-
-    /// The left button went down at a panel-local point: the close button, or the start
-    /// of a selection.
-    pub fn press(&mut self, x: f32, y: f32) -> Outcome {
-        if Self::close_rect().contains(x, y) {
-            return Outcome::Close;
-        }
-        let Some((col, row, right)) = self.cell_at(x, y) else {
-            return Outcome::None;
-        };
-        if let Some(s) = self.session.as_mut() {
-            s.select_clear();
-            s.select_start(col, row, right, false);
-            self.selecting = true;
-        }
-        Outcome::Redraw
-    }
-
-    /// A double click selects the word under the pointer.
-    pub fn double_click(&mut self, x: f32, y: f32) -> Outcome {
-        let Some((col, row, right)) = self.cell_at(x, y) else {
-            return Outcome::None;
-        };
-        if let Some(s) = self.session.as_mut() {
-            s.select_clear();
-            s.select_start(col, row, right, true);
-            self.selecting = true;
-        }
-        Outcome::Redraw
-    }
-
-    pub fn drag(&mut self, x: f32, y: f32) -> Outcome {
-        if !self.selecting {
-            return Outcome::None;
-        }
-        // Dragging up into the header (or off the screen's top) keeps selecting the top row.
-        let y = y.max(dj_core::layout::TERM_TEXT.y);
-        let Some((col, row, right)) = self.cell_at(x, y) else {
-            return Outcome::None;
-        };
-        if let Some(s) = self.session.as_mut() {
-            s.select_update(col, row, right);
-        }
-        Outcome::Redraw
-    }
-
-    pub fn release(&mut self) {
-        self.selecting = false;
-    }
-
-    /// Right click: copies a selection, or pastes when there is none.
-    pub fn right_click(&mut self) -> Outcome {
-        let selected = self.session.as_ref().is_some_and(|s| s.has_selection());
-        if selected {
-            self.copy()
-        } else {
-            self.paste()
-        }
-    }
-
-    pub fn wheel(&mut self, delta: i32) -> Outcome {
-        let lines = self.wheel.feed(delta);
-        match self.session.as_mut() {
-            Some(s) if lines != 0 => {
-                s.scroll(lines);
-                Outcome::Redraw
-            }
-            _ => Outcome::None,
-        }
-    }
-
-    /// The pointer moved over the panel (panel-local). True if the close button's hover
-    /// changed.
-    pub fn hover(&mut self, x: f32, y: f32) -> bool {
-        let over = Self::close_rect().contains(x, y);
-        std::mem::replace(&mut self.close_hover, over) != over
-    }
-
-    pub fn clear_hover(&mut self) -> bool {
-        std::mem::take(&mut self.close_hover)
-    }
-
-    fn close_rect() -> Rect {
-        TERM_CLOSE
-    }
-
-    /// The session's news since the last call (title, exit). True if the panel needs a
-    /// frame: there was a wake, so the grid may have changed too.
-    pub fn drain(&mut self) -> bool {
-        let Some(s) = self.session.as_mut() else {
-            return false;
-        };
-        for ev in s.take_events() {
-            match ev {
-                TermEvent::Title(t) => self.title = Some(t).filter(|t| !t.trim().is_empty()),
-                TermEvent::ResetTitle => self.title = None,
-                TermEvent::Bell => {}
-                TermEvent::Exited(code) => {
-                    self.exited = Some(code);
-                    self.selecting = false;
-                }
-            }
-        }
-        true
-    }
-
-    /// What the panel draws.
-    pub fn view(&self, palette: &Palette) -> View {
-        let screen = match self.session.as_ref() {
-            Some(s) => s.screen(palette, self.focused),
-            None => Screen::blank(self.grid.0 as usize, self.grid.1 as usize, palette),
-        };
-        View {
-            title: self.header_title(),
-            screen,
-            notice: self.notice(),
-            close_hover: self.close_hover,
-        }
-    }
-
-    fn header_title(&self) -> String {
+impl Tab {
+    fn name(&self) -> String {
         if let Some(t) = self.title.as_ref() {
             return t.clone();
         }
@@ -473,10 +183,592 @@ impl Terminal {
             None => None,
         }
     }
+}
 
-    /// Ends the shell (the island is quitting).
+pub struct Terminal {
+    config: TerminalConfig,
+    spawner: Box<dyn Spawner>,
+    clipboard: Box<dyn Clipboard>,
+    tabs: Tabs,
+    sessions: HashMap<TabId, Tab>,
+    /// Pinned tabs saved by an earlier run, opened as tabs on the first open.
+    restore: Vec<PinnedTab>,
+    /// The pinned tabs changed: the app saves `pinned_toml` (see `take_save`).
+    save: bool,
+    /// One cell in device px, the scale it was measured at, and the grid that fits.
+    cell: (u16, u16),
+    scale: f32,
+    grid: (u16, u16),
+    /// The `WM_CHAR` that follows a key already sent (or used as a shortcut) is dropped.
+    skip_char: bool,
+    selecting: bool,
+    /// The last pointer position over the panel (panel-local): a release has none of its
+    /// own.
+    pointer: (f32, f32),
+    focused: bool,
+    close_hover: bool,
+    /// A touchpad's small wheel steps add up to whole lines.
+    wheel: WheelAccum,
+}
+
+impl Terminal {
+    pub fn new(
+        config: TerminalConfig,
+        spawner: Box<dyn Spawner>,
+        clipboard: Box<dyn Clipboard>,
+        pinned: Vec<PinnedTab>,
+    ) -> Self {
+        Terminal {
+            config,
+            spawner,
+            clipboard,
+            tabs: Tabs::new(),
+            sessions: HashMap::new(),
+            restore: pinned,
+            save: false,
+            cell: (8, 16),
+            scale: 1.0,
+            grid: (80, 24),
+            skip_char: false,
+            selecting: false,
+            pointer: (0.0, 0.0),
+            focused: false,
+            close_hover: false,
+            wheel: WheelAccum::default(),
+        }
+    }
+
+    pub fn config(&self) -> &TerminalConfig {
+        &self.config
+    }
+
+    /// The panel opens with cells of `cell` device px at `scale`. The first time it brings
+    /// back the saved pinned tabs; with no tab at all it opens one.
+    pub fn open(&mut self, cell: (u16, u16), scale: f32) {
+        self.measure(cell, scale);
+        for p in std::mem::take(&mut self.restore) {
+            let spec = Spec {
+                shell: p.shell,
+                args: p.args,
+                cwd: p.cwd,
+            };
+            let title = Some(p.title).filter(|t| !t.trim().is_empty());
+            self.add_tab(spec, title, true);
+        }
+        if self.tabs.is_empty() {
+            self.new_tab();
+        }
+    }
+
+    /// New cell metrics (a DPI or font change): every shell's grid follows.
+    pub fn measure(&mut self, cell: (u16, u16), scale: f32) {
+        self.cell = cell;
+        self.scale = scale;
+        let grid = term::grid_fit(cell.0, cell.1, scale);
+        if grid != self.grid {
+            self.grid = grid;
+            for t in self.sessions.values_mut() {
+                if let Some(s) = t.session.as_mut() {
+                    s.resize(grid.0, grid.1, cell.0, cell.1);
+                }
+            }
+        }
+    }
+
+    /// The panel has the keyboard (a block cursor) or not (a hollow one).
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// The panel is going away: a press or a drag in progress, and the menu, end.
+    pub fn on_hide(&mut self) {
+        self.tabs.cancel();
+        self.tabs.close_menu();
+        self.tabs.clear_hover();
+        self.selecting = false;
+        self.close_hover = false;
+    }
+
+    fn config_spec(&self) -> Spec {
+        Spec {
+            shell: self.config.shell.clone(),
+            args: self.config.args.clone(),
+            cwd: self.config.cwd.clone(),
+        }
+    }
+
+    /// A new regular tab with the configured shell, made active. False at the limit.
+    fn new_tab(&mut self) -> bool {
+        self.add_tab(self.config_spec(), None, false)
+    }
+
+    fn add_tab(&mut self, spec: Spec, title: Option<String>, pinned: bool) -> bool {
+        let Some(id) = self.tabs.add(String::new(), pinned) else {
+            return false;
+        };
+        let mut tab = Tab {
+            spec,
+            session: None,
+            program: String::new(),
+            title,
+            exited: None,
+            failed: None,
+        };
+        self.start(&mut tab);
+        self.tabs.set_title(id, tab.name());
+        self.tabs.set_exited(id, tab.exited.is_some());
+        self.sessions.insert(id, tab);
+        true
+    }
+
+    /// Starts (or restarts) `tab`'s shell.
+    fn start(&self, tab: &mut Tab) {
+        let cwd = if tab.spec.cwd.trim().is_empty() {
+            std::env::var_os("USERPROFILE").map(PathBuf::from)
+        } else {
+            Some(PathBuf::from(tab.spec.cwd.trim()))
+        };
+        let (program, args) = dj_term::resolve_shell(&tab.spec.shell, &tab.spec.args);
+        let opts = SpawnOptions {
+            program: program.clone(),
+            args,
+            cwd,
+            cols: self.grid.0,
+            rows: self.grid.1,
+            cell_w: self.cell.0,
+            cell_h: self.cell.1,
+            scrollback: self.config.scrollback as usize,
+        };
+        tab.program = program;
+        tab.exited = None;
+        tab.failed = None;
+        match self.spawner.spawn(&opts) {
+            Ok(s) => tab.session = Some(s),
+            Err(e) => {
+                tab.session = None;
+                tab.exited = Some(None);
+                tab.failed = Some(e);
+            }
+        }
+    }
+
+    fn active_id(&self) -> Option<TabId> {
+        self.tabs.active()
+    }
+
+    fn active(&self) -> Option<&Tab> {
+        self.active_id().and_then(|id| self.sessions.get(&id))
+    }
+
+    fn active_mut(&mut self) -> Option<&mut Tab> {
+        let id = self.active_id()?;
+        self.sessions.get_mut(&id)
+    }
+
+    fn active_session(&mut self) -> Option<&mut Box<dyn Backend>> {
+        self.active_mut()?.session.as_mut()
+    }
+
+    /// Closes tabs (their shells end). `Close` when none is left.
+    fn close_tabs(&mut self, ids: &[TabId]) -> Outcome {
+        for id in ids {
+            if let Some(t) = self.sessions.remove(id) {
+                if self.tabs.is_pinned(*id) {
+                    self.save = true;
+                }
+                drop(t);
+            }
+        }
+        self.selecting = false;
+        if self.tabs.is_empty() {
+            Outcome::Close
+        } else {
+            Outcome::Redraw
+        }
+    }
+
+    fn close_tab(&mut self, id: TabId) -> Outcome {
+        let was_pinned = self.tabs.is_pinned(id);
+        if !self.tabs.close(id) {
+            return Outcome::None;
+        }
+        self.save |= was_pinned;
+        self.sessions.remove(&id);
+        self.selecting = false;
+        if self.tabs.is_empty() {
+            Outcome::Close
+        } else {
+            Outcome::Redraw
+        }
+    }
+
+    /// The pinned tabs as saved, in their order; the app writes it when `take_save` says
+    /// they changed.
+    pub fn pinned_toml(&self) -> String {
+        let pinned: Vec<PinnedTab> = self
+            .tabs
+            .ids()
+            .into_iter()
+            .filter(|id| self.tabs.is_pinned(*id))
+            .filter_map(|id| self.sessions.get(&id))
+            .map(|t| PinnedTab {
+                title: t.name(),
+                shell: t.spec.shell.clone(),
+                args: t.spec.args.clone(),
+                cwd: t.spec.cwd.clone(),
+            })
+            .collect();
+        tabs::pinned_to_toml(&pinned)
+    }
+
+    /// The file's new content if the pinned tabs changed since the last call.
+    pub fn take_save(&mut self) -> Option<String> {
+        std::mem::take(&mut self.save).then(|| self.pinned_toml())
+    }
+
+    fn pinned_order(&self) -> Vec<TabId> {
+        self.tabs
+            .ids()
+            .into_iter()
+            .filter(|id| self.tabs.is_pinned(*id))
+            .collect()
+    }
+
+    fn tab_key(&mut self, key: TabKey) -> Outcome {
+        match key {
+            TabKey::New => {
+                if self.new_tab() {
+                    Outcome::Redraw
+                } else {
+                    Outcome::None
+                }
+            }
+            TabKey::Close => match self.active_id() {
+                Some(id) => self.close_tab(id),
+                None => Outcome::None,
+            },
+            TabKey::Next => {
+                self.tabs.next();
+                Outcome::Redraw
+            }
+            TabKey::Prev => {
+                self.tabs.prev();
+                Outcome::Redraw
+            }
+            TabKey::Jump(i) => {
+                self.tabs.jump(i);
+                Outcome::Redraw
+            }
+        }
+    }
+
+    /// A key went down while the panel has the keyboard.
+    pub fn key(&mut self, vk: u16, mods: Mods) -> Outcome {
+        // A char only ever follows its own key, so a new key ends any skip.
+        self.skip_char = false;
+        if let Some(k) = tabs::shortcut(vk, mods.ctrl, mods.shift, mods.alt) {
+            // Ctrl+Shift+T and its kin make a control char too: it must not follow.
+            self.skip_char = true;
+            return self.tab_key(k);
+        }
+        let ended = self.active().is_some_and(|t| t.exited.is_some());
+        if ended {
+            if vk == VK_RETURN {
+                self.skip_char = true;
+                let spawner_tab = self.active_id();
+                if let Some(id) = spawner_tab {
+                    if let Some(mut tab) = self.sessions.remove(&id) {
+                        tab.session = None;
+                        tab.title = None;
+                        self.start(&mut tab);
+                        self.tabs.set_title(id, tab.name());
+                        self.tabs.set_exited(id, tab.exited.is_some());
+                        self.sessions.insert(id, tab);
+                    }
+                }
+                return Outcome::Redraw;
+            }
+            return Outcome::None;
+        }
+        let Some(s) = self.active_session() else {
+            return Outcome::None;
+        };
+        let action = term::on_key(vk, mods, s.modes(), s.has_selection());
+        let skip = action.skips_char(vk);
+        let outcome = match action {
+            KeyAction::Send(bytes) | KeyAction::SendSkipChar(bytes) => {
+                Self::send(s.as_mut(), bytes);
+                Outcome::Redraw
+            }
+            KeyAction::Copy => self.copy(),
+            KeyAction::Paste => self.paste(),
+            KeyAction::PassToChar => Outcome::None,
+        };
+        self.skip_char = skip;
+        outcome
+    }
+
+    /// A character typed while the panel has the keyboard.
+    pub fn char(&mut self, ch: char, mods: Mods) -> Outcome {
+        if std::mem::take(&mut self.skip_char) {
+            return Outcome::None;
+        }
+        if self.active().is_none_or(|t| t.exited.is_some()) {
+            return Outcome::None;
+        }
+        let Some(s) = self.active_session() else {
+            return Outcome::None;
+        };
+        Self::send(s.as_mut(), term::on_char(ch, mods));
+        Outcome::Redraw
+    }
+
+    /// Typing follows the output again and drops the selection, as in Windows Terminal.
+    fn send(s: &mut dyn Backend, bytes: Vec<u8>) {
+        if bytes.is_empty() {
+            return;
+        }
+        s.select_clear();
+        s.scroll_to_bottom();
+        s.write(bytes);
+    }
+
+    fn copy(&mut self) -> Outcome {
+        let Some(s) = self.active_session() else {
+            return Outcome::None;
+        };
+        let text = s.selection_text().filter(|t| !t.is_empty());
+        s.select_clear();
+        if let Some(text) = text {
+            self.clipboard.set(&text);
+        }
+        Outcome::Redraw
+    }
+
+    fn paste(&mut self) -> Outcome {
+        let Some(text) = self.clipboard.get().filter(|t| !t.is_empty()) else {
+            return Outcome::None;
+        };
+        let Some(s) = self.active_session() else {
+            return Outcome::None;
+        };
+        let bytes = term::paste_bytes(&text, s.modes());
+        Self::send(s.as_mut(), bytes);
+        Outcome::Redraw
+    }
+
+    /// The cell under a panel-local point, if the active tab has a session.
+    fn cell_at(&self, x: f32, y: f32) -> Option<(usize, usize, bool)> {
+        self.active().and_then(|t| t.session.as_ref())?;
+        let (cw, ch) = self.cell;
+        term::cell_at(x, y, cw, ch, self.scale, self.grid.0, self.grid.1)
+    }
+
+    fn in_header(y: f32) -> bool {
+        y < TERM_HEADER_H
+    }
+
+    /// The left button went down at a panel-local point: the panel's close button, the
+    /// tab bar (or the open tab menu), or the start of a selection.
+    pub fn press(&mut self, x: f32, y: f32) -> Outcome {
+        self.pointer = (x, y);
+        if self.tabs.menu_open() || Self::in_header(y) {
+            if !self.tabs.menu_open() && TERM_CLOSE.contains(x, y) {
+                return Outcome::Close;
+            }
+            return match self.tabs.press(x, y) {
+                Press::None => Outcome::None,
+                Press::Activated(_) | Press::MenuDismissed => Outcome::Redraw,
+                Press::Plus => {
+                    self.new_tab();
+                    Outcome::Redraw
+                }
+                Press::Menu(action, id) => self.menu_action(action, id),
+            };
+        }
+        let Some((col, row, right)) = self.cell_at(x, y) else {
+            return Outcome::None;
+        };
+        if let Some(s) = self.active_session() {
+            s.select_clear();
+            s.select_start(col, row, right, false);
+            self.selecting = true;
+        }
+        Outcome::Redraw
+    }
+
+    fn menu_action(&mut self, action: MenuAction, id: TabId) -> Outcome {
+        match action {
+            MenuAction::Pin | MenuAction::Unpin => {
+                self.tabs.set_pinned(id, action == MenuAction::Pin);
+                self.save = true;
+                Outcome::Redraw
+            }
+            MenuAction::Close => self.close_tab(id),
+            MenuAction::CloseOthers => {
+                let closed = self.tabs.close_others(id);
+                self.close_tabs(&closed)
+            }
+            MenuAction::CloseRight => {
+                let closed = self.tabs.close_right(id);
+                self.close_tabs(&closed)
+            }
+        }
+    }
+
+    /// A double click selects the word under the pointer.
+    pub fn double_click(&mut self, x: f32, y: f32) -> Outcome {
+        if Self::in_header(y) || self.tabs.menu_open() {
+            return Outcome::None;
+        }
+        let Some((col, row, right)) = self.cell_at(x, y) else {
+            return Outcome::None;
+        };
+        if let Some(s) = self.active_session() {
+            s.select_clear();
+            s.select_start(col, row, right, true);
+            self.selecting = true;
+        }
+        Outcome::Redraw
+    }
+
+    pub fn drag(&mut self, x: f32, y: f32) -> Outcome {
+        self.pointer = (x, y);
+        if self.tabs.drag(x, y) {
+            return Outcome::Redraw;
+        }
+        if !self.selecting {
+            return Outcome::None;
+        }
+        // Dragging up into the header (or off the screen's top) keeps selecting the top row.
+        let y = y.max(TERM_TEXT.y);
+        let Some((col, row, right)) = self.cell_at(x, y) else {
+            return Outcome::None;
+        };
+        if let Some(s) = self.active_session() {
+            s.select_update(col, row, right);
+        }
+        Outcome::Redraw
+    }
+
+    /// The left button went up (where the pointer last was).
+    pub fn release(&mut self) -> Outcome {
+        self.selecting = false;
+        let before = self.pinned_order();
+        let (x, y) = self.pointer;
+        match self.tabs.release(x, y) {
+            Release::None => Outcome::None,
+            Release::Close(id) => self.close_tab(id),
+            Release::Reordered => {
+                if self.pinned_order() != before {
+                    self.save = true;
+                }
+                Outcome::Redraw
+            }
+        }
+    }
+
+    /// Right click: on a tab, its menu; elsewhere, copies a selection or pastes.
+    pub fn right_click(&mut self, x: f32, y: f32) -> Outcome {
+        if Self::in_header(y) || self.tabs.menu_open() {
+            return if self.tabs.open_menu(x, y) {
+                Outcome::Redraw
+            } else {
+                Outcome::None
+            };
+        }
+        let selected = self
+            .active()
+            .and_then(|t| t.session.as_ref())
+            .is_some_and(|s| s.has_selection());
+        if selected {
+            self.copy()
+        } else {
+            self.paste()
+        }
+    }
+
+    /// Middle click: closes the regular tab under the pointer.
+    pub fn middle_click(&mut self, x: f32, y: f32) -> Outcome {
+        match self.tabs.middle_click(x, y) {
+            Some(id) => self.close_tab(id),
+            None => Outcome::None,
+        }
+    }
+
+    pub fn wheel(&mut self, delta: i32) -> Outcome {
+        let lines = self.wheel.feed(delta);
+        match self.active_session() {
+            Some(s) if lines != 0 => {
+                s.scroll(lines);
+                Outcome::Redraw
+            }
+            _ => Outcome::None,
+        }
+    }
+
+    /// The pointer moved over the panel (panel-local). True if something hovered changed
+    /// (the panel's close button, a tab, its ✕, "+", a menu row).
+    pub fn hover(&mut self, x: f32, y: f32) -> bool {
+        self.pointer = (x, y);
+        let over = !self.tabs.menu_open() && TERM_CLOSE.contains(x, y);
+        let close = std::mem::replace(&mut self.close_hover, over) != over;
+        let bar = self.tabs.hover(x, y);
+        close | bar
+    }
+
+    pub fn clear_hover(&mut self) -> bool {
+        std::mem::take(&mut self.close_hover) | self.tabs.clear_hover()
+    }
+
+    /// The shells' news since the last call (output, titles, exits). True if the panel
+    /// needs a frame.
+    pub fn drain(&mut self) -> bool {
+        let active = self.active_id();
+        let mut changed = false;
+        for (id, tab) in self.sessions.iter_mut() {
+            let Some(s) = tab.session.as_mut() else {
+                continue;
+            };
+            let (woke, events) = s.drain();
+            let news = woke || !events.is_empty();
+            for ev in events {
+                match ev {
+                    TermEvent::Title(t) => tab.title = Some(t).filter(|t| !t.trim().is_empty()),
+                    TermEvent::ResetTitle => tab.title = None,
+                    TermEvent::Bell => {}
+                    TermEvent::Exited(code) => tab.exited = Some(code),
+                }
+            }
+            self.tabs.set_title(*id, tab.name());
+            self.tabs.set_exited(*id, tab.exited.is_some());
+            if woke && Some(*id) != active {
+                self.tabs.set_activity(*id);
+            }
+            changed |= news;
+        }
+        changed
+    }
+
+    /// What the panel draws.
+    pub fn view(&self, palette: &Palette) -> View {
+        let tab = self.active();
+        let screen = match tab.and_then(|t| t.session.as_ref()) {
+            Some(s) => s.screen(palette, self.focused),
+            None => Screen::blank(self.grid.0 as usize, self.grid.1 as usize, palette),
+        };
+        View {
+            title: tab.map_or_else(|| "terminal".to_string(), Tab::name),
+            screen,
+            notice: tab.and_then(Tab::notice),
+            close_hover: self.close_hover,
+            tabs: self.tabs.view(),
+        }
+    }
+
+    /// Ends every shell (the island is quitting).
     pub fn shutdown(&mut self) {
-        self.session = None;
+        self.sessions.clear();
     }
 }
 
@@ -501,6 +793,7 @@ mod tests {
         selected_text: Option<String>,
         modes: Modes,
         events: Vec<TermEvent>,
+        woke: bool,
     }
 
     struct FakeBackend(Rc<RefCell<Shell>>);
@@ -542,8 +835,9 @@ mod tests {
         fn screen(&self, palette: &Palette, _: bool) -> Screen {
             Screen::blank(4, 2, palette)
         }
-        fn take_events(&mut self) -> Vec<TermEvent> {
-            std::mem::take(&mut self.0.borrow_mut().events)
+        fn drain(&mut self) -> (bool, Vec<TermEvent>) {
+            let mut s = self.0.borrow_mut();
+            (std::mem::take(&mut s.woke), std::mem::take(&mut s.events))
         }
     }
 
@@ -595,6 +889,7 @@ mod tests {
                 TerminalConfig::default(),
                 Box::new(FakeSpawner(Rc::clone(&spawns))),
                 Box::new(FakeClipboard(Rc::clone(&clip))),
+                Vec::new(),
             );
             Rig { term, spawns, clip }
         }
@@ -812,11 +1107,12 @@ mod tests {
     fn right_click_copies_a_selection_or_pastes() {
         let mut r = Rig::new();
         r.open();
+        let t = dj_core::layout::TERM_TEXT;
         r.select("ls");
-        r.term.right_click();
+        r.term.right_click(t.x + 4.0, t.y + 4.0);
         assert_eq!(r.clip.borrow().as_deref(), Some("ls"));
         assert!(r.writes().is_empty());
-        r.term.right_click();
+        r.term.right_click(t.x + 4.0, t.y + 4.0);
         assert_eq!(r.writes(), vec![b"ls".to_vec()]);
     }
 
@@ -860,5 +1156,172 @@ mod tests {
         assert!(r.term.view(&palette()).close_hover);
         assert!(r.term.hover(0.0, 200.0));
         assert!(!r.term.clear_hover());
+    }
+
+    // ---- tabs ----
+
+    const CTRL_SHIFT: Mods = Mods {
+        ctrl: true,
+        shift: true,
+        alt: false,
+    };
+    const VK_T: u16 = 0x54;
+    const VK_TAB: u16 = 0x09;
+
+    fn bar(r: &Rig) -> TabBarView {
+        r.term.view(&palette()).tabs
+    }
+
+    /// The centre of tab `i` on the bar.
+    fn tab_at(r: &Rig, i: usize) -> (f32, f32) {
+        let t = &bar(r).tabs[i].rect;
+        (t.x + t.w / 2.0, t.y + t.h / 2.0)
+    }
+
+    /// Right-clicks tab `i` and picks `action` from its menu.
+    fn menu(r: &mut Rig, i: usize, action: MenuAction) -> Outcome {
+        let (x, y) = tab_at(r, i);
+        assert_eq!(r.term.right_click(x, y), Outcome::Redraw);
+        let m = bar(r).menu.expect("the tab menu");
+        let row = m.items.iter().find(|it| it.action == action).expect("row");
+        let (mx, my) = (row.rect.x + 4.0, row.rect.y + row.rect.h / 2.0);
+        r.term.press(mx, my)
+    }
+
+    #[test]
+    fn a_new_tab_gets_its_own_shell_and_keys_go_to_the_active_one() {
+        let mut r = Rig::new();
+        r.open();
+        let first = r.shell();
+        r.type_key(VK_T, Some('\u{14}'), CTRL_SHIFT);
+        assert_eq!(bar(&r).tabs.len(), 2);
+        assert_eq!(r.spawns.borrow().opts.len(), 2);
+        let second = r.shell();
+        r.type_key(0x41, Some('a'), NONE);
+        assert_eq!(second.borrow().writes, vec![b"a".to_vec()]);
+        assert!(
+            first.borrow().writes.is_empty(),
+            "nor the Ctrl+Shift+T char"
+        );
+        // Ctrl+Tab back to the first.
+        r.type_key(VK_TAB, None, CTRL);
+        r.type_key(0x42, Some('b'), NONE);
+        assert_eq!(first.borrow().writes, vec![b"b".to_vec()]);
+    }
+
+    #[test]
+    fn closing_the_last_tab_closes_the_panel() {
+        let mut r = Rig::new();
+        r.open();
+        assert_eq!(
+            r.term.key(0x57, CTRL_SHIFT), // Ctrl+Shift+W
+            Outcome::Close
+        );
+        assert!(bar(&r).tabs.is_empty());
+        // The next open starts a fresh tab.
+        r.open();
+        assert_eq!(bar(&r).tabs.len(), 1);
+        assert_eq!(r.spawns.borrow().opts.len(), 2);
+    }
+
+    #[test]
+    fn a_middle_click_closes_a_regular_tab() {
+        let mut r = Rig::new();
+        r.open();
+        r.term.key(VK_T, CTRL_SHIFT);
+        let (x, y) = tab_at(&r, 0);
+        assert_eq!(r.term.middle_click(x, y), Outcome::Redraw);
+        assert_eq!(bar(&r).tabs.len(), 1);
+    }
+
+    #[test]
+    fn output_in_a_background_tab_marks_it() {
+        let mut r = Rig::new();
+        r.open();
+        let first = r.shell();
+        r.term.key(VK_T, CTRL_SHIFT);
+        first.borrow_mut().woke = true;
+        assert!(r.term.drain());
+        let tabs = bar(&r).tabs;
+        assert!(tabs[0].activity, "the background tab printed");
+        assert!(!tabs[1].activity);
+    }
+
+    #[test]
+    fn a_pinned_tab_is_saved_and_comes_back_after_a_restart() {
+        let mut r = Rig::new();
+        r.open();
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Title("api".into()));
+        r.term.drain();
+        assert!(r.term.take_save().is_none(), "nothing pinned yet");
+        assert_eq!(menu(&mut r, 0, MenuAction::Pin), Outcome::Redraw);
+        let toml = r.term.take_save().expect("pinning saves");
+        let (pinned, errors) = tabs::parse_pinned(&toml);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].title, "api");
+
+        // A new island run: the pinned tab is back on the first open, pinned.
+        let spawns = Rc::new(RefCell::new(Spawns::default()));
+        let mut term = Terminal::new(
+            TerminalConfig::default(),
+            Box::new(FakeSpawner(Rc::clone(&spawns))),
+            Box::new(FakeClipboard(Rc::new(RefCell::new(None)))),
+            pinned,
+        );
+        assert!(
+            spawns.borrow().opts.is_empty(),
+            "no shell before the panel opens"
+        );
+        term.open((8, 17), 1.0);
+        let view = term.view(&palette()).tabs;
+        assert_eq!(view.tabs.len(), 1);
+        assert!(view.tabs[0].pinned);
+        assert_eq!(view.tabs[0].title, "api");
+        assert_eq!(spawns.borrow().opts.len(), 1);
+    }
+
+    #[test]
+    fn close_others_keeps_pinned_tabs_and_their_shells() {
+        let mut r = Rig::new();
+        r.open();
+        menu(&mut r, 0, MenuAction::Pin);
+        r.term.key(VK_T, CTRL_SHIFT);
+        r.term.key(VK_T, CTRL_SHIFT);
+        assert_eq!(bar(&r).tabs.len(), 3);
+        menu(&mut r, 2, MenuAction::CloseOthers);
+        let tabs = bar(&r).tabs;
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs[0].pinned);
+        assert!(r.term.take_save().is_some(), "the pin was saved");
+    }
+
+    #[test]
+    fn enter_restarts_only_the_active_tab_that_exited() {
+        let mut r = Rig::new();
+        r.open();
+        let first = r.shell();
+        r.term.key(VK_T, CTRL_SHIFT);
+        first.borrow_mut().events.push(TermEvent::Exited(Some(0)));
+        r.term.drain();
+        assert!(bar(&r).tabs[0].exited);
+        assert!(
+            r.term.view(&palette()).notice.is_none(),
+            "the active tab is fine"
+        );
+        r.type_key(VK_RETURN, Some('\r'), NONE);
+        assert_eq!(
+            r.spawns.borrow().opts.len(),
+            2,
+            "no restart from another tab"
+        );
+        r.type_key(VK_TAB, None, CTRL);
+        assert!(r.term.view(&palette()).notice.is_some());
+        r.type_key(VK_RETURN, Some('\r'), NONE);
+        assert_eq!(r.spawns.borrow().opts.len(), 3, "restarted");
+        assert!(!bar(&r).tabs[0].exited);
     }
 }
