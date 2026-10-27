@@ -179,8 +179,6 @@ fn is_invisible(ch: char) -> bool {
 /// Draws the terminal panel's content inside `at`: the panel's rect at its final size, in
 /// window logical px (as `paint_tile_panel` takes it), at `scale` device px per logical px.
 /// Clipped to `at`; the grid and what sits on it are clipped to `TERM_TEXT` too.
-// The island painter calls this once the coordinator hooks the layer in.
-#[allow(dead_code)]
 pub(crate) fn paint_terminal(
     canvas: &Canvas,
     fonts: &mut Fonts,

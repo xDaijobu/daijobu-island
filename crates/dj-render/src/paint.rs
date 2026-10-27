@@ -53,6 +53,8 @@ pub struct Frame<'a> {
     pub settings: &'a SettingsView,
     /// The Tile panel's content, drawn while `view.layers.tile` is up.
     pub tile: Option<crate::tile::TilePanel<'a>>,
+    /// The terminal panel's content, drawn while `view.layers.terminal` is up.
+    pub terminal: Option<crate::terminal::TerminalPanel<'a>>,
     /// Pill or notch (config `[island] style`): the shape of the island's body.
     pub island_style: IslandStyle,
 }
@@ -214,6 +216,7 @@ impl Painter {
         let snap_op = smoothstep(0.35, 1.0, lay.snap) * not_osd;
         let settings_op = smoothstep(0.35, 1.0, lay.settings) * not_osd;
         let tile_op = smoothstep(0.35, 1.0, lay.tile) * not_osd;
+        let terminal_op = smoothstep(0.35, 1.0, lay.terminal) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -280,6 +283,17 @@ impl Painter {
                 layout::TILE_PANEL_H,
             );
             crate::tile::paint_tile_panel(canvas, &mut self.fonts, t, at, s, panel);
+            canvas.restore();
+        }
+        if let Some(panel) = f.terminal.as_ref().filter(|_| terminal_op > 0.01) {
+            begin_layer(canvas, &rect, terminal_op, center, s);
+            let at = LRect::new(
+                rect.center_x() / s - layout::TERM_W / 2.0,
+                rect.top / s,
+                layout::TERM_W,
+                layout::TERM_H,
+            );
+            crate::terminal::paint_terminal(canvas, &mut self.fonts, t, at, s, panel);
             canvas.restore();
         }
         if osd_a > 0.01 {
