@@ -137,6 +137,14 @@ pub const ST_RESERVE: Rect = Rect::new(328.0, 190.0, 52.0, 24.0);
 /// The `taken by another app` line.
 pub const ST_STATUS: Rect = Rect::new(20.0, 226.0, 360.0, 16.0);
 
+/// Tile panel (window zones): the layout picker the island opens while a window is being
+/// dragged, or from the Home tile. Its content (header, thumbnails, footer) is laid out
+/// by `tile::panel_thumbs` in panel-local px; the island only owns the size and routes
+/// clicks. Not `TILE_W` / `TILE_H`: those are the Home grid's tile size.
+pub const TILE_PANEL_W: f32 = 400.0;
+pub const TILE_PANEL_H: f32 = 168.0;
+pub const TILE_PANEL_R: f32 = 32.0;
+
 /// The gear in the Home header, left of the clock (pill-local on the Home grid).
 pub const HOME_GEAR: Rect = Rect::new(384.0, 16.0, 28.0, 28.0);
 
@@ -498,6 +506,19 @@ mod tests {
     }
 
     #[test]
+    fn the_tile_panel_is_400_by_168_and_fits_the_window() {
+        assert_eq!(
+            (TILE_PANEL_W, TILE_PANEL_H, TILE_PANEL_R),
+            (400.0, 168.0, 32.0)
+        );
+        let (w, h) = window_size();
+        assert!(TILE_PANEL_W <= w && TOP_MARGIN + TILE_PANEL_H <= h);
+        // Home stays the largest view, and the Home grid's own tile size is untouched.
+        const { assert!(TILE_PANEL_W <= HOME_W && TILE_PANEL_H <= HOME_H) };
+        assert_eq!((TILE_W, TILE_H), (88.0, 76.0));
+    }
+
+    #[test]
     fn the_reserved_strip_holds_every_rest_state() {
         for h in [IDLE_H, MUSIC_COMPACT_H, TIMER_COMPACT_H] {
             assert!(TOP_MARGIN + h <= RESERVE_H, "{h}");
@@ -514,7 +535,7 @@ mod tests {
     }
 
     /// Every view size the island morphs between, as `(w, h, corner radius)`.
-    const VIEWS: [(f32, f32, f32); 12] = [
+    const VIEWS: [(f32, f32, f32); 13] = [
         (IDLE_W, IDLE_H, IDLE_R),
         (HOME_W, HOME_H, HOME_R),
         (VITALS_W, VITALS_H, VITALS_R),
@@ -526,6 +547,7 @@ mod tests {
         (ALERT_W, ALERT_H, ALERT_R),
         (SNAP_W, SNAP_H, SNAP_R),
         (SETTINGS_W, SETTINGS_H, SETTINGS_R),
+        (TILE_PANEL_W, TILE_PANEL_H, TILE_PANEL_R),
         (OSD_W, OSD_H, OSD_R),
     ];
 

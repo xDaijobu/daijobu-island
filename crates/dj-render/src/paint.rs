@@ -51,6 +51,8 @@ pub struct Frame<'a> {
     pub snap: Option<SnapFrame>,
     /// The Settings panel's values, drawn while `view.layers.settings` is up.
     pub settings: &'a SettingsView,
+    /// The Tile panel's content, drawn while `view.layers.tile` is up.
+    pub tile: Option<crate::tile::TilePanel<'a>>,
     /// Pill or notch (config `[island] style`): the shape of the island's body.
     pub island_style: IslandStyle,
 }
@@ -211,6 +213,7 @@ impl Painter {
         let alert_op = smoothstep(0.35, 1.0, lay.alert) * not_osd;
         let snap_op = smoothstep(0.35, 1.0, lay.snap) * not_osd;
         let settings_op = smoothstep(0.35, 1.0, lay.settings) * not_osd;
+        let tile_op = smoothstep(0.35, 1.0, lay.tile) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -265,6 +268,18 @@ impl Painter {
         if settings_op > 0.01 {
             begin_layer(canvas, &rect, settings_op, center, s);
             self.settings_panel(canvas, f, &rect);
+            canvas.restore();
+        }
+        if let Some(panel) = f.tile.as_ref().filter(|_| tile_op > 0.01) {
+            begin_layer(canvas, &rect, tile_op, center, s);
+            // Anchored at the pill's top centre at its final size, like the other panels.
+            let at = LRect::new(
+                rect.center_x() / s - layout::TILE_PANEL_W / 2.0,
+                rect.top / s,
+                layout::TILE_PANEL_W,
+                layout::TILE_PANEL_H,
+            );
+            crate::tile::paint_tile_panel(canvas, &mut self.fonts, t, at, s, panel);
             canvas.restore();
         }
         if osd_a > 0.01 {

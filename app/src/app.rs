@@ -12,6 +12,10 @@ use crate::snap::{
 };
 use crate::storage;
 use crate::sweep::{Job, Msg, ScanId, Sweeper};
+use crate::tile::{
+    IslandGeo, SystemWindows, Tiler, HOTKEY_DOWN, HOTKEY_LEFT, HOTKEY_RIGHT, HOTKEY_UP,
+    HOTKEY_ZONE_1, HOTKEY_ZONE_9, POLL_MS, TIMER_TILE_NOTICE, TIMER_TILE_POLL, TIMER_TILE_RETRY,
+};
 use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
@@ -27,14 +31,17 @@ use dj_core::snap_edit::{CursorKind, EditInput, Key, KeyCode, Outcome, Rgba, Tex
 use dj_core::snap_stack::Stack;
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
+use dj_core::tile_assist::{self, AssistKey};
 use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{
-    EditScene, Frame, MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene,
-    TextMetrics,
+    AssistCard, AssistScene, AssistSurface, EditScene, Frame, MusicFrame, RenderError, Renderer,
+    SnapFrame, SnapOverlay, SnapScene, TextMetrics, TilePanel, TileThumb, ZoneOverlay, ZoneScene,
 };
+use dj_win::assist::{AssistInput, Thumbnail};
 use dj_win::overlay::{self, SnapInput};
+use dj_win::tile::MoveEvent;
 use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
 use dj_win::{appbar, hook, system, volume, window, Event, Handler, HICON, HWND};
 use std::path::PathBuf;
@@ -157,7 +164,68 @@ pub struct App {
     previews: Previews,
     /// The island window's desktop position (device px).
     win_pos: (i32, i32),
+    /// Tile: window zones, the zone overlay while a move shows one, and the timers.
+    tiler: Tiler,
+    tile_overlay: Option<TileOverlay>,
+    /// The island's Tile panel was opened for Tile (so Tile closes it again).
+    tile_panel: bool,
+    tile_poll_armed: bool,
+    /// The one-shot retry and notice timers, by when they fire.
+    tile_retry_at: Option<Instant>,
+    tile_notice_at: Option<Instant>,
+    /// The window picker's window while it fills a layout.
+    assist_win: Option<AssistWin>,
 }
+
+/// The window picker on the zone it fills: its window, surface, live thumbnails and input.
+struct AssistWin {
+    hwnd: HWND,
+    /// Dropped (with the thumbnails) before the window is destroyed.
+    surface: Option<AssistSurface>,
+    thumbs: Vec<Option<Thumbnail>>,
+    /// The desktop rect it covers and that monitor's scale.
+    zone: IRect,
+    scale: f32,
+    /// The windows its cards show, in order (thumbnails are remade when this changes).
+    windows: Vec<dj_win::tile::Raw>,
+    /// Icons already uploaded to the surface.
+    icons: Vec<dj_win::tile::Raw>,
+    hover: Option<usize>,
+    pressed: Option<usize>,
+    shown: bool,
+    dirty: bool,
+}
+
+/// Icons are uploaded at 48 px (sharp at the 20 px title size and the large no-preview one).
+const ASSIST_ICON: u32 = 48;
+
+/// The zone overlay on one monitor while a move shows it: its window and its surface.
+struct TileOverlay {
+    hwnd: HWND,
+    /// Dropped before the window is destroyed.
+    surface: Option<ZoneOverlay>,
+    monitor: IRect,
+    shown: bool,
+    /// What it last drew, so a poll redraws only on change.
+    drawn: Option<(Vec<IRect>, Option<usize>)>,
+}
+
+/// The zone keys: Ctrl+Alt+1..9, then the arrows.
+const TILE_KEYS: [(i32, u32, &str); 13] = [
+    (HOTKEY_ZONE_1, 0x31, "Ctrl+Alt+1"),
+    (HOTKEY_ZONE_1 + 1, 0x32, "Ctrl+Alt+2"),
+    (HOTKEY_ZONE_1 + 2, 0x33, "Ctrl+Alt+3"),
+    (HOTKEY_ZONE_1 + 3, 0x34, "Ctrl+Alt+4"),
+    (HOTKEY_ZONE_1 + 4, 0x35, "Ctrl+Alt+5"),
+    (HOTKEY_ZONE_1 + 5, 0x36, "Ctrl+Alt+6"),
+    (HOTKEY_ZONE_1 + 6, 0x37, "Ctrl+Alt+7"),
+    (HOTKEY_ZONE_1 + 7, 0x38, "Ctrl+Alt+8"),
+    (HOTKEY_ZONE_9, 0x39, "Ctrl+Alt+9"),
+    (HOTKEY_LEFT, 0x25, "Ctrl+Alt+Left"),
+    (HOTKEY_RIGHT, 0x27, "Ctrl+Alt+Right"),
+    (HOTKEY_UP, 0x26, "Ctrl+Alt+Up"),
+    (HOTKEY_DOWN, 0x28, "Ctrl+Alt+Down"),
+];
 
 impl App {
     pub fn new(hwnd: HWND, config: Config, exe: PathBuf) -> Self {
@@ -205,6 +273,11 @@ impl App {
             hwnd,
             &tokens,
         );
+        let (custom, errors) = dj_core::tile::parse_custom(&storage::read_layouts());
+        for e in errors {
+            storage::log(&format!("tile: {e}"));
+        }
+        let tiler = Tiler::new(Box::new(SystemWindows), config.tile.clone(), &custom);
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -259,6 +332,13 @@ impl App {
             reserved: None,
             previews,
             win_pos: (0, 0),
+            tiler,
+            tile_overlay: None,
+            tile_panel: false,
+            tile_poll_armed: false,
+            tile_retry_at: None,
+            tile_notice_at: None,
+            assist_win: None,
         };
         app.relayout();
         app.install_shell_integration();
@@ -285,6 +365,16 @@ impl App {
             storage::log("Ctrl+Alt+T is already taken by another app");
         }
         self.register_snap_hotkey();
+        // Tile: window moves of other apps, and the zone keys `[tile]` turns on.
+        if !dj_win::tile::install_move_hook() {
+            storage::log("tile: cannot watch window moves");
+        }
+        let wanted = self.tiler.hotkeys();
+        for (id, vk, name) in TILE_KEYS.iter().filter(|k| wanted.contains(&k.0)) {
+            if !window::register_hotkey(self.hwnd, *id, window::MOD_CTRL_ALT, *vk) {
+                storage::log(&format!("tile: {name} is already taken by another app"));
+            }
+        }
         system::install_topmost_hook(self.hwnd);
         system::watch_dir(self.hwnd, &storage::themes_dir());
         self.install_volume();
@@ -759,8 +849,14 @@ impl App {
             return;
         }
         // The preview stack must not be in the shot: hidden, and gone from the composed
-        // desktop, before the freeze.
+        // desktop, before the freeze. A window picker stops.
         self.previews.hide_for_capture(Instant::now());
+        if self.assist_win.is_some() {
+            // Gone from the composed desktop too, or the freeze could still show it.
+            self.tiler.assist_dismiss();
+            self.destroy_assist();
+            dj_win::previews::flush_composition();
+        }
         let (vx, vy, vw, vh) = overlay::virtual_screen();
         if vw <= 0 || vh <= 0 {
             storage::log("snap: no virtual screen");
@@ -1284,6 +1380,525 @@ impl App {
         self.visible && (self.dirty || self.island.is_animating() || self.anim.animating())
     }
 
+    // ---- Tile ----
+
+    /// Where the island is for a window move, desktop px: the summon area (from the top of
+    /// the screen to 80 logical px under the island's current lower edge, its width + 40 on
+    /// each side, so an overshoot to the very top keeps the picker) and the Tile panel's
+    /// final rect. The picker only opens over a resting island (or its own panel): never
+    /// while the island is hidden, a snap is up, or another panel or the thumb is open.
+    fn tile_geo(&self) -> IslandGeo {
+        let s = self.scale;
+        let px = |v: f32| (v * s).round() as i32;
+        let pill = self.island.pill_rect();
+        let cx = self.win_pos.0 + self.win_px.0 / 2;
+        let resting = matches!(
+            self.island.state(),
+            IslandState::Idle
+                | IslandState::MusicCompact
+                | IslandState::TimerCompact
+                | IslandState::TilePanel
+        );
+        let summon = if self.visible && self.overlay.is_none() && resting {
+            let half = px(pill.w / 2.0 + 40.0);
+            IRect::new(
+                cx - half,
+                self.win_pos.1,
+                2 * half,
+                px(pill.y + pill.h + 80.0),
+            )
+        } else {
+            IRect::new(0, 0, 0, 0)
+        };
+        IslandGeo {
+            summon,
+            panel: IRect::new(
+                cx - px(layout::TILE_PANEL_W / 2.0),
+                self.win_pos.1 + px(layout::TOP_MARGIN),
+                px(layout::TILE_PANEL_W),
+                px(layout::TILE_PANEL_H),
+            ),
+            scale: s,
+        }
+    }
+
+    /// A window-logical point in the Tile panel's own px (the island's `view_local`).
+    fn tile_local(lx: f32, ly: f32) -> (f32, f32) {
+        let (win_w, _) = layout::window_size();
+        (
+            lx - (win_w - layout::TILE_PANEL_W) / 2.0,
+            ly - layout::TOP_MARGIN,
+        )
+    }
+
+    /// Arms a one-shot timer for `want`, leaving one already armed for about that time
+    /// alone (re-arming on every event would keep it from firing).
+    fn arm_once(
+        hwnd: HWND,
+        id: usize,
+        armed: &mut Option<Instant>,
+        want: Option<Instant>,
+        now: Instant,
+    ) {
+        match want {
+            Some(t) if armed.is_none_or(|a| a.max(t) - a.min(t) > Duration::from_millis(5)) => {
+                let ms = t.saturating_duration_since(now).as_millis() as u32;
+                window::set_timer(hwnd, id, ms.saturating_add(1));
+                *armed = Some(t);
+            }
+            None if armed.is_some() => {
+                window::kill_timer(hwnd, id);
+                *armed = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Keeps the island's Tile panel, the zone overlay and the Tile timers in step with
+    /// `tiler`, and writes `[tile]` when a monitor's active layout changed.
+    fn sync_tile(&mut self) {
+        let now = Instant::now();
+        for e in self.tiler.take_errors() {
+            storage::log(&e);
+        }
+        if let Some(tile) = self.tiler.take_config() {
+            self.config.tile = tile;
+            storage::save_config(&self.config);
+        }
+        // The cursor is polled only while a window moves.
+        let polling = self.tiler.polling();
+        if polling != self.tile_poll_armed {
+            if polling {
+                window::set_timer(self.hwnd, TIMER_TILE_POLL, POLL_MS);
+            } else {
+                window::kill_timer(self.hwnd, TIMER_TILE_POLL);
+            }
+            self.tile_poll_armed = polling;
+        }
+        let (retry, notice) = self.tiler.next_timer(now);
+        Self::arm_once(
+            self.hwnd,
+            TIMER_TILE_RETRY,
+            &mut self.tile_retry_at,
+            retry.map(|d| now + d),
+            now,
+        );
+        Self::arm_once(
+            self.hwnd,
+            TIMER_TILE_NOTICE,
+            &mut self.tile_notice_at,
+            notice.map(|d| now + d),
+            now,
+        );
+
+        // Something else took the island over (the snap thumb, a hidden island).
+        if self.tile_panel && !self.island.tile_open() {
+            self.tiler.panel_closed();
+            self.tile_panel = false;
+        }
+        let want = self.tiler.panel_wanted(now) && self.visible && self.overlay.is_none();
+        if want && !self.island.tile_open() {
+            let tokens = self.anim.current().clone();
+            self.island.open_tile(&tokens);
+            self.tile_panel = true;
+            self.dirty = true;
+        } else if !want && self.tile_panel {
+            let tokens = self.anim.current().clone();
+            self.island.collapse(&tokens);
+            self.tile_panel = false;
+            // Whatever wanted it is over (or the island was hidden): it must not reopen.
+            self.tiler.panel_closed();
+            self.dirty = true;
+        }
+        self.sync_tile_overlay();
+        self.sync_assist();
+    }
+
+    /// The zone overlay: made once per move on the target monitor (a new GPU device each
+    /// time, so never per hover), hidden while nothing is lit, redrawn only when the zones
+    /// change, gone when the move ends.
+    fn sync_tile_overlay(&mut self) {
+        if !self.tiler.polling() {
+            self.destroy_tile_overlay();
+            return;
+        }
+        let Some(want) = self.tiler.overlay() else {
+            if let Some(o) = self.tile_overlay.as_mut().filter(|o| o.shown) {
+                dj_win::tile::hide_overlay(o.hwnd);
+                o.shown = false;
+            }
+            return;
+        };
+        if self
+            .tile_overlay
+            .as_ref()
+            .is_some_and(|o| o.monitor != want.monitor)
+        {
+            self.destroy_tile_overlay();
+        }
+        if self.tile_overlay.is_none() {
+            let m = want.monitor;
+            let hwnd = match dj_win::tile::create_overlay(m.x, m.y, m.w, m.h) {
+                Ok(h) => h,
+                Err(e) => {
+                    storage::log(&format!("tile: cannot create the zone overlay: {e}"));
+                    return;
+                }
+            };
+            let surface = match ZoneOverlay::new(hwnd.0 as isize, m.w as u32, m.h as u32) {
+                Ok(s) => s,
+                Err(e) => {
+                    storage::log(&format!("tile: zone overlay renderer: {e}"));
+                    dj_win::tile::destroy_overlay(hwnd);
+                    return;
+                }
+            };
+            self.tile_overlay = Some(TileOverlay {
+                hwnd,
+                surface: Some(surface),
+                monitor: m,
+                shown: false,
+                drawn: None,
+            });
+        }
+        let Some(o) = self.tile_overlay.as_mut() else {
+            return;
+        };
+        let key = (want.zones.clone(), want.highlight);
+        if o.drawn.as_ref() != Some(&key) {
+            let zones: Vec<layout::Rect> = want
+                .zones
+                .iter()
+                .map(|z| {
+                    layout::Rect::new(
+                        (z.x - o.monitor.x) as f32,
+                        (z.y - o.monitor.y) as f32,
+                        z.w as f32,
+                        z.h as f32,
+                    )
+                })
+                .collect();
+            let scene = ZoneScene {
+                tokens: self.anim.current(),
+                scale: want.scale,
+                zones: &zones,
+                highlight: want.highlight,
+            };
+            if let Some(Err(e)) = o.surface.as_mut().map(|s| s.render(&scene)) {
+                storage::log(&format!("tile: zone overlay render: {e}"));
+            }
+            o.drawn = Some(key);
+        }
+        if !o.shown {
+            // Under the island (both topmost), so the zones never cover the Tile panel.
+            dj_win::tile::show_overlay_below(o.hwnd, self.hwnd);
+            o.shown = true;
+        }
+    }
+
+    // ---- Tile: the window picker ----
+
+    /// The picker follows the run: made on its first zone, moved and resized to each next
+    /// zone, its cards' thumbnails and icons kept in step, gone when the run ends.
+    fn sync_assist(&mut self) {
+        let Some((zone, scale)) = self.tiler.assist_zone() else {
+            self.destroy_assist();
+            return;
+        };
+        if self.assist_win.is_none() {
+            let hwnd = match dj_win::assist::create(zone.x, zone.y, zone.w, zone.h) {
+                Ok(h) => h,
+                Err(e) => {
+                    storage::log(&format!("tile: cannot create the window picker: {e}"));
+                    self.tiler.assist_dismiss();
+                    return;
+                }
+            };
+            let surface = match AssistSurface::new(hwnd.0 as isize, zone.w as u32, zone.h as u32) {
+                Ok(s) => s,
+                Err(e) => {
+                    storage::log(&format!("tile: window picker renderer: {e}"));
+                    dj_win::assist::destroy(hwnd);
+                    self.tiler.assist_dismiss();
+                    return;
+                }
+            };
+            self.assist_win = Some(AssistWin {
+                hwnd,
+                surface: Some(surface),
+                thumbs: Vec::new(),
+                zone,
+                scale,
+                windows: Vec::new(),
+                icons: Vec::new(),
+                hover: None,
+                pressed: None,
+                shown: false,
+                dirty: true,
+            });
+        }
+        let Some(w) = self.assist_win.as_mut() else {
+            return;
+        };
+        if w.zone != zone {
+            // The next zone: the old thumbnails go first (or they'd show a frame in the new
+            // place), then the window moves, then its swap chain follows.
+            w.thumbs.clear();
+            dj_win::assist::place(w.hwnd, zone.x, zone.y, zone.w, zone.h);
+            if let Some(Err(e)) = w
+                .surface
+                .as_mut()
+                .map(|s| s.resize(zone.w as u32, zone.h as u32))
+            {
+                storage::log(&format!("tile: window picker resize: {e}"));
+            }
+            w.zone = zone;
+            w.scale = scale;
+            w.thumbs.clear();
+            w.windows.clear();
+            w.hover = None;
+            w.pressed = None;
+            w.dirty = true;
+        }
+        let windows: Vec<dj_win::tile::Raw> =
+            self.tiler.assist_windows().iter().map(|l| l.w).collect();
+        if windows != w.windows {
+            w.thumbs.clear();
+            w.windows = windows;
+            w.dirty = true;
+        }
+        if w.dirty {
+            self.render_assist();
+        }
+        if let Some(w) = self.assist_win.as_mut().filter(|w| !w.shown) {
+            // Shown after its first frame, and it takes the keyboard.
+            dj_win::assist::show(w.hwnd);
+            w.shown = true;
+        }
+    }
+
+    /// The card grid for the picker's zone, in its logical px.
+    fn assist_layout(zone: IRect, scale: f32, count: usize) -> tile_assist::AssistLayout {
+        tile_assist::layout(zone.w as f32 / scale, zone.h as f32 / scale, count)
+    }
+
+    /// Draws the picker: the lit zone, a card per window (the live thumbnails are composed
+    /// over them by Windows), the header and the footer.
+    fn render_assist(&mut self) {
+        let listed: Vec<crate::tile::Listed> =
+            self.tiler.assist_windows().into_iter().cloned().collect();
+        let (step, total) = self.tiler.assist_progress();
+        let zone_number = self.tiler.assist_zone_number();
+        let selected = self.tiler.assist_selected();
+        let notice = self.tiler.assist_notice();
+        let Some(w) = self.assist_win.as_mut() else {
+            return;
+        };
+        w.dirty = false;
+        let l = Self::assist_layout(w.zone, w.scale, listed.len());
+        let s = w.scale;
+        // Icons once per window.
+        if let Some(surface) = w.surface.as_mut() {
+            for item in &listed {
+                if !w.icons.contains(&item.w) {
+                    if let Some(px) = dj_win::assist::icon_bgra(item.w, ASSIST_ICON) {
+                        surface.set_icon(item.w as u64, &px, ASSIST_ICON);
+                    }
+                    w.icons.push(item.w);
+                }
+            }
+        }
+        // Live thumbnails, one per card shown (none for minimized windows).
+        if w.thumbs.len() != l.cards.len() {
+            w.thumbs = l
+                .cards
+                .iter()
+                .zip(&listed)
+                .map(|(_, item)| {
+                    (!item.minimized)
+                        .then(|| Thumbnail::new(w.hwnd, item.w))
+                        .flatten()
+                })
+                .collect();
+        }
+        let mut no_thumb = vec![false; l.cards.len()];
+        for (i, card) in l.cards.iter().enumerate() {
+            let Some(thumb) = w.thumbs.get(i).and_then(Option::as_ref) else {
+                no_thumb[i] = true;
+                continue;
+            };
+            let Some((sw, sh)) = thumb.source_size() else {
+                no_thumb[i] = true;
+                thumb.show((0, 0, 0, 0), false);
+                continue;
+            };
+            // A little inset, so the thumbnail's square corners stay inside the card.
+            let area = layout::Rect::new(
+                card.thumb.x + 3.0,
+                card.thumb.y + 3.0,
+                card.thumb.w - 6.0,
+                card.thumb.h - 6.0,
+            );
+            let r = tile_assist::fit(area, (sw as f32, sh as f32));
+            let (x0, y0) = ((r.x * s).round() as i32, (r.y * s).round() as i32);
+            let (x1, y1) = (
+                ((r.x + r.w) * s).round() as i32,
+                ((r.y + r.h) * s).round() as i32,
+            );
+            thumb.show((x0, y0, x1 - x0, y1 - y0), true);
+        }
+        let cards: Vec<AssistCard> = l
+            .cards
+            .iter()
+            .zip(&listed)
+            .enumerate()
+            .map(|(i, (c, item))| AssistCard {
+                rect: c.rect,
+                icon_rect: c.icon,
+                title_rect: c.title,
+                thumb_rect: c.thumb,
+                title: &item.title,
+                icon: w
+                    .surface
+                    .as_ref()
+                    .filter(|s| s.has_icon(item.w as u64))
+                    .map(|_| item.w as u64),
+                hovered: w.hover == Some(i),
+                selected: selected == i,
+                elevated: item.elevated,
+                no_thumb: no_thumb[i],
+            })
+            .collect();
+        let title = format!("pick a window for zone {zone_number}");
+        let step = format!("{step} / {total}");
+        let footer = if notice {
+            "can't move an admin window".to_string()
+        } else if l.hidden > 0 {
+            format!("{} more not shown · esc to stop", l.hidden)
+        } else if listed.is_empty() {
+            "no windows to place · esc to stop".to_string()
+        } else {
+            "click a window, or arrows + enter · esc to stop".to_string()
+        };
+        let scene = AssistScene {
+            tokens: self.anim.current(),
+            scale: s,
+            size: (w.zone.w as f32 / s, w.zone.h as f32 / s),
+            header: l.header,
+            title: &title,
+            step: &step,
+            footer: l.footer,
+            footer_text: &footer,
+            warn: notice,
+            cards: &cards,
+        };
+        if let Some(Err(e)) = w.surface.as_mut().map(|surface| surface.render(&scene)) {
+            storage::log(&format!("tile: window picker render: {e}"));
+        }
+    }
+
+    /// Input on the picker: hover, click a card, keys, or losing the keyboard (a click
+    /// elsewhere) which ends the run.
+    fn assist_input(&mut self, input: AssistInput) {
+        let now = Instant::now();
+        let Some(w) = self.assist_win.as_ref() else {
+            return;
+        };
+        let (zone, scale, hwnd) = (w.zone, w.scale, w.hwnd);
+        let count = self.tiler.assist_windows().len();
+        let l = Self::assist_layout(zone, scale, count);
+        let hit = |x: i32, y: i32| tile_assist::hit(&l, x as f32 / scale, y as f32 / scale);
+        match input {
+            AssistInput::Move { x, y } => {
+                let hover = hit(x, y);
+                if let Some(w) = self.assist_win.as_mut().filter(|w| w.hover != hover) {
+                    w.hover = hover;
+                    w.dirty = true;
+                    // The keyboard selection follows the pointer, as in Task View.
+                    if let Some(i) = hover {
+                        self.tiler.assist_select(i);
+                    }
+                }
+            }
+            AssistInput::Press { x, y } => {
+                if let Some(w) = self.assist_win.as_mut() {
+                    w.pressed = hit(x, y);
+                }
+            }
+            AssistInput::Release { x, y } => {
+                let card = hit(x, y);
+                let pressed = self.assist_win.as_mut().and_then(|w| w.pressed.take());
+                if let Some(i) = card.filter(|&i| Some(i) == pressed) {
+                    self.assist_pick(i, now);
+                }
+            }
+            AssistInput::Leave => {
+                if let Some(w) = self.assist_win.as_mut() {
+                    w.dirty |= w.hover.take().is_some();
+                    w.pressed = None;
+                }
+            }
+            AssistInput::Key { vk, .. } => {
+                let key = match vk {
+                    0x25 => AssistKey::Left,
+                    0x27 => AssistKey::Right,
+                    0x26 => AssistKey::Up,
+                    0x28 => AssistKey::Down,
+                    0x24 => AssistKey::Home,
+                    0x23 => AssistKey::End,
+                    0x0D => AssistKey::Enter,
+                    0x1B => AssistKey::Escape,
+                    _ => return,
+                };
+                if key == AssistKey::Enter {
+                    self.assist_pick(self.tiler.assist_selected(), now);
+                } else if self.tiler.assist_key(key, l.cols, l.cards.len(), now) {
+                    if let Some(w) = self.assist_win.as_mut() {
+                        w.dirty = true;
+                    }
+                }
+            }
+            // The keyboard went elsewhere (a click outside, Alt-Tab). A loss caused by our own
+            // pick was undone in `assist_pick` before this queued event is seen, so the
+            // picker is in front again and the event is stale.
+            AssistInput::FocusLost => {
+                if dj_win::tile::foreground() != hwnd.0 as isize {
+                    self.tiler.assist_dismiss();
+                }
+            }
+        }
+    }
+
+    /// A card was picked (click or Enter). Restoring a minimized window activates it; while
+    /// the run goes on, the picker takes the keyboard straight back (still within the
+    /// click's or key's right to the foreground).
+    fn assist_pick(&mut self, i: usize, now: Instant) {
+        if let Some(w) = self.assist_win.as_mut() {
+            w.dirty = true;
+        }
+        self.tiler.assist_pick(i, now);
+        if let Some(w) = self.assist_win.as_ref().filter(|_| self.tiler.assisting()) {
+            if dj_win::tile::foreground() != w.hwnd.0 as isize {
+                dj_win::assist::show(w.hwnd);
+            }
+        }
+    }
+
+    fn destroy_assist(&mut self) {
+        if let Some(mut w) = self.assist_win.take() {
+            w.thumbs.clear();
+            w.surface = None;
+            dj_win::assist::destroy(w.hwnd);
+        }
+    }
+
+    fn destroy_tile_overlay(&mut self) {
+        if let Some(mut o) = self.tile_overlay.take() {
+            o.surface = None;
+            dj_win::tile::destroy_overlay(o.hwnd);
+        }
+    }
+
     /// The island's centre and lower edge, desktop px: the Snap preview stack hangs
     /// below it and follows it as panels open and close.
     fn stack_anchor(&self) -> (i32, i32) {
@@ -1355,9 +1970,13 @@ impl App {
         self.sync_vu_timer();
         // A hidden island gives the screen back.
         self.sync_appbar(false);
-        // The preview stack hides with the island (its countdowns pause).
+        // The preview stack hides with the island (its countdowns pause), and a window
+        // picker stops.
         self.previews
             .set_allowed(visible && self.overlay.is_none(), Instant::now());
+        if !visible {
+            self.tiler.assist_dismiss();
+        }
     }
 
     // ---- YouTube Music ----
@@ -1605,6 +2224,13 @@ impl App {
         self.reserved = None;
         self.end_snap(End::Cancel);
         self.previews.shutdown();
+        dj_win::tile::uninstall_move_hook();
+        self.destroy_tile_overlay();
+        self.tiler.assist_dismiss();
+        self.destroy_assist();
+        for (id, _, _) in TILE_KEYS {
+            window::unregister_hotkey(self.hwnd, id);
+        }
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ALT);
         self.engine = None;
@@ -1655,6 +2281,11 @@ impl Handler for App {
     fn event(&mut self, ev: Event) {
         match ev {
             Event::Click { x, y } => {
+                // The island never takes the keyboard, so the picker can't see this click
+                // as a focus loss: a click on the island leaves the picker here.
+                if self.tiler.assisting() {
+                    self.tiler.assist_dismiss();
+                }
                 let (lx, ly) = self.island_point(x, y);
                 let tokens = self.anim.current().clone();
                 let outcome = self.island.click(lx, ly, &tokens);
@@ -1674,6 +2305,18 @@ impl Handler for App {
                         self.island.open_timer(&tokens);
                     }
                     ClickOutcome::Open(i) if FEATURES[i].id == "snap" => self.request_snap(),
+                    // The panel is for the app in front (the island never takes focus).
+                    ClickOutcome::Open(i) if FEATURES[i].id == "tile" => {
+                        self.tiler.open_home();
+                        self.island.open_tile(&tokens);
+                        self.tile_panel = true;
+                    }
+                    // A cell places that window; anywhere else just closes the panel.
+                    ClickOutcome::Tile { x, y } => {
+                        self.tiler.panel_click(x, y);
+                        self.island.collapse(&tokens);
+                        self.tile_panel = false;
+                    }
                     ClickOutcome::Snap(action) => self.snap_action(action),
                     ClickOutcome::Timer(action) => self.timer_action(action),
                     ClickOutcome::Settings(action) => self.settings_action(action),
@@ -1691,6 +2334,12 @@ impl Handler for App {
                 let (lx, ly) = self.island_point(x, y);
                 if self.island.hover(lx, ly) {
                     self.dirty = true;
+                }
+                if self.island.tile_open() {
+                    let (px, py) = Self::tile_local(lx, ly);
+                    if self.tiler.home_hover(px, py) {
+                        self.dirty = true;
+                    }
                 }
             }
             Event::Drag { x, y } => {
@@ -1728,7 +2377,7 @@ impl Handler for App {
                 self.show_volume();
             }
             Event::Leave => {
-                if self.island.clear_hover() {
+                if self.island.clear_hover() | self.tiler.clear_hover() {
                     self.dirty = true;
                 }
             }
@@ -1738,16 +2387,29 @@ impl Handler for App {
                 self.request_snap()
             }
             Event::Hotkey(HOTKEY_SNAP_ESC) => self.snap_escape(),
+            Event::Hotkey(id @ HOTKEY_ZONE_1..=HOTKEY_DOWN) => {
+                self.tiler.hotkey(id, Instant::now());
+                // An open panel may now carry the admin notice.
+                self.dirty = true;
+            }
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
             Event::Previews(input) => self.previews.input(input, Instant::now()),
+            Event::Assist(input) => self.assist_input(input),
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
-            Event::DpiChanged => self.relayout(),
-            Event::DisplayChange => {
-                // The monitors changed under the frozen frames: drop the snap.
-                self.end_snap(End::Cancel);
+            Event::DpiChanged => {
+                // The picker's zones and scale are from before.
+                self.tiler.assist_dismiss();
                 self.relayout();
+            }
+            Event::DisplayChange => {
+                // The monitors changed under the frozen frames: drop the snap (and a
+                // window picker, whose zones are from before).
+                self.end_snap(End::Cancel);
+                self.tiler.assist_dismiss();
+                self.relayout();
+                self.tiler.refresh_monitors();
             }
             Event::ThemesChanged => self.reload_themes(),
             Event::Timer(TIMER_CLOCK) => {
@@ -1795,6 +2457,23 @@ impl Handler for App {
                 }
             }
             Event::Timer(TIMER_SNAP_STACK) => self.previews.timer(Instant::now()),
+            Event::Timer(TIMER_TILE_POLL) => {
+                let geo = self.tile_geo();
+                if self.tiler.poll(geo, Instant::now()) {
+                    self.dirty = true;
+                }
+            }
+            Event::Timer(TIMER_TILE_RETRY) => {
+                window::kill_timer(self.hwnd, TIMER_TILE_RETRY);
+                self.tile_retry_at = None;
+                self.tiler.retry(Instant::now());
+            }
+            Event::Timer(TIMER_TILE_NOTICE) => {
+                window::kill_timer(self.hwnd, TIMER_TILE_NOTICE);
+                self.tile_notice_at = None;
+                self.tiler.notice_done(Instant::now());
+                self.dirty = true;
+            }
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => {
@@ -1818,6 +2497,12 @@ impl Handler for App {
                 self.sync_appbar(true);
             }
             Event::AppBarMoved => self.sync_appbar(true),
+            Event::TileMove(MoveEvent::Start(w)) => self.tiler.move_start(w),
+            Event::TileMove(MoveEvent::End(w)) => {
+                let geo = self.tile_geo();
+                self.tiler.move_end(w, geo, Instant::now());
+                self.dirty = true;
+            }
             Event::VitalsReady => self.drain_vitals(),
             Event::SweepReady => self.drain_sweep(),
         }
@@ -1826,6 +2511,7 @@ impl Handler for App {
         self.sync_sweep();
         self.sync_timer();
         self.sync_snap();
+        self.sync_tile();
     }
 
     fn wants_frame(&self) -> bool {
@@ -1898,6 +2584,27 @@ impl Handler for App {
         let estimate = self.estimate();
         let timer = self.timer.view(now);
         let settings = self.settings_view();
+        // The Tile panel's content, only while its layer shows.
+        let tile = (view.layers.tile > 0.0).then(|| self.tiler.panel(now));
+        let tile_thumbs: Vec<TileThumb> = tile.as_ref().map_or_else(Vec::new, |p| {
+            p.thumbs
+                .iter()
+                .map(|t| TileThumb {
+                    rect: t.rect,
+                    cells: &t.cells,
+                    active: t.layout == p.active,
+                    hover: p.hover.filter(|&(l, _)| l == t.layout).map(|(_, z)| z),
+                })
+                .collect()
+        });
+        let tile_panel = tile.as_ref().map(|p| TilePanel {
+            title: p.title,
+            monitor: &p.monitor,
+            thumbs: &tile_thumbs,
+            footer: Some(p.footer),
+            header: dj_core::tile::PANEL_HEADER,
+            footer_rect: dj_core::tile::PANEL_FOOTER,
+        });
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
             return;
@@ -1917,6 +2624,7 @@ impl Handler for App {
             timer: &timer,
             snap: self.snap_frame,
             settings: &settings,
+            tile: tile_panel,
             island_style: self.config.island.style(),
         };
         match renderer.render(&frame) {
