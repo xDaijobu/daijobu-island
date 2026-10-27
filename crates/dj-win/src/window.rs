@@ -94,6 +94,10 @@ pub enum Event {
     Previews(crate::previews::PreviewInput),
     /// The shell moved the AppBars around (see [`crate::appbar`]): set the strip again.
     AppBarMoved,
+    /// Another process's window started or finished a move or a resize (see
+    /// [`crate::tile`]). Raised by an out-of-context WinEvent hook, so it arrives only
+    /// while the loop is pumping messages, which a thread message from the hook ensures.
+    TileMove(crate::tile::MoveEvent),
 }
 
 pub trait Handler {
