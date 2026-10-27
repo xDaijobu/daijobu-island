@@ -93,10 +93,11 @@ fn has_frame(style: u32) -> bool {
 
 /// Whether a window is one a user would switch to, by the Alt-Tab rules: visible, with a
 /// title, not cloaked (another virtual desktop, a suspended UWP app), not ours, not a shell
-/// window, a tool window only when it asks for a taskbar button (`WS_EX_APPWINDOW`), and
-/// either unowned or asking for that button. On top of Alt-Tab it must have a title bar or
-/// a sizing border (see [`has_frame`]), which also drops the shell's popups, overlays and
-/// splash screens. Minimised windows pass.
+/// window, either unowned or asking for a taskbar button (`WS_EX_APPWINDOW`). Never a tool
+/// window, even one with that button: placement (`tile::classify`) refuses tool windows,
+/// and a card that can't be placed would only frustrate. On top of Alt-Tab it must have a
+/// title bar or a sizing border (see [`has_frame`]), which also drops the shell's popups,
+/// overlays and splash screens. Minimised windows pass.
 fn switchable(f: &Facts) -> bool {
     let app_window = f.ex_style & WS_EX_APPWINDOW.0 != 0;
     f.visible
@@ -105,7 +106,7 @@ fn switchable(f: &Facts) -> bool {
         && !f.title.trim().is_empty()
         && !is_shell_class(f.class)
         && f.style & WS_CHILD.0 == 0
-        && (f.ex_style & WS_EX_TOOLWINDOW.0 == 0 || app_window)
+        && f.ex_style & WS_EX_TOOLWINDOW.0 == 0
         && (!f.has_owner || app_window)
         && has_frame(f.style)
 }
@@ -608,6 +609,26 @@ pub fn activate(w: Raw) {
     }
 }
 
+/// Puts a window at the top of the (non-topmost) z-order without activating it: the
+/// picker was left by a click elsewhere, so the keyboard stays where the user put it.
+pub fn raise(w: Raw) {
+    if w == 0 {
+        return;
+    }
+    // SAFETY: a plain call on a handle that may be stale (then it fails).
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd_of(w),
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
 // ---- the picker window --------------------------------------------------------------
 
 const CLASS_NAME: PCWSTR = w!("DaijobuTileAssist");
@@ -968,19 +989,20 @@ mod tests {
     }
 
     #[test]
-    fn the_app_window_style_overrides_tool_and_owner() {
+    fn the_app_window_style_overrides_the_owner_but_not_a_tool_window() {
         let app = WS_EX_APPWINDOW.0;
-        // Alt-Tab lists an owned window or a tool window that asks for a taskbar button.
+        // Alt-Tab lists an owned window that asks for a taskbar button.
         assert!(switchable(&Facts {
             has_owner: true,
             ex_style: app,
             ..facts()
         }));
-        assert!(switchable(&Facts {
+        // A tool window can't be placed (tile::classify), so it is never a card.
+        assert!(!switchable(&Facts {
             ex_style: WS_EX_TOOLWINDOW.0 | app,
             ..facts()
         }));
-        assert!(switchable(&Facts {
+        assert!(!switchable(&Facts {
             has_owner: true,
             ex_style: WS_EX_TOOLWINDOW.0 | app,
             ..facts()

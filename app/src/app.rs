@@ -192,9 +192,6 @@ struct AssistWin {
     icons: Vec<dj_win::tile::Raw>,
     hover: Option<usize>,
     pressed: Option<usize>,
-    /// The window just picked: activating it (a restored minimized one) takes the
-    /// foreground from the picker, which must not count as a click elsewhere.
-    last_pick: Option<dj_win::tile::Raw>,
     shown: bool,
     dirty: bool,
 }
@@ -854,8 +851,12 @@ impl App {
         // The preview stack must not be in the shot: hidden, and gone from the composed
         // desktop, before the freeze. A window picker stops.
         self.previews.hide_for_capture(Instant::now());
-        self.tiler.assist_cancel();
-        self.destroy_assist();
+        if self.assist_win.is_some() {
+            // Gone from the composed desktop too, or the freeze could still show it.
+            self.tiler.assist_dismiss();
+            self.destroy_assist();
+            dj_win::previews::flush_composition();
+        }
         let (vx, vy, vw, vh) = overlay::virtual_screen();
         if vw <= 0 || vh <= 0 {
             storage::log("snap: no virtual screen");
@@ -1609,7 +1610,7 @@ impl App {
                 Ok(h) => h,
                 Err(e) => {
                     storage::log(&format!("tile: cannot create the window picker: {e}"));
-                    self.tiler.assist_cancel();
+                    self.tiler.assist_dismiss();
                     return;
                 }
             };
@@ -1618,7 +1619,7 @@ impl App {
                 Err(e) => {
                     storage::log(&format!("tile: window picker renderer: {e}"));
                     dj_win::assist::destroy(hwnd);
-                    self.tiler.assist_cancel();
+                    self.tiler.assist_dismiss();
                     return;
                 }
             };
@@ -1632,7 +1633,6 @@ impl App {
                 icons: Vec::new(),
                 hover: None,
                 pressed: None,
-                last_pick: None,
                 shown: false,
                 dirty: true,
             });
@@ -1641,7 +1641,9 @@ impl App {
             return;
         };
         if w.zone != zone {
-            // The next zone: the window moves first, then its swap chain follows.
+            // The next zone: the old thumbnails go first (or they'd show a frame in the new
+            // place), then the window moves, then its swap chain follows.
+            w.thumbs.clear();
             dj_win::assist::place(w.hwnd, zone.x, zone.y, zone.w, zone.h);
             if let Some(Err(e)) = w
                 .surface
@@ -1856,31 +1858,30 @@ impl App {
                     }
                 }
             }
+            // The keyboard went elsewhere (a click outside, Alt-Tab). A loss caused by our own
+            // pick was undone in `assist_pick` before this queued event is seen, so the
+            // picker is in front again and the event is stale.
             AssistInput::FocusLost => {
-                let fg = dj_win::tile::foreground();
-                let ours = self.assist_win.as_ref().and_then(|w| w.last_pick);
-                if fg == hwnd.0 as isize {
-                    return;
-                }
-                if ours == Some(fg) && self.tiler.assisting() {
-                    // The window just picked came up (a restored minimized one): take the
-                    // keyboard back and carry on.
-                    dj_win::assist::show(hwnd);
-                } else {
-                    self.tiler.assist_cancel();
+                if dj_win::tile::foreground() != hwnd.0 as isize {
+                    self.tiler.assist_dismiss();
                 }
             }
         }
     }
 
-    /// A card was picked (click or Enter).
+    /// A card was picked (click or Enter). Restoring a minimized window activates it; while
+    /// the run goes on, the picker takes the keyboard straight back (still within the
+    /// click's or key's right to the foreground).
     fn assist_pick(&mut self, i: usize, now: Instant) {
-        let picked = self.tiler.assist_windows().get(i).map(|l| l.w);
         if let Some(w) = self.assist_win.as_mut() {
-            w.last_pick = picked;
             w.dirty = true;
         }
         self.tiler.assist_pick(i, now);
+        if let Some(w) = self.assist_win.as_ref().filter(|_| self.tiler.assisting()) {
+            if dj_win::tile::foreground() != w.hwnd.0 as isize {
+                dj_win::assist::show(w.hwnd);
+            }
+        }
     }
 
     fn destroy_assist(&mut self) {
@@ -1974,7 +1975,7 @@ impl App {
         self.previews
             .set_allowed(visible && self.overlay.is_none(), Instant::now());
         if !visible {
-            self.tiler.assist_cancel();
+            self.tiler.assist_dismiss();
         }
     }
 
@@ -2225,7 +2226,7 @@ impl App {
         self.previews.shutdown();
         dj_win::tile::uninstall_move_hook();
         self.destroy_tile_overlay();
-        self.tiler.assist_cancel();
+        self.tiler.assist_dismiss();
         self.destroy_assist();
         for (id, _, _) in TILE_KEYS {
             window::unregister_hotkey(self.hwnd, id);
@@ -2280,6 +2281,11 @@ impl Handler for App {
     fn event(&mut self, ev: Event) {
         match ev {
             Event::Click { x, y } => {
+                // The island never takes the keyboard, so the picker can't see this click
+                // as a focus loss: a click on the island leaves the picker here.
+                if self.tiler.assisting() {
+                    self.tiler.assist_dismiss();
+                }
                 let (lx, ly) = self.island_point(x, y);
                 let tokens = self.anim.current().clone();
                 let outcome = self.island.click(lx, ly, &tokens);
@@ -2392,10 +2398,16 @@ impl Handler for App {
             Event::Assist(input) => self.assist_input(input),
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
-            Event::DpiChanged => self.relayout(),
+            Event::DpiChanged => {
+                // The picker's zones and scale are from before.
+                self.tiler.assist_dismiss();
+                self.relayout();
+            }
             Event::DisplayChange => {
-                // The monitors changed under the frozen frames: drop the snap.
+                // The monitors changed under the frozen frames: drop the snap (and a
+                // window picker, whose zones are from before).
                 self.end_snap(End::Cancel);
+                self.tiler.assist_dismiss();
                 self.relayout();
                 self.tiler.refresh_monitors();
             }

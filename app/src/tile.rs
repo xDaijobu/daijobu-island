@@ -62,8 +62,10 @@ pub trait WindowOps {
     fn still_moving(&self, w: Raw) -> bool;
     /// The windows a user would switch to, newest first (the window picker's cards).
     fn list_windows(&self) -> Vec<Listed>;
-    /// Brings a window to the front (best effort).
+    /// Brings a window to the front and gives it the keyboard (best effort).
     fn activate(&mut self, w: Raw);
+    /// Brings a window to the front without the keyboard.
+    fn raise(&mut self, w: Raw);
 }
 
 pub struct SystemWindows;
@@ -96,6 +98,10 @@ impl WindowOps for SystemWindows {
 
     fn activate(&mut self, w: Raw) {
         dj_win::assist::activate(w);
+    }
+
+    fn raise(&mut self, w: Raw) {
+        dj_win::assist::raise(w);
     }
 
     fn button_down(&self) -> bool {
@@ -713,11 +719,16 @@ impl Tiler {
         };
         r.notice = denied;
         if !moved {
+            if !denied {
+                // Closed since it was listed, or it can't be placed: list again.
+                r.windows = self.ops.list_windows();
+                r.assist.set_selected(0);
+            }
             return;
         }
         r.assist.chose(l.w as u64);
         if r.assist.done() {
-            self.finish_assist();
+            self.finish_assist(true);
         } else {
             // Windows may have opened or closed meanwhile.
             let windows = self.ops.list_windows();
@@ -741,25 +752,31 @@ impl Tiler {
                 true
             }
             AssistCmd::Cancel => {
-                self.finish_assist();
+                self.finish_assist(true);
                 true
             }
         }
     }
 
-    /// Esc, a click elsewhere, a hidden island or a snap: the zones filled so far stay.
-    pub fn assist_cancel(&mut self) {
-        self.finish_assist();
+    /// The user went elsewhere (a click outside, the island, a hidden island, a snap, a
+    /// display change): the filled zones stay and their windows are raised, but the
+    /// keyboard is left where the user put it.
+    pub fn assist_dismiss(&mut self) {
+        self.finish_assist(false);
     }
 
-    /// The picker goes; the windows it placed come to the front, the first picked first, so
-    /// the last one ends up active.
-    fn finish_assist(&mut self) {
+    /// The picker goes; the windows it placed come to the front, the first picked first.
+    /// `activate`: the last one also gets the keyboard.
+    fn finish_assist(&mut self, activate: bool) {
         let Some(r) = self.assist.take() else {
             return;
         };
         for &w in r.assist.chosen() {
-            self.ops.activate(w as Raw);
+            if activate {
+                self.ops.activate(w as Raw);
+            } else {
+                self.ops.raise(w as Raw);
+            }
         }
     }
 
@@ -887,6 +904,7 @@ mod tests {
         /// What the window picker lists, and the windows it brought to the front.
         listed: Vec<Listed>,
         activated: Vec<Raw>,
+        raised: Vec<Raw>,
     }
 
     struct Fake(Rc<RefCell<State>>);
@@ -947,6 +965,10 @@ mod tests {
 
         fn activate(&mut self, w: Raw) {
             self.0.borrow_mut().activated.push(w);
+        }
+
+        fn raise(&mut self, w: Raw) {
+            self.0.borrow_mut().raised.push(w);
         }
 
         fn foreground(&self) -> Raw {
@@ -1583,11 +1605,49 @@ mod tests {
         three_windows(&s);
         click_cell(&mut t, "2x2", 0);
         t.assist_pick(2, now);
-        t.assist_cancel();
+        t.assist_key(AssistKey::Escape, 1, 0, now);
         assert!(!t.assisting());
         assert_eq!(s.borrow().activated, vec![3]);
-        t.assist_cancel();
+        t.assist_key(AssistKey::Escape, 1, 0, now);
         assert_eq!(s.borrow().activated, vec![3], "only once");
+    }
+
+    #[test]
+    fn leaving_the_picker_raises_the_placed_windows_without_the_keyboard() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        three_windows(&s);
+        click_cell(&mut t, "3 columns", 0);
+        t.assist_pick(0, now);
+        t.assist_pick(0, now);
+        t.assist_dismiss();
+        assert!(!t.assisting());
+        assert_eq!(s.borrow().raised, vec![1, 2]);
+        assert!(
+            s.borrow().activated.is_empty(),
+            "the keyboard stays where the user put it"
+        );
+    }
+
+    #[test]
+    fn a_window_that_closed_since_the_listing_drops_out_of_the_cards() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        three_windows(&s);
+        click_cell(&mut t, "50/50", 0);
+        // Window 2 closes while the picker is up.
+        {
+            let mut st = s.borrow_mut();
+            st.windows.remove(&2);
+            st.listed.retain(|l| l.w != 2);
+        }
+        t.assist_select(1);
+        t.assist_pick(1, now);
+        assert!(s.borrow().places.is_empty());
+        assert!(!t.assist_notice(), "not an admin window");
+        assert_eq!(ids(&t), vec![1, 3], "listed again");
+        assert_eq!(t.assist_selected(), 0);
+        assert_eq!(t.assist_progress(), (1, 2));
     }
 
     #[test]
