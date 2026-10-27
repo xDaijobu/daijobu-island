@@ -41,7 +41,8 @@ const IN_ZONE: i32 = 8;
 const NOTICE: Duration = Duration::from_secs(2);
 pub const ADMIN_NOTICE: &str = "can't move an admin window";
 const NO_WINDOW: &str = "click a window first, then the tile";
-const HINT: &str = "shift+drag · ctrl+alt+1‥9";
+// ASCII digits and "-" only: the mono font has no "‥".
+const HINT: &str = "shift+drag · ctrl+alt+1-9";
 
 /// The windows: queries and placement. The real one is [`SystemWindows`].
 pub trait WindowOps {
