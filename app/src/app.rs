@@ -1370,16 +1370,19 @@ impl App {
     // ---- dj CLI ----
 
     /// Answers the requests the pipe thread handed over. Each reply goes out before its
-    /// theme switch or snap, so the script isn't held up by them.
+    /// theme switch or snap, so the script isn't held up by them, and the pills are pushed
+    /// before them too (a snap collapses the island to its rest state as of then). A
+    /// request whose client already got "busy" (the UI thread was held up, e.g. by the
+    /// tray menu) is dropped, not carried out late.
     fn drain_dj(&mut self) {
         let Some(rx) = self.dj_rx.as_ref() else {
             return;
         };
         let pending: Vec<dj_ipc::Incoming> = rx.try_iter().collect();
-        if pending.is_empty() {
-            return;
-        }
         for incoming in pending {
+            if incoming.expired() {
+                continue;
+            }
             let cx = djcli::Context {
                 themes: &self.registry,
                 current: &self.theme_id,
@@ -1389,13 +1392,13 @@ impl App {
                 .dj
                 .handle(incoming.request.clone(), &cx, Instant::now());
             incoming.reply(reply);
+            self.apply_dj();
             match effect {
                 Effect::None => {}
                 Effect::Theme(id) => self.set_theme(&id),
                 Effect::Snap => self.request_snap(),
             }
         }
-        self.apply_dj();
     }
 
     /// Pushes which pills are up into the island, which may change its state, and redraws
@@ -1406,9 +1409,19 @@ impl App {
         self.dirty = true;
     }
 
-    /// Arms or kills the one-shot `TIMER_DJ` for the next timeout.
+    /// Tells the activity which pill is on screen (a done or a notice starts its clock
+    /// there), then arms or kills the one-shot `TIMER_DJ` for the next timeout. A pill
+    /// under a panel, the snap thumb or the overlay, or on a hidden island, isn't.
     fn sync_dj(&mut self) {
-        match self.dj.plan_timer(Instant::now()) {
+        let now = Instant::now();
+        let shown = self.visible && self.overlay.is_none();
+        let state = self.island.state();
+        self.dj.on_screen(
+            shown && state == IslandState::DjProgress,
+            shown && state == IslandState::DjNotice,
+            now,
+        );
+        match self.dj.plan_timer(now) {
             Arm::Set(ms) => window::set_timer(self.hwnd, TIMER_DJ, ms),
             Arm::Kill => window::kill_timer(self.hwnd, TIMER_DJ),
             Arm::Keep => {}

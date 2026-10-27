@@ -423,9 +423,17 @@ fn write_all(
 pub struct Incoming {
     pub request: Request,
     reply: Sender<Reply>,
+    /// When the pipe thread stops waiting and answers "busy".
+    deadline: Instant,
 }
 
 impl Incoming {
+    /// The client was already told "busy": the request must not be carried out (a
+    /// script that saw it fail may retry or give up).
+    pub fn expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
     /// Answers the client. A reply that arrives after the server gave up ("busy") is
     /// discarded. Dropping an `Incoming` without calling this answers "busy" at once.
     pub fn reply(self, r: Reply) {
@@ -592,16 +600,17 @@ impl Worker {
     fn hand_over(&self, request: Request) -> Answer {
         let busy = || Answer::Reply(Reply::error("busy"));
         let (reply_tx, reply_rx) = mpsc::channel();
+        let deadline = Instant::now() + REPLY_LIMIT;
         let incoming = Incoming {
             request,
             reply: reply_tx,
+            deadline,
         };
         if self.tx.send(incoming).is_err() {
             // The UI side is gone.
             return busy();
         }
         (self.wake)();
-        let deadline = Instant::now() + REPLY_LIMIT;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -1083,6 +1092,7 @@ mod tests {
             Duration::from_secs(10),
         );
         let incoming = next(&rx);
+        assert!(!incoming.expired(), "fresh");
         let started = Instant::now();
         // The UI thread never answers (it keeps the Incoming alive, too).
         assert_eq!(t.join().unwrap(), Ok(Reply::error("busy")));
@@ -1091,10 +1101,14 @@ mod tests {
             waited >= Duration::from_secs(2) && waited < Duration::from_secs(4),
             "busy after {waited:?}"
         );
+        // The client was told "busy": the UI must not carry it out any more.
+        assert!(incoming.expired());
         incoming.reply(Reply::ok()); // too late: discarded, no panic
                                      // The server is fine afterwards.
         let t = client(&name, Request::Snap, Duration::from_secs(5));
-        next(&rx).reply(Reply::ok());
+        let fresh = next(&rx);
+        assert!(!fresh.expired());
+        fresh.reply(Reply::ok());
         assert_eq!(t.join().unwrap(), Ok(Reply::ok()));
     }
 

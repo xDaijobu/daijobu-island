@@ -667,13 +667,13 @@ Headless, as before: fmt, clippy, test and release only; no exe, no real windows
 **Goal:** any script or terminal can show live activity on the island through a local named pipe: `dj progress 40 "deploy"`, `cargo build && dj done "build ok"`, `dj notify "tests failed"`, plus `dj theme crt` and `dj snap`.
 
 ### Scope
-- [ ] **New crate `dj-ipc`** (planned in AGENTS.md: "named pipe API + binary `dj` CLI"): the pipe server used by the island, the client, and the `dj` binary (`target/release/dj.exe`).
-- [ ] **Pipe and security.**
+- [x] **New crate `dj-ipc`** (planned in AGENTS.md: "named pipe API + binary `dj` CLI"): the pipe server used by the island, the client, and the `dj` binary (`target/release/dj.exe`).
+- [x] **Pipe and security.**
   - Name `\\.\pipe\daijobu-island-<user SID>-<session id>`, so every user and every session has its own *(assumed)*.
   - DACL: only the current user (and SYSTEM); `PIPE_REJECT_REMOTE_CLIENTS`; `FILE_FLAG_FIRST_PIPE_INSTANCE` so nobody can squat the name before the island starts.
   - One request and one reply per connection, JSON with a protocol version, at most 4 KiB; a client that sends nothing is dropped after 2 s; the island answers within 3 s or the client gets "busy".
   - No command runs code, opens files or reaches the network; text is trimmed, control characters dropped, label ≤ 48 and messages ≤ 120 characters.
-- [ ] **Commands.**
+- [x] **Commands.**
   - `dj progress <0-100> [label]` (also `40%`), or `dj progress <label>` with no number for an open-ended one: the island shows the **progress pill**. Each call updates it; a new label replaces the old one *(assumed: one progress at a time)*.
   - `dj done [message]`: the pill shows a check mark and the message (default "done") for 4 s, then goes. Without a progress it still shows the ✓ pill.
   - `dj notify <message>`: the **notice pill** for 5 s; a click on it dismisses it; a new notify replaces the current one *(assumed: no queue)*.
@@ -681,14 +681,15 @@ Headless, as before: fmt, clippy, test and release only; no exe, no real windows
   - `dj snap` starts a snap, as PrtSc does.
   - `dj scene <name>` answers "scenes are coming soon" (12b).
   - `dj --help`, `dj --version`. Exit codes: 0 ok, 1 usage or an error from the island, 2 the island is not running.
-- [ ] **Island.**
+- [x] **Island.**
   - **Progress pill** 300 × 36 r 18 (plan.html `dev`): a lamp, the label, a bar and the percent; open-ended: no bar fill, an ellipsis; done: a drawn check mark and the message. Priority *(per plan.html)*: below the snap thumb and the timer alert, above Music and Timer compact. A click opens Home as on the idle island.
   - **Notice pill** 360 × 36 r 18: a lamp in the highlight colour and the message. Priority: above the timer alert and the progress, below the snap thumb and the OSD.
   - Both fit the notch's 42 px AppBar strip; neither steals focus.
   - A progress with no update for 30 minutes goes away by itself (a script that died) *(assumed)*.
-- [ ] **Idle:** the pipe thread blocks in `ConnectNamedPipe`; the island only wakes for a request and for the done/notice timeouts (one-shot timer). Nothing polls.
-- [ ] **Docs:** README section "dj CLI" with examples (a long build, a PowerShell helper that reports when a command ends, `gh run watch && dj done`, a coding agent that needs input via `dj notify`), and the PATH hint (`dj.exe` sits next to `daijobu.exe`). AGENTS.md layout gets `dj-ipc`.
-- [ ] **Tests** (headless): protocol encode/decode and every validation; CLI parsing (every command, `%`, bounds, missing args, unknown command, help/version, scene); the dj activity model with injected time (progress, done timeout, notice timeout, replace, stale expiry, next change); the island states, priorities, sizes and clicks; pipe name and DACL string; an in-process end-to-end request/reply over a real pipe with a test-only name; the pills on CPU raster surfaces; the app with fake requests (progress → island state, done → timer, theme ok/unknown/list, snap). `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release`.
+  - Done and notice time counts from when the pill is first on screen (not while it waits under a panel, the snap thumb or a hidden island); one that never shows goes after 30 min *(assumed, from the review)*.
+- [x] **Idle:** the pipe thread blocks in `ConnectNamedPipe`; the island only wakes for a request and for the done/notice timeouts (one-shot timer). Nothing polls.
+- [x] **Docs:** README section "dj CLI" with examples (a long build, a PowerShell helper that reports when a command ends, `gh run watch && dj done`, a coding agent that needs input via `dj notify`), and the PATH hint (`dj.exe` sits next to `daijobu.exe`). AGENTS.md layout gets `dj-ipc`.
+- [x] **Tests** (headless): protocol encode/decode and every validation; CLI parsing (every command, `%`, bounds, missing args, unknown command, help/version, scene); the dj activity model with injected time (progress, done timeout, notice timeout, replace, stale expiry, next change); the island states, priorities, sizes and clicks; pipe name and DACL string; an in-process end-to-end request/reply over a real pipe with a test-only name; the pills on CPU raster surfaces; the app with fake requests (progress → island state, done → timer, theme ok/unknown/list, snap). `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release`.
 
 ### Out of scope
 Windows notifications (stage 9), `dj scene` itself (12b), several progress bars at once, a notification queue or history, remote access, installing `dj` on PATH, a Settings row, and any command that runs programs.
@@ -706,6 +707,7 @@ Headless: fmt, clippy, test and release only; no exe, no windows; the only pipe 
 
 ### Log
 - 2026-10-27: defined by the coordinator from plan.html while the user was away; marked assumptions for review.
+- 2026-10-27: parts A–D built by four Sonnet 5.5 workers, wired and verified by the coordinator (fmt, clippy, 884 tests, release, live check of acceptance 1–6 on this machine). Waiting for the user's live test and review of the assumptions; see [`stage-11-report.md`](stage-11-report.md).
 
 ---
 

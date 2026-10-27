@@ -12,16 +12,22 @@
 //! - **Notice**: one at a time. `notify` replaces any notice and shows it for
 //!   `NOTICE_FOR`; `dismiss_notice` ends it early.
 //!
+//! A done message and a notice count their time from the moment they are first **on
+//! screen** (`on_screen`), not from the request: one that waits behind an open panel, the
+//! snap thumb, the other pill or a hidden island still gets its full time once it shows.
+//! One that never shows goes after `STALE_AFTER`, like a progress nobody updates.
+//!
 //! The view carries no clock: it shows the state as of the last call. The caller calls
-//! `tick` when `next_change` is due and redraws when it says the view changed.
+//! `tick` when `next_at` is due and redraws when it says the view changed.
 
 use std::time::{Duration, Instant};
 
-/// The check mark and its message stay this long.
+/// The check mark and its message stay this long on screen.
 pub const DONE_FOR: Duration = Duration::from_secs(4);
-/// A notice stays this long (a click dismisses it sooner).
+/// A notice stays this long on screen (a click dismisses it sooner).
 pub const NOTICE_FOR: Duration = Duration::from_secs(5);
-/// A progress nobody updated for this long goes away.
+/// A progress nobody updated for this long goes away, and so does a done message or a
+/// notice that never made it to the screen.
 pub const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// What `done` shows when it is given no message.
@@ -58,23 +64,32 @@ struct Bar {
 #[derive(Clone, Debug)]
 struct Done {
     message: String,
-    until: Instant,
+    /// Set when it is first on screen.
+    until: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
 struct Notice {
     message: String,
-    until: Instant,
+    asked: Instant,
+    /// Set when it is first on screen.
+    until: Option<Instant>,
 }
 
 impl Bar {
-    /// When the pill goes if nothing happens: the end of its check mark, else the moment
-    /// it turns stale.
+    /// When the pill goes if nothing happens: the end of its check mark once that is on
+    /// screen, else the moment it turns stale.
     fn ends_at(&self) -> Instant {
-        match &self.done {
-            Some(d) => d.until,
+        match self.done.as_ref().and_then(|d| d.until) {
+            Some(until) => until,
             None => self.updated + STALE_AFTER,
         }
+    }
+}
+
+impl Notice {
+    fn ends_at(&self) -> Instant {
+        self.until.unwrap_or(self.asked + STALE_AFTER)
     }
 }
 
@@ -102,9 +117,10 @@ impl Dj {
         });
     }
 
-    /// Shows a check mark and `message` ("done" when blank) for `DONE_FOR`, then nothing.
-    /// With a progress, its label and percent stay in the view; without one the view has an
-    /// empty label and no percent. A second done replaces the message and starts over.
+    /// Shows a check mark and `message` ("done" when blank) for `DONE_FOR` once on screen,
+    /// then nothing. With a progress, its label and percent stay in the view; without one
+    /// the view has an empty label and no percent. A second done replaces the message and
+    /// starts over.
     pub fn done(&mut self, message: String, now: Instant) {
         let (label, percent) = self
             .bar
@@ -122,16 +138,18 @@ impl Dj {
             updated: now,
             done: Some(Done {
                 message,
-                until: now + DONE_FOR,
+                until: None,
             }),
         });
     }
 
-    /// Shows `message` for `NOTICE_FOR`, replacing any notice and starting over.
+    /// Shows `message` for `NOTICE_FOR` once on screen, replacing any notice and starting
+    /// over.
     pub fn notify(&mut self, message: String, now: Instant) {
         self.notice = Some(Notice {
             message,
-            until: now + NOTICE_FOR,
+            asked: now,
+            until: None,
         });
     }
 
@@ -140,11 +158,27 @@ impl Dj {
         self.notice.take().is_some()
     }
 
+    /// What the island shows as of `now`: the progress pill and / or the notice pill. A
+    /// done message or a notice that is on screen for the first time starts its clock.
+    /// Harmless to call often: a started clock is never moved.
+    pub fn on_screen(&mut self, progress: bool, notice: bool, now: Instant) {
+        if progress {
+            if let Some(d) = self.bar.as_mut().and_then(|b| b.done.as_mut()) {
+                d.until.get_or_insert(now + DONE_FOR);
+            }
+        }
+        if notice {
+            if let Some(n) = self.notice.as_mut() {
+                n.until.get_or_insert(now + NOTICE_FOR);
+            }
+        }
+    }
+
     /// Drops the progress (or done) and the notice that timed out by `now`. True if the
     /// view changed.
     pub fn tick(&mut self, now: Instant) -> bool {
         let bar_due = self.bar.as_ref().is_some_and(|b| now >= b.ends_at());
-        let notice_due = self.notice.as_ref().is_some_and(|n| now >= n.until);
+        let notice_due = self.notice.as_ref().is_some_and(|n| now >= n.ends_at());
         if bar_due {
             self.bar = None;
         }
@@ -154,15 +188,18 @@ impl Dj {
         bar_due || notice_due
     }
 
-    /// Time until something goes by itself: the soonest end of the progress (or done) and
-    /// the notice. None when nothing will. Zero when one is already due: call `tick`.
-    pub fn next_change(&self, now: Instant) -> Option<Duration> {
+    /// When something goes by itself next: the soonest end of the progress (or done) and
+    /// the notice. None when nothing will. It doesn't move as time passes, only when a
+    /// call changes the model, so a timer armed for it needs arming once.
+    pub fn next_at(&self) -> Option<Instant> {
         let bar = self.bar.as_ref().map(Bar::ends_at);
-        let notice = self.notice.as_ref().map(|n| n.until);
-        bar.into_iter()
-            .chain(notice)
-            .min()
-            .map(|at| at.saturating_duration_since(now))
+        let notice = self.notice.as_ref().map(Notice::ends_at);
+        bar.into_iter().chain(notice).min()
+    }
+
+    /// Time until `next_at`. Zero when it is already due: call `tick`.
+    pub fn next_change(&self, now: Instant) -> Option<Duration> {
+        self.next_at().map(|at| at.saturating_duration_since(now))
     }
 
     /// What to show, as of the last call.
@@ -196,6 +233,11 @@ mod tests {
 
     fn label(s: &str) -> String {
         s.to_string()
+    }
+
+    /// Both pills are on screen at `t` (starts the clocks of a done and a notice).
+    fn seen(dj: &mut Dj, t: Instant) {
+        dj.on_screen(true, true, t);
     }
 
     /// The progress part of the view.
@@ -347,6 +389,7 @@ mod tests {
         let mut dj = Dj::default();
         dj.progress(Some(100), label("deploy"), t0);
         dj.done(label("ok"), t0 + secs(10));
+        seen(&mut dj, t0 + secs(10));
         assert!(!dj.tick(t0 + secs(10) + ms(3_999)));
         assert_eq!(bar(&dj), finished("deploy", Some(100), "ok"));
         assert!(dj.tick(t0 + secs(14)), "the view changed");
@@ -360,6 +403,7 @@ mod tests {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.done(label("ok"), t0);
+        seen(&mut dj, t0);
         assert!(!dj.tick(t0 + ms(3_999)));
         assert!(dj.tick(t0 + secs(4)));
         assert_eq!(dj.view(), DjView::default());
@@ -370,7 +414,9 @@ mod tests {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.done(label("one"), t0);
+        seen(&mut dj, t0);
         dj.done(label("two"), t0 + secs(3));
+        seen(&mut dj, t0 + secs(3));
         assert_eq!(bar(&dj), finished("", None, "two"));
         assert!(!dj.tick(t0 + secs(4)), "the first done's end is gone");
         assert!(!dj.tick(t0 + ms(6_999)));
@@ -385,6 +431,7 @@ mod tests {
         dj.progress(Some(99), label("deploy"), t0);
         // 1 s before the progress would have gone stale.
         dj.done(label("ok"), t0 + STALE_AFTER - secs(1));
+        seen(&mut dj, t0 + STALE_AFTER - secs(1));
         assert!(!dj.tick(t0 + STALE_AFTER + secs(1)), "still inside its 4 s");
         assert_eq!(bar(&dj), finished("deploy", Some(99), "ok"));
         assert!(dj.tick(t0 + STALE_AFTER + secs(3)));
@@ -397,6 +444,7 @@ mod tests {
         let mut dj = Dj::default();
         dj.progress(Some(100), label("build"), t0);
         dj.done(label("ok"), t0 + secs(1));
+        seen(&mut dj, t0 + secs(1));
         dj.progress(Some(5), label("deploy"), t0 + secs(2));
         assert_eq!(bar(&dj), running("deploy", Some(5)), "the check is gone");
         // The done's 4 s run out at t0 + 5 s: the progress must survive them.
@@ -411,6 +459,7 @@ mod tests {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.done(label("ok"), t0);
+        seen(&mut dj, t0);
         assert!(dj.tick(t0 + secs(4)));
         dj.progress(None, label("next"), t0 + secs(5));
         assert_eq!(bar(&dj), running("next", None));
@@ -423,6 +472,7 @@ mod tests {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.notify(label("tests failed"), t0);
+        seen(&mut dj, t0);
         assert_eq!(dj.view().notice.as_deref(), Some("tests failed"));
         assert_eq!(bar(&dj), None, "a notice is not a progress");
         assert!(!dj.tick(t0 + ms(4_999)));
@@ -437,7 +487,9 @@ mod tests {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.notify(label("first"), t0);
+        seen(&mut dj, t0);
         dj.notify(label("second"), t0 + secs(3));
+        seen(&mut dj, t0 + secs(3));
         assert_eq!(dj.view().notice.as_deref(), Some("second"));
         assert!(!dj.tick(t0 + secs(5)), "the first one's end is gone");
         assert!(!dj.tick(t0 + ms(7_999)));
@@ -463,6 +515,7 @@ mod tests {
         let mut dj = Dj::default();
         dj.progress(Some(40), label("deploy"), t0);
         dj.notify(label("hello"), t0 + secs(1));
+        seen(&mut dj, t0 + secs(1));
         assert!(dj.dismiss_notice());
         assert_eq!(bar(&dj), running("deploy", Some(40)));
         assert_eq!(dj.next_change(t0 + secs(1)), Some(STALE_AFTER - secs(1)));
@@ -474,9 +527,11 @@ mod tests {
         let mut dj = Dj::default();
         dj.progress(Some(40), label("deploy"), t0);
         dj.notify(label("hello"), t0 + secs(1));
+        seen(&mut dj, t0 + secs(1));
         dj.progress(Some(60), label("deploy"), t0 + secs(2));
         assert_eq!(dj.view().notice.as_deref(), Some("hello"));
         dj.done(label("ok"), t0 + secs(3));
+        seen(&mut dj, t0 + secs(3));
         assert_eq!(dj.view().notice.as_deref(), Some("hello"));
         // The notice goes first (t0 + 6 s) and the done at t0 + 7 s.
         assert!(dj.tick(t0 + secs(6)));
@@ -492,6 +547,7 @@ mod tests {
         let mut dj = Dj::default();
         dj.done(label("ok"), t0);
         dj.notify(label("hello"), t0);
+        seen(&mut dj, t0);
         assert!(dj.tick(t0 + secs(10)));
         assert_eq!(dj.view(), DjView::default());
     }
@@ -549,10 +605,12 @@ mod tests {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.done(label("ok"), t0);
+        seen(&mut dj, t0);
         assert_eq!(dj.next_change(t0), Some(DONE_FOR));
         assert_eq!(dj.next_change(t0 + ms(1_500)), Some(ms(2_500)));
         let mut dj = Dj::default();
         dj.notify(label("hi"), t0);
+        seen(&mut dj, t0);
         assert_eq!(dj.next_change(t0), Some(NOTICE_FOR));
         assert_eq!(dj.next_change(t0 + secs(2)), Some(secs(3)));
     }
@@ -564,9 +622,11 @@ mod tests {
         dj.progress(Some(50), label("deploy"), t0);
         // The notice (ends at t0 + 6 s) is sooner than the stale progress.
         dj.notify(label("hi"), t0 + secs(1));
+        seen(&mut dj, t0 + secs(1));
         assert_eq!(dj.next_change(t0 + secs(1)), Some(NOTICE_FOR));
         // The done ends at t0 + 7 s, after the notice.
         dj.done(label("ok"), t0 + secs(3));
+        seen(&mut dj, t0 + secs(3));
         assert_eq!(dj.next_change(t0 + secs(3)), Some(secs(3)), "the notice");
         assert!(dj.tick(t0 + secs(6)));
         assert_eq!(dj.next_change(t0 + secs(6)), Some(secs(1)), "then the done");
@@ -579,7 +639,9 @@ mod tests {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.notify(label("hi"), t0 + secs(2));
+        dj.on_screen(false, true, t0 + secs(2));
         dj.done(label("ok"), t0);
+        dj.on_screen(true, false, t0);
         // Done ends t0 + 4 s, the notice t0 + 7 s.
         assert_eq!(dj.next_change(t0 + secs(2)), Some(secs(2)));
         assert!(dj.tick(t0 + secs(4)));
@@ -591,6 +653,7 @@ mod tests {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.notify(label("hi"), t0);
+        seen(&mut dj, t0);
         assert_eq!(dj.next_change(t0 + secs(5)), Some(Duration::ZERO));
         assert_eq!(dj.next_change(t0 + secs(500)), Some(Duration::ZERO));
         assert!(dj.tick(t0 + secs(500)));
@@ -603,8 +666,97 @@ mod tests {
         let mut dj = Dj::default();
         dj.progress(Some(10), label("a"), t0);
         dj.notify(label("hi"), t0);
+        seen(&mut dj, t0);
         assert!(!dj.tick(t0 - secs(50)));
         assert_eq!(dj.next_change(t0 - secs(50)), Some(NOTICE_FOR + secs(50)));
         assert_eq!(dj.view().notice.as_deref(), Some("hi"));
+    }
+
+    // ----- on screen ------------------------------------------------------------------
+
+    #[test]
+    fn a_done_waits_for_the_screen_then_gets_its_full_time() {
+        let t0 = Instant::now();
+        let mut dj = Dj::default();
+        dj.done(label("build ok"), t0);
+        // Behind a panel for 20 s: nothing times out, only the stale cap is pending.
+        assert!(!dj.tick(t0 + secs(20)));
+        assert_eq!(bar(&dj), finished("", None, "build ok"));
+        assert_eq!(dj.next_at(), Some(t0 + STALE_AFTER));
+        // The notice being on screen doesn't start the done.
+        dj.on_screen(false, true, t0 + secs(20));
+        assert_eq!(dj.next_at(), Some(t0 + STALE_AFTER));
+        dj.on_screen(true, false, t0 + secs(20));
+        assert_eq!(dj.next_at(), Some(t0 + secs(24)));
+        assert!(!dj.tick(t0 + secs(24) - ms(1)));
+        assert!(dj.tick(t0 + secs(24)));
+        assert_eq!(bar(&dj), None);
+    }
+
+    #[test]
+    fn a_notice_waits_for_the_screen_then_gets_its_full_time() {
+        let t0 = Instant::now();
+        let mut dj = Dj::default();
+        dj.notify(label("needs input"), t0);
+        dj.on_screen(true, false, t0 + secs(3));
+        assert!(!dj.tick(t0 + secs(30)));
+        dj.on_screen(false, true, t0 + secs(30));
+        assert!(!dj.tick(t0 + secs(35) - ms(1)));
+        assert!(dj.tick(t0 + secs(35)));
+        assert_eq!(dj.view().notice, None);
+    }
+
+    #[test]
+    fn a_started_clock_is_never_moved() {
+        let t0 = Instant::now();
+        let mut dj = Dj::default();
+        dj.done(label("ok"), t0);
+        dj.notify(label("hi"), t0);
+        seen(&mut dj, t0);
+        seen(&mut dj, t0 + secs(3));
+        assert_eq!(dj.next_at(), Some(t0 + DONE_FOR));
+        assert!(dj.tick(t0 + DONE_FOR));
+        assert_eq!(dj.next_at(), Some(t0 + NOTICE_FOR));
+    }
+
+    #[test]
+    fn one_that_never_shows_goes_after_the_stale_time() {
+        let t0 = Instant::now();
+        let mut dj = Dj::default();
+        dj.done(label("ok"), t0);
+        dj.notify(label("hi"), t0 + secs(1));
+        assert!(!dj.tick(t0 + STALE_AFTER - ms(1)));
+        assert!(dj.tick(t0 + STALE_AFTER));
+        assert_eq!(bar(&dj), None);
+        assert_eq!(dj.view().notice.as_deref(), Some("hi"));
+        assert!(dj.tick(t0 + STALE_AFTER + secs(1)));
+        assert_eq!(dj.view(), DjView::default());
+    }
+
+    #[test]
+    fn a_second_request_waits_for_the_screen_again() {
+        let t0 = Instant::now();
+        let mut dj = Dj::default();
+        dj.notify(label("one"), t0);
+        seen(&mut dj, t0);
+        dj.notify(label("two"), t0 + secs(2));
+        assert_eq!(dj.next_at(), Some(t0 + secs(2) + STALE_AFTER));
+        seen(&mut dj, t0 + secs(2));
+        assert_eq!(dj.next_at(), Some(t0 + secs(7)));
+    }
+
+    #[test]
+    fn next_at_stays_put_as_time_passes() {
+        let t0 = Instant::now();
+        let mut dj = Dj::default();
+        dj.progress(Some(10), label("a"), t0);
+        assert_eq!(dj.next_at(), Some(t0 + STALE_AFTER));
+        assert!(!dj.tick(t0 + mins(10)));
+        assert_eq!(dj.next_at(), Some(t0 + STALE_AFTER));
+        assert_eq!(
+            dj.next_change(t0 + STALE_AFTER + secs(5)),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(dj.next_at(), Some(t0 + STALE_AFTER));
     }
 }

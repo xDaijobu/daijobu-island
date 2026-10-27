@@ -94,9 +94,16 @@ impl Activity {
         self.dj.tick(now)
     }
 
-    /// Arms the one-shot for the next timeout, if it isn't armed for it already.
+    /// What the island shows now (its state is `DjProgress` / `DjNotice` and it is on
+    /// screen): a done message or a notice counts its time from here.
+    pub fn on_screen(&mut self, progress: bool, notice: bool, now: Instant) {
+        self.dj.on_screen(progress, notice, now);
+    }
+
+    /// Arms the one-shot for the next timeout, if it isn't armed for it already. The
+    /// timeout is a fixed instant, so events while it is due don't keep pushing it back.
     pub fn plan_timer(&mut self, now: Instant) -> Arm {
-        let due = self.dj.next_change(now).map(|d| now + d);
+        let due = self.dj.next_at();
         if due == self.armed_for {
             return Arm::Keep;
         }
@@ -226,7 +233,10 @@ mod tests {
             a.view().progress.and_then(|p| p.done).as_deref(),
             Some("build ok")
         );
-        // The one-shot is armed for the done timeout, and only once.
+        // Until the pill is on screen only the stale cap is pending.
+        assert_eq!(a.plan_timer(t0), Arm::Set(STALE_AFTER.as_millis() as u32));
+        // On screen: the one-shot is armed for the done timeout, and only once.
+        a.on_screen(true, false, t0);
         assert_eq!(a.plan_timer(t0), Arm::Set(DONE_FOR.as_millis() as u32));
         assert_eq!(a.plan_timer(t0 + Duration::from_millis(5)), Arm::Keep);
         // Fired early: nothing changes and it is armed again for the rest.
@@ -252,11 +262,60 @@ mod tests {
             &cx(&themes),
             t0,
         );
+        a.on_screen(false, true, t0);
         assert_eq!(a.plan_timer(t0), Arm::Set(NOTICE_FOR.as_millis() as u32));
         // Dismissed by a click before it timed out.
         assert!(a.dismiss_notice());
         assert_eq!(a.plan_timer(t0), Arm::Kill);
         assert_eq!(a.plan_timer(t0), Arm::Keep);
+    }
+
+    #[test]
+    fn a_due_timeout_is_armed_once_however_many_events_come() {
+        let themes = registry();
+        let mut a = Activity::default();
+        let t0 = Instant::now();
+        a.handle(
+            Request::Notify {
+                message: "hello".into(),
+            },
+            &cx(&themes),
+            t0,
+        );
+        a.on_screen(false, true, t0);
+        assert_eq!(a.plan_timer(t0), Arm::Set(NOTICE_FOR.as_millis() as u32));
+        // Mouse moves (events) after the notice is due, before WM_TIMER arrives.
+        for ms in [5_000, 5_004, 5_020, 6_000] {
+            assert_eq!(
+                a.plan_timer(t0 + Duration::from_millis(ms)),
+                Arm::Keep,
+                "{ms}"
+            );
+        }
+        assert!(a.fired(t0 + Duration::from_millis(6_001)));
+    }
+
+    #[test]
+    fn a_notice_behind_a_panel_keeps_its_time() {
+        let themes = registry();
+        let mut a = Activity::default();
+        let t0 = Instant::now();
+        a.handle(
+            Request::Notify {
+                message: "the agent needs input".into(),
+            },
+            &cx(&themes),
+            t0,
+        );
+        // Home is open for 20 s: the notice waits under it and isn't on screen.
+        a.on_screen(false, false, t0 + Duration::from_secs(20));
+        assert!(!a.fired(t0 + Duration::from_secs(20)));
+        // The panel collapses and the notice shows for its full 5 s.
+        let shown = t0 + Duration::from_secs(21);
+        a.on_screen(false, true, shown);
+        assert_eq!(a.plan_timer(shown), Arm::Set(NOTICE_FOR.as_millis() as u32));
+        assert!(!a.fired(shown + NOTICE_FOR - Duration::from_millis(1)));
+        assert!(a.fired(shown + NOTICE_FOR));
     }
 
     #[test]
@@ -289,6 +348,7 @@ mod tests {
         );
         // The notice outranks the progress.
         assert_eq!(island_for(&a).state(), IslandState::DjNotice);
+        a.on_screen(false, true, t0);
         assert_eq!(a.plan_timer(t0), Arm::Set(NOTICE_FOR.as_millis() as u32));
         assert!(a.dismiss_notice());
         assert!(!a.dismiss_notice());
