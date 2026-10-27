@@ -25,7 +25,7 @@
 
 ## Status
 
-Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals with Sweep, and the Timer are in. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
+Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals with Sweep, the Timer, Snap (capture, annotations, preview stack), window tiling and the `dj` CLI are in. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
 
 | Stage | | |
 |---|---|---|
@@ -36,10 +36,12 @@ Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals 
 | 4 | Vitals: health score, CPU/RAM/disk/net rings | ✅ merged, testing |
 | 5 | Vitals + Sweep: disk I/O, top processes, safe disk cleanup | ✅ done |
 | 6 | Timer / pomodoro | ✅ done |
-| 7a–7c | Screenshots: capture, annotate, floating preview stack | 🟡 7a in progress |
+| 7a–7c | Screenshots: capture, annotate, floating preview stack | ✅ done |
 | 8 | Clipboard history | locked |
-| 9–11 | Notifications, lyrics, `dj` CLI | locked |
-| 12 | Window tiling, scenes, restore-after-reboot | locked |
+| 9–10 | Notifications, lyrics | locked |
+| 11 | `dj` CLI: live progress and messages from any script | 🟡 testing |
+| 12a | Window tiling: zones, a layout picker in the island, a window picker | ✅ done |
+| 12b–12d | Scenes, restore-after-reboot, admin apps | locked |
 | 13 | File shelf, ambient sounds | locked |
 
 ## Where it's going
@@ -68,6 +70,41 @@ Themes are small TOML files. Each one sets more than colours: fonts, grain, dith
 <img src="docs/images/concept-themes.png" alt="Theme gallery">
 
 Four of these ship with the current build (Tobacco Tape, Midnight Cassette, Paper Zine, Clean). The rest come later.
+
+### dj CLI
+
+Any script can put something on the island:
+
+```sh
+dj progress 40 deploy        # a progress bar, updated by each call
+dj progress 80 deploy
+dj done "build ok"           # a check mark for a few seconds
+dj notify "tests failed"     # a short message (click it to dismiss)
+dj theme paper-zine          # switch the theme; `dj theme` lists them
+dj snap                      # start a screenshot
+```
+
+`dj.exe` is built next to `daijobu.exe` (`target/release/`); put that folder on your `PATH`. It talks to the island through a named pipe that only your user, in your session, can open, and no command runs programs or touches files. Exit codes: 0 ok, 1 error, 2 the island isn't running.
+
+A few ways to use it:
+
+```powershell
+# a build that reports either way
+cargo build --release; if ($?) { dj done "build ok" } else { dj notify "build failed" }
+
+# any long command, with an open-ended progress while it runs
+function Watch-Job([string]$Label, [scriptblock]$Job) {
+    dj progress $Label
+    & $Job
+    if ($?) { dj done "$Label ok" } else { dj notify "$Label failed" }
+}
+
+# CI
+gh run watch; dj done "CI finished"
+
+# a coding agent's hook when it needs you
+dj notify "the agent needs input"
+```
 
 ## Building
 
