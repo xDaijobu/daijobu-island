@@ -31,13 +31,15 @@ use dj_core::snap_edit::{CursorKind, EditInput, Key, KeyCode, Outcome, Rgba, Tex
 use dj_core::snap_stack::Stack;
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
+use dj_core::tile_assist::{self, AssistKey};
 use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{
-    EditScene, Frame, MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene,
-    TextMetrics, TilePanel, TileThumb, ZoneOverlay, ZoneScene,
+    AssistCard, AssistScene, AssistSurface, EditScene, Frame, MusicFrame, RenderError, Renderer,
+    SnapFrame, SnapOverlay, SnapScene, TextMetrics, TilePanel, TileThumb, ZoneOverlay, ZoneScene,
 };
+use dj_win::assist::{AssistInput, Thumbnail};
 use dj_win::overlay::{self, SnapInput};
 use dj_win::tile::MoveEvent;
 use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
@@ -171,7 +173,34 @@ pub struct App {
     /// The one-shot retry and notice timers, by when they fire.
     tile_retry_at: Option<Instant>,
     tile_notice_at: Option<Instant>,
+    /// The window picker's window while it fills a layout.
+    assist_win: Option<AssistWin>,
 }
+
+/// The window picker on the zone it fills: its window, surface, live thumbnails and input.
+struct AssistWin {
+    hwnd: HWND,
+    /// Dropped (with the thumbnails) before the window is destroyed.
+    surface: Option<AssistSurface>,
+    thumbs: Vec<Option<Thumbnail>>,
+    /// The desktop rect it covers and that monitor's scale.
+    zone: IRect,
+    scale: f32,
+    /// The windows its cards show, in order (thumbnails are remade when this changes).
+    windows: Vec<dj_win::tile::Raw>,
+    /// Icons already uploaded to the surface.
+    icons: Vec<dj_win::tile::Raw>,
+    hover: Option<usize>,
+    pressed: Option<usize>,
+    /// The window just picked: activating it (a restored minimized one) takes the
+    /// foreground from the picker, which must not count as a click elsewhere.
+    last_pick: Option<dj_win::tile::Raw>,
+    shown: bool,
+    dirty: bool,
+}
+
+/// Icons are uploaded at 48 px (sharp at the 20 px title size and the large no-preview one).
+const ASSIST_ICON: u32 = 48;
 
 /// The zone overlay on one monitor while a move shows it: its window and its surface.
 struct TileOverlay {
@@ -312,6 +341,7 @@ impl App {
             tile_poll_armed: false,
             tile_retry_at: None,
             tile_notice_at: None,
+            assist_win: None,
         };
         app.relayout();
         app.install_shell_integration();
@@ -822,8 +852,10 @@ impl App {
             return;
         }
         // The preview stack must not be in the shot: hidden, and gone from the composed
-        // desktop, before the freeze.
+        // desktop, before the freeze. A window picker stops.
         self.previews.hide_for_capture(Instant::now());
+        self.tiler.assist_cancel();
+        self.destroy_assist();
         let (vx, vy, vw, vh) = overlay::virtual_screen();
         if vw <= 0 || vh <= 0 {
             storage::log("snap: no virtual screen");
@@ -1478,6 +1510,7 @@ impl App {
             self.dirty = true;
         }
         self.sync_tile_overlay();
+        self.sync_assist();
     }
 
     /// The zone overlay: made once per move on the target monitor (a new GPU device each
@@ -1562,6 +1595,302 @@ impl App {
         }
     }
 
+    // ---- Tile: the window picker ----
+
+    /// The picker follows the run: made on its first zone, moved and resized to each next
+    /// zone, its cards' thumbnails and icons kept in step, gone when the run ends.
+    fn sync_assist(&mut self) {
+        let Some((zone, scale)) = self.tiler.assist_zone() else {
+            self.destroy_assist();
+            return;
+        };
+        if self.assist_win.is_none() {
+            let hwnd = match dj_win::assist::create(zone.x, zone.y, zone.w, zone.h) {
+                Ok(h) => h,
+                Err(e) => {
+                    storage::log(&format!("tile: cannot create the window picker: {e}"));
+                    self.tiler.assist_cancel();
+                    return;
+                }
+            };
+            let surface = match AssistSurface::new(hwnd.0 as isize, zone.w as u32, zone.h as u32) {
+                Ok(s) => s,
+                Err(e) => {
+                    storage::log(&format!("tile: window picker renderer: {e}"));
+                    dj_win::assist::destroy(hwnd);
+                    self.tiler.assist_cancel();
+                    return;
+                }
+            };
+            self.assist_win = Some(AssistWin {
+                hwnd,
+                surface: Some(surface),
+                thumbs: Vec::new(),
+                zone,
+                scale,
+                windows: Vec::new(),
+                icons: Vec::new(),
+                hover: None,
+                pressed: None,
+                last_pick: None,
+                shown: false,
+                dirty: true,
+            });
+        }
+        let Some(w) = self.assist_win.as_mut() else {
+            return;
+        };
+        if w.zone != zone {
+            // The next zone: the window moves first, then its swap chain follows.
+            dj_win::assist::place(w.hwnd, zone.x, zone.y, zone.w, zone.h);
+            if let Some(Err(e)) = w
+                .surface
+                .as_mut()
+                .map(|s| s.resize(zone.w as u32, zone.h as u32))
+            {
+                storage::log(&format!("tile: window picker resize: {e}"));
+            }
+            w.zone = zone;
+            w.scale = scale;
+            w.thumbs.clear();
+            w.windows.clear();
+            w.hover = None;
+            w.pressed = None;
+            w.dirty = true;
+        }
+        let windows: Vec<dj_win::tile::Raw> =
+            self.tiler.assist_windows().iter().map(|l| l.w).collect();
+        if windows != w.windows {
+            w.thumbs.clear();
+            w.windows = windows;
+            w.dirty = true;
+        }
+        if w.dirty {
+            self.render_assist();
+        }
+        if let Some(w) = self.assist_win.as_mut().filter(|w| !w.shown) {
+            // Shown after its first frame, and it takes the keyboard.
+            dj_win::assist::show(w.hwnd);
+            w.shown = true;
+        }
+    }
+
+    /// The card grid for the picker's zone, in its logical px.
+    fn assist_layout(zone: IRect, scale: f32, count: usize) -> tile_assist::AssistLayout {
+        tile_assist::layout(zone.w as f32 / scale, zone.h as f32 / scale, count)
+    }
+
+    /// Draws the picker: the lit zone, a card per window (the live thumbnails are composed
+    /// over them by Windows), the header and the footer.
+    fn render_assist(&mut self) {
+        let listed: Vec<crate::tile::Listed> =
+            self.tiler.assist_windows().into_iter().cloned().collect();
+        let (step, total) = self.tiler.assist_progress();
+        let zone_number = self.tiler.assist_zone_number();
+        let selected = self.tiler.assist_selected();
+        let notice = self.tiler.assist_notice();
+        let Some(w) = self.assist_win.as_mut() else {
+            return;
+        };
+        w.dirty = false;
+        let l = Self::assist_layout(w.zone, w.scale, listed.len());
+        let s = w.scale;
+        // Icons once per window.
+        if let Some(surface) = w.surface.as_mut() {
+            for item in &listed {
+                if !w.icons.contains(&item.w) {
+                    if let Some(px) = dj_win::assist::icon_bgra(item.w, ASSIST_ICON) {
+                        surface.set_icon(item.w as u64, &px, ASSIST_ICON);
+                    }
+                    w.icons.push(item.w);
+                }
+            }
+        }
+        // Live thumbnails, one per card shown (none for minimized windows).
+        if w.thumbs.len() != l.cards.len() {
+            w.thumbs = l
+                .cards
+                .iter()
+                .zip(&listed)
+                .map(|(_, item)| {
+                    (!item.minimized)
+                        .then(|| Thumbnail::new(w.hwnd, item.w))
+                        .flatten()
+                })
+                .collect();
+        }
+        let mut no_thumb = vec![false; l.cards.len()];
+        for (i, card) in l.cards.iter().enumerate() {
+            let Some(thumb) = w.thumbs.get(i).and_then(Option::as_ref) else {
+                no_thumb[i] = true;
+                continue;
+            };
+            let Some((sw, sh)) = thumb.source_size() else {
+                no_thumb[i] = true;
+                thumb.show((0, 0, 0, 0), false);
+                continue;
+            };
+            // A little inset, so the thumbnail's square corners stay inside the card.
+            let area = layout::Rect::new(
+                card.thumb.x + 3.0,
+                card.thumb.y + 3.0,
+                card.thumb.w - 6.0,
+                card.thumb.h - 6.0,
+            );
+            let r = tile_assist::fit(area, (sw as f32, sh as f32));
+            let (x0, y0) = ((r.x * s).round() as i32, (r.y * s).round() as i32);
+            let (x1, y1) = (
+                ((r.x + r.w) * s).round() as i32,
+                ((r.y + r.h) * s).round() as i32,
+            );
+            thumb.show((x0, y0, x1 - x0, y1 - y0), true);
+        }
+        let cards: Vec<AssistCard> = l
+            .cards
+            .iter()
+            .zip(&listed)
+            .enumerate()
+            .map(|(i, (c, item))| AssistCard {
+                rect: c.rect,
+                icon_rect: c.icon,
+                title_rect: c.title,
+                thumb_rect: c.thumb,
+                title: &item.title,
+                icon: w
+                    .surface
+                    .as_ref()
+                    .filter(|s| s.has_icon(item.w as u64))
+                    .map(|_| item.w as u64),
+                hovered: w.hover == Some(i),
+                selected: selected == i,
+                elevated: item.elevated,
+                no_thumb: no_thumb[i],
+            })
+            .collect();
+        let title = format!("pick a window for zone {zone_number}");
+        let step = format!("{step} / {total}");
+        let footer = if notice {
+            "can't move an admin window".to_string()
+        } else if l.hidden > 0 {
+            format!("{} more not shown · esc to stop", l.hidden)
+        } else if listed.is_empty() {
+            "no windows to place · esc to stop".to_string()
+        } else {
+            "click a window, or arrows + enter · esc to stop".to_string()
+        };
+        let scene = AssistScene {
+            tokens: self.anim.current(),
+            scale: s,
+            size: (w.zone.w as f32 / s, w.zone.h as f32 / s),
+            header: l.header,
+            title: &title,
+            step: &step,
+            footer: l.footer,
+            footer_text: &footer,
+            warn: notice,
+            cards: &cards,
+        };
+        if let Some(Err(e)) = w.surface.as_mut().map(|surface| surface.render(&scene)) {
+            storage::log(&format!("tile: window picker render: {e}"));
+        }
+    }
+
+    /// Input on the picker: hover, click a card, keys, or losing the keyboard (a click
+    /// elsewhere) which ends the run.
+    fn assist_input(&mut self, input: AssistInput) {
+        let now = Instant::now();
+        let Some(w) = self.assist_win.as_ref() else {
+            return;
+        };
+        let (zone, scale, hwnd) = (w.zone, w.scale, w.hwnd);
+        let count = self.tiler.assist_windows().len();
+        let l = Self::assist_layout(zone, scale, count);
+        let hit = |x: i32, y: i32| tile_assist::hit(&l, x as f32 / scale, y as f32 / scale);
+        match input {
+            AssistInput::Move { x, y } => {
+                let hover = hit(x, y);
+                if let Some(w) = self.assist_win.as_mut().filter(|w| w.hover != hover) {
+                    w.hover = hover;
+                    w.dirty = true;
+                    // The keyboard selection follows the pointer, as in Task View.
+                    if let Some(i) = hover {
+                        self.tiler.assist_select(i);
+                    }
+                }
+            }
+            AssistInput::Press { x, y } => {
+                if let Some(w) = self.assist_win.as_mut() {
+                    w.pressed = hit(x, y);
+                }
+            }
+            AssistInput::Release { x, y } => {
+                let card = hit(x, y);
+                let pressed = self.assist_win.as_mut().and_then(|w| w.pressed.take());
+                if let Some(i) = card.filter(|&i| Some(i) == pressed) {
+                    self.assist_pick(i, now);
+                }
+            }
+            AssistInput::Leave => {
+                if let Some(w) = self.assist_win.as_mut() {
+                    w.dirty |= w.hover.take().is_some();
+                    w.pressed = None;
+                }
+            }
+            AssistInput::Key { vk, .. } => {
+                let key = match vk {
+                    0x25 => AssistKey::Left,
+                    0x27 => AssistKey::Right,
+                    0x26 => AssistKey::Up,
+                    0x28 => AssistKey::Down,
+                    0x24 => AssistKey::Home,
+                    0x23 => AssistKey::End,
+                    0x0D => AssistKey::Enter,
+                    0x1B => AssistKey::Escape,
+                    _ => return,
+                };
+                if key == AssistKey::Enter {
+                    self.assist_pick(self.tiler.assist_selected(), now);
+                } else if self.tiler.assist_key(key, l.cols, l.cards.len(), now) {
+                    if let Some(w) = self.assist_win.as_mut() {
+                        w.dirty = true;
+                    }
+                }
+            }
+            AssistInput::FocusLost => {
+                let fg = dj_win::tile::foreground();
+                let ours = self.assist_win.as_ref().and_then(|w| w.last_pick);
+                if fg == hwnd.0 as isize {
+                    return;
+                }
+                if ours == Some(fg) && self.tiler.assisting() {
+                    // The window just picked came up (a restored minimized one): take the
+                    // keyboard back and carry on.
+                    dj_win::assist::show(hwnd);
+                } else {
+                    self.tiler.assist_cancel();
+                }
+            }
+        }
+    }
+
+    /// A card was picked (click or Enter).
+    fn assist_pick(&mut self, i: usize, now: Instant) {
+        let picked = self.tiler.assist_windows().get(i).map(|l| l.w);
+        if let Some(w) = self.assist_win.as_mut() {
+            w.last_pick = picked;
+            w.dirty = true;
+        }
+        self.tiler.assist_pick(i, now);
+    }
+
+    fn destroy_assist(&mut self) {
+        if let Some(mut w) = self.assist_win.take() {
+            w.thumbs.clear();
+            w.surface = None;
+            dj_win::assist::destroy(w.hwnd);
+        }
+    }
+
     fn destroy_tile_overlay(&mut self) {
         if let Some(mut o) = self.tile_overlay.take() {
             o.surface = None;
@@ -1640,9 +1969,13 @@ impl App {
         self.sync_vu_timer();
         // A hidden island gives the screen back.
         self.sync_appbar(false);
-        // The preview stack hides with the island (its countdowns pause).
+        // The preview stack hides with the island (its countdowns pause), and a window
+        // picker stops.
         self.previews
             .set_allowed(visible && self.overlay.is_none(), Instant::now());
+        if !visible {
+            self.tiler.assist_cancel();
+        }
     }
 
     // ---- YouTube Music ----
@@ -1892,6 +2225,8 @@ impl App {
         self.previews.shutdown();
         dj_win::tile::uninstall_move_hook();
         self.destroy_tile_overlay();
+        self.tiler.assist_cancel();
+        self.destroy_assist();
         for (id, _, _) in TILE_KEYS {
             window::unregister_hotkey(self.hwnd, id);
         }
@@ -2054,7 +2389,7 @@ impl Handler for App {
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
             Event::Previews(input) => self.previews.input(input, Instant::now()),
-            Event::Assist(_) => {}
+            Event::Assist(input) => self.assist_input(input),
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
             Event::DpiChanged => self.relayout(),
