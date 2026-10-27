@@ -1,14 +1,19 @@
-//! The terminal panel's drawing: a header (the theme lamp, the shell's title, a close ✕), the
-//! grid of cells from `dj-term`, a cursor, the selection, a scroll indicator and a one-line
-//! notice. The island painter has already drawn the pill body; this only adds the content,
-//! like `tile::paint_tile_panel`.
+//! The terminal panel's drawing: a header (the theme lamp, the shell's title or the tab bar,
+//! a close ✕), the grid of cells from `dj-term`, a cursor, the selection, a scroll indicator, a
+//! one-line notice and, over everything, the tab menu. The island painter has already drawn
+//! the pill body; this only adds the content, like `tile::paint_tile_panel`.
 //!
 //! Everything is laid out in panel-local logical px by `dj-core::layout` (`TERM_*`) and
-//! multiplied by `scale` here. The grid is whole device pixels: one cell is `cell_size` px,
-//! and every glyph is placed at its own cell's x, so a row never drifts however long it is
-//! (runs of glyphs are batched, but each glyph carries its own position). Nothing is drawn
-//! outside the panel's rect, and the cells, cursor, selection, scroll bar and notice are
-//! clipped to `TERM_TEXT`.
+//! `dj-core::term_tabs` (the tabs' rects come in the `TabBarView`) and multiplied by `scale`
+//! here. The grid is whole device pixels: one cell is `cell_size` px, and every glyph is placed
+//! at its own cell's x, so a row never drifts however long it is (runs of glyphs are batched,
+//! but each glyph carries its own position). Nothing is drawn outside the panel's rect; the
+//! cells, cursor, selection, scroll bar and notice are clipped to `TERM_TEXT` and the tabs to
+//! `term_tabs::TABS`. The tab menu is the one thing that may cover both.
+//!
+//! The tab bar: an active tab is a `surface2` plate with `text`, a hovered one a `surface1`
+//! plate (the step between the pill and `surface2` in every built-in theme, dark or light),
+//! the rest have no plate and `text_dim`. The pin, the ✕ and the "+" are shapes, not glyphs.
 //!
 //! Glyphs the terminal's family lacks (CJK, emoji, symbols, Nerd-font icons) come from a
 //! system font that has them (`Fonts::fallback_face`) and are fitted to their own cell span:
@@ -19,9 +24,12 @@
 use crate::fonts::{Fonts, Weight};
 use crate::paint::{col, draw_text, fill_paint, fit, stroke_paint};
 use dj_core::layout::{self, Rect as LRect};
+use dj_core::term_tabs::{self, BarHit, MenuView, TabBarView, TabSlot};
 use dj_core::terminal::{Cell, Cursor, CursorShape, Palette, Screen, SELECTION_ALPHA};
-use dj_core::theme::ResolvedTokens;
-use skia_safe::{Canvas, ClipOp, Color, Font, GlyphId, Paint, Point, RRect, Rect};
+use dj_core::theme::{Mode, ResolvedTokens};
+use skia_safe::{
+    BlurStyle, Canvas, ClipOp, Color, Font, GlyphId, MaskFilter, Paint, Point, RRect, Rect,
+};
 
 /// What the terminal panel shows. The app picks the texts; `screen` and `palette` come
 /// from the session and the theme.
@@ -39,6 +47,9 @@ pub struct TerminalPanel<'a> {
     pub notice: Option<&'a str>,
     /// The pointer is over the ✕.
     pub close_hover: bool,
+    /// The tab bar (drawn in the header in place of `title`) and the open tab menu. With no
+    /// tabs the header shows `title` as it always did.
+    pub tabs: &'a TabBarView,
 }
 
 /// Header and notice text: `font_label`, medium, this size in logical px, with the Tile
@@ -65,6 +76,48 @@ const CLOSE_PLATE_R: f32 = 8.0;
 const CLOSE_PLATE_ALPHA: f32 = 0.10;
 /// The hairline under the header.
 const DIVIDER_ALPHA: f32 = 0.12;
+
+/// A tab: its corner radius, the inset of its title from the left (and of a mark from the
+/// right), and the gap between the title and what sits beside it, in logical px.
+const TAB_R: f32 = 6.0;
+const TAB_PAD: f32 = 8.0;
+const TAB_END_PAD: f32 = 6.0;
+const TAB_TITLE_GAP: f32 = 5.0;
+/// The pin mark's width: the leaning pin is drawn inside a box this wide.
+const PIN_W: f32 = 7.5;
+/// The activity dot and the exited ring: outer radius, ring stroke, gap between two marks.
+const MARK_R: f32 = 2.8;
+const MARK_RING: f32 = 1.2;
+const MARK_GAP: f32 = 3.0;
+/// A tab's ✕: its arm, stroke and the plate behind it while the pointer is on it.
+const TAB_CLOSE_ARM: f32 = 2.8;
+const TAB_CLOSE_STROKE: f32 = 1.4;
+const TAB_CLOSE_PLATE_ALPHA: f32 = 0.14;
+/// The "+": its arm and stroke.
+const PLUS_ARM: f32 = 4.0;
+const PLUS_STROKE: f32 = 1.5;
+/// A dragged tab: a lighter plate, an outline, and a blurred shadow (radius, drop and alpha
+/// on a dark and on a light theme).
+const LIFT_SHEEN_ALPHA: f32 = 0.07;
+const LIFT_OUTLINE_ALPHA: f32 = 0.24;
+const LIFT_BLUR: f32 = 3.0;
+const LIFT_DROP: f32 = 1.5;
+const LIFT_SHADOW_DARK: f32 = 0.60;
+const LIFT_SHADOW_LIGHT: f32 = 0.30;
+
+/// The tab menu: its corner radius, border alpha, a row's text inset, the hovered row's plate
+/// (inset from the row and its radius), the opacity of a disabled row and the shadow (radius,
+/// drop, alpha on a dark and on a light theme).
+const MENU_R: f32 = 8.0;
+const MENU_BORDER_ALPHA: f32 = 0.16;
+const MENU_PAD_X: f32 = 12.0;
+const MENU_PLATE_INSET: (f32, f32) = (4.0, 2.0);
+const MENU_PLATE_R: f32 = 5.0;
+const MENU_DISABLED_ALPHA: f32 = 0.5;
+const MENU_BLUR: f32 = 6.0;
+const MENU_DROP: f32 = 4.0;
+const MENU_SHADOW_DARK: f32 = 0.55;
+const MENU_SHADOW_LIGHT: f32 = 0.24;
 
 /// Cursor bars (underline and beam), the hollow outline, in logical px / device px.
 const CURSOR_BAR: f32 = 2.0;
@@ -194,6 +247,7 @@ pub(crate) fn paint_terminal(
 
     header(canvas, fonts, t, area, s, p);
 
+    let inner = canvas.save();
     let text = Rect::new(
         (area.left + layout::TERM_TEXT.x * s).round(),
         (area.top + layout::TERM_TEXT.y * s).round(),
@@ -224,10 +278,15 @@ pub(crate) fn paint_terminal(
     if let Some(n) = p.notice.filter(|n| !n.is_empty()) {
         notice(canvas, grid.fonts, t, p.palette, text, s, m, n);
     }
+    // Back to the whole panel for the tab menu: it hangs from the header over the grid.
+    canvas.restore_to_count(inner);
+    if let Some(menu) = &p.tabs.menu {
+        tab_menu(canvas, fonts, t, area, s, menu);
+    }
     canvas.restore_to_count(base);
 }
 
-/// The lamp, the title, the ✕ and the hairline under them.
+/// The lamp, the title (or the tab bar), the ✕ and the hairline under them.
 fn header(
     canvas: &Canvas,
     fonts: &mut Fonts,
@@ -245,29 +304,42 @@ fn header(
     );
     canvas.draw_circle((lamp_x, cy), LAMP_R * s, &fill_paint(col(t.accent, 1.0)));
 
-    // The title: left of the ✕, cut with `..` and clipped to the header.
     let font = fonts.font(&t.font_label, Weight::Medium, TEXT_SIZE * s);
     let tracking = TEXT_TRACKING * TEXT_SIZE * s;
-    let x = lamp_x + (HALO_R + TITLE_GAP) * s;
-    let right = area.left + (layout::TERM_CLOSE.x - TITLE_END_GAP) * s;
-    let title = fit(&font, p.title, tracking, right - x);
-    if !title.is_empty() {
-        canvas.save();
-        canvas.clip_rect(
-            Rect::new(x, area.top, right, area.top + layout::TERM_HEADER_H * s),
-            ClipOp::Intersect,
-            true,
-        );
-        draw_text(
+    if p.tabs.tabs.is_empty() {
+        // The title: left of the ✕, cut with `..` and clipped to the header.
+        let x = lamp_x + (HALO_R + TITLE_GAP) * s;
+        let right = area.left + (layout::TERM_CLOSE.x - TITLE_END_GAP) * s;
+        let title = fit(&font, p.title, tracking, right - x);
+        if !title.is_empty() {
+            canvas.save();
+            canvas.clip_rect(
+                Rect::new(x, area.top, right, area.top + layout::TERM_HEADER_H * s),
+                ClipOp::Intersect,
+                true,
+            );
+            draw_text(
+                canvas,
+                &font,
+                &title,
+                x,
+                cy + 0.35 * TEXT_SIZE * s,
+                tracking,
+                &fill_paint(col(t.text, 1.0)),
+            );
+            canvas.restore();
+        }
+    } else {
+        let bar = Bar {
             canvas,
-            &font,
-            &title,
-            x,
-            cy + 0.35 * TEXT_SIZE * s,
+            t,
+            area,
+            s,
+            font: &font,
             tracking,
-            &fill_paint(col(t.text, 1.0)),
-        );
-        canvas.restore();
+            hover: p.tabs.hover,
+        };
+        bar.paint(p.tabs);
     }
 
     // The ✕: two strokes, brighter (and on a faint plate) while hovered.
@@ -300,6 +372,355 @@ fn header(
             line_y + 1.0,
         ),
         &flat(col(t.text, DIVIDER_ALPHA)),
+    );
+}
+
+/// A panel-local logical rect in device px on the panel `area`, each edge rounded to a device
+/// pixel.
+fn local(area: Rect, r: LRect, s: f32) -> Rect {
+    Rect::new(
+        (area.left + r.x * s).round(),
+        (area.top + r.y * s).round(),
+        (area.left + (r.x + r.w) * s).round(),
+        (area.top + (r.y + r.h) * s).round(),
+    )
+}
+
+/// A rect worth drawing: finite and not empty.
+fn drawable(r: &Rect) -> bool {
+    r.width() > 0.0 && r.height() > 0.0 && r.width().is_finite() && r.height().is_finite()
+}
+
+/// A title shown on one line: controls (a stray newline from the shell) become spaces.
+fn one_line(title: &str) -> String {
+    let line: String = title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    line.trim().to_string()
+}
+
+/// The marks at a tab's right edge as `(activity, exited)`. A tab that shows its ✕ shows no
+/// marks: the ✕ takes their place.
+fn marks(tab: &TabSlot) -> (bool, bool) {
+    if tab.close.is_some() {
+        (false, false)
+    } else {
+        (tab.activity, tab.exited)
+    }
+}
+
+/// The x of the centre of a tab's `n`th mark from its right edge, in logical px.
+fn mark_x(tab: &LRect, n: usize) -> f32 {
+    tab.x + tab.w - TAB_END_PAD - MARK_R - n as f32 * (2.0 * MARK_R + MARK_GAP)
+}
+
+/// Where a tab's title may be drawn: the logical x it starts at and the one it must end
+/// before, after the pin mark and before the ✕ or the marks.
+fn title_span(tab: &TabSlot) -> (f32, f32) {
+    let r = tab.rect;
+    let mut left = r.x + TAB_PAD;
+    if tab.pinned {
+        left += PIN_W + TAB_TITLE_GAP;
+    }
+    let (activity, exited) = marks(tab);
+    let n = activity as usize + exited as usize;
+    let right = if let Some(c) = tab.close {
+        c.x - 2.0
+    } else if n > 0 {
+        let width = n as f32 * 2.0 * MARK_R + (n - 1) as f32 * MARK_GAP;
+        r.x + r.w - TAB_END_PAD - width - TAB_TITLE_GAP
+    } else {
+        r.x + r.w - TAB_PAD
+    };
+    (left.max(r.x), right.min(r.x + r.w))
+}
+
+/// The tab bar's painter: the header's font, the theme and where the pointer is.
+struct Bar<'a> {
+    canvas: &'a Canvas,
+    t: &'a ResolvedTokens,
+    /// The panel's rect in device px.
+    area: Rect,
+    s: f32,
+    font: &'a Font,
+    tracking: f32,
+    hover: Option<BarHit>,
+}
+
+impl Bar<'_> {
+    /// The tabs, then "+", then a dragged tab over them, all clipped to `TABS`.
+    fn paint(&self, bar: &TabBarView) {
+        let canvas = self.canvas;
+        canvas.save();
+        canvas.clip_rect(
+            local(self.area, term_tabs::TABS, self.s),
+            ClipOp::Intersect,
+            false,
+        );
+        for (i, tab) in bar.tabs.iter().enumerate().filter(|(_, x)| !x.dragging) {
+            self.tab(i, tab);
+        }
+        if let Some(plus) = bar.plus {
+            self.plus(plus);
+        }
+        for (i, tab) in bar.tabs.iter().enumerate().filter(|(_, x)| x.dragging) {
+            self.tab(i, tab);
+        }
+        canvas.restore();
+    }
+
+    /// The baseline for text centred on `cy`.
+    fn baseline(&self, cy: f32) -> f32 {
+        cy + 0.35 * TEXT_SIZE * self.s
+    }
+
+    fn tab(&self, i: usize, tab: &TabSlot) {
+        let (canvas, t, s) = (self.canvas, self.t, self.s);
+        let r = local(self.area, tab.rect, s);
+        if !drawable(&r) {
+            return;
+        }
+        let hovered = matches!(self.hover, Some(BarHit::Tab(j) | BarHit::Close(j)) if j == i);
+        let rad = (TAB_R * s).min(r.width() / 2.0).min(r.height() / 2.0);
+        let plate = RRect::new_rect_xy(r, rad, rad);
+        if tab.dragging {
+            self.lift(plate);
+        } else if tab.active {
+            canvas.draw_rrect(plate, &fill_paint(col(t.surface2, 1.0)));
+        } else if hovered {
+            canvas.draw_rrect(plate, &fill_paint(col(t.surface1, 1.0)));
+        }
+        // The active, dragged and hovered tabs read in `text` (on Clean the hovered plate is
+        // only a step above black, so the brighter title carries the hover); the rest are
+        // dim. A tab whose shell has exited stays dim, even the active one.
+        let ink = if !tab.exited && (tab.active || tab.dragging || hovered) {
+            t.text
+        } else {
+            t.text_dim
+        };
+        let cy = r.center_y();
+
+        if tab.pinned {
+            pin_mark(
+                canvas,
+                r.left + (TAB_PAD + PIN_W / 2.0) * s,
+                cy,
+                s,
+                col(ink, 1.0),
+            );
+        }
+
+        // The title, cut with `..` inside its span and clipped to the tab.
+        let (from, to) = title_span(tab);
+        let x0 = (self.area.left + from * s).max(r.left);
+        let x1 = (self.area.left + to * s).min(r.right);
+        let title = fit(self.font, &one_line(&tab.title), self.tracking, x1 - x0);
+        if !title.is_empty() {
+            canvas.save();
+            canvas.clip_rect(Rect::new(x0, r.top, x1, r.bottom), ClipOp::Intersect, true);
+            draw_text(
+                canvas,
+                self.font,
+                &title,
+                x0,
+                self.baseline(cy),
+                self.tracking,
+                &fill_paint(col(ink, 1.0)),
+            );
+            canvas.restore();
+        }
+
+        // The marks: new output is a filled accent dot, an exited shell a hollow ring.
+        let (activity, exited) = marks(tab);
+        let mut n = 0;
+        if activity {
+            let cx = self.area.left + mark_x(&tab.rect, n) * s;
+            canvas.draw_circle((cx, cy), MARK_R * s, &fill_paint(col(t.accent, 1.0)));
+            n += 1;
+        }
+        if exited {
+            let cx = self.area.left + mark_x(&tab.rect, n) * s;
+            let ring = stroke_paint(col(t.text_dim, 1.0), MARK_RING * s);
+            canvas.draw_circle((cx, cy), (MARK_R - MARK_RING / 2.0) * s, &ring);
+        }
+
+        if let Some(c) = tab.close {
+            self.close(c, matches!(self.hover, Some(BarHit::Close(j)) if j == i));
+        }
+    }
+
+    /// A tab's ✕: dim, brighter on a faint round plate while the pointer is on it.
+    fn close(&self, rect: LRect, hot: bool) {
+        let (canvas, t, s) = (self.canvas, self.t, self.s);
+        let r = local(self.area, rect, s);
+        if !drawable(&r) {
+            return;
+        }
+        let (cx, cy) = (r.center_x(), r.center_y());
+        if hot {
+            let radius = r.width().min(r.height()) / 2.0;
+            canvas.draw_circle(
+                (cx, cy),
+                radius,
+                &fill_paint(col(t.text, TAB_CLOSE_PLATE_ALPHA)),
+            );
+        }
+        let ink = if hot { t.text } else { t.text_dim };
+        cross(
+            canvas,
+            cx,
+            cy,
+            TAB_CLOSE_ARM * s,
+            TAB_CLOSE_STROKE * s,
+            col(ink, 1.0),
+        );
+    }
+
+    /// The "+": two strokes, brighter on a faint plate while hovered.
+    fn plus(&self, rect: LRect) {
+        let (canvas, t, s) = (self.canvas, self.t, self.s);
+        let r = local(self.area, rect, s);
+        if !drawable(&r) {
+            return;
+        }
+        let hot = self.hover == Some(BarHit::Plus);
+        if hot {
+            let rad = (TAB_R * s).min(r.width() / 2.0).min(r.height() / 2.0);
+            canvas.draw_rrect(
+                RRect::new_rect_xy(r, rad, rad),
+                &fill_paint(col(t.surface1, 1.0)),
+            );
+        }
+        let ink = if hot { t.text } else { t.text_dim };
+        let (cx, cy) = (r.center_x(), r.center_y());
+        let (arm, stroke) = (PLUS_ARM * s, stroke_paint(col(ink, 1.0), PLUS_STROKE * s));
+        canvas.draw_line((cx - arm, cy), (cx + arm, cy), &stroke);
+        canvas.draw_line((cx, cy - arm), (cx, cy + arm), &stroke);
+    }
+
+    /// The plate of a tab being dragged: a soft shadow, an opaque `surface2` plate with a
+    /// faint sheen of the text colour (lighter on a dark theme, darker on a light one, so it
+    /// reads as raised either way), and a one device px outline. Opaque, so it hides the title
+    /// of a neighbour it passes over.
+    fn lift(&self, plate: RRect) {
+        let (canvas, t, s) = (self.canvas, self.t, self.s);
+        let alpha = if matches!(t.mode, Mode::Light) {
+            LIFT_SHADOW_LIGHT
+        } else {
+            LIFT_SHADOW_DARK
+        };
+        let mut shadow = fill_paint(Color::from_argb((alpha * 255.0 + 0.5) as u8, 0, 0, 0));
+        shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, LIFT_BLUR * s, false));
+        canvas.draw_rrect(plate.with_offset((0.0, LIFT_DROP * s)), &shadow);
+        canvas.draw_rrect(plate, &fill_paint(col(t.surface2, 1.0)));
+        canvas.draw_rrect(plate, &fill_paint(col(t.text, LIFT_SHEEN_ALPHA)));
+        let rad = plate.simple_radii().x;
+        let edge = plate.rect().with_inset((0.5, 0.5));
+        canvas.draw_rrect(
+            RRect::new_rect_xy(edge, (rad - 0.5).max(0.0), (rad - 0.5).max(0.0)),
+            &stroke_paint(col(t.text, LIFT_OUTLINE_ALPHA), 1.0),
+        );
+    }
+}
+
+/// Two strokes crossing at (`cx`, `cy`), `arm` from the centre along each diagonal.
+fn cross(canvas: &Canvas, cx: f32, cy: f32, arm: f32, stroke: f32, ink: Color) {
+    let paint = stroke_paint(ink, stroke);
+    canvas.draw_line((cx - arm, cy - arm), (cx + arm, cy + arm), &paint);
+    canvas.draw_line((cx - arm, cy + arm), (cx + arm, cy - arm), &paint);
+}
+
+/// The pin mark of a pinned tab, a drawn thumbtack leaning to the right: a flat cap, a neck, a
+/// base plate and a needle, centred on (`cx`, `cy`) and `s` device px per logical px.
+fn pin_mark(canvas: &Canvas, cx: f32, cy: f32, s: f32, ink: Color) {
+    canvas.save();
+    canvas.translate((cx - 0.75 * s, cy + 0.6 * s));
+    canvas.rotate(40.0, None);
+    let fill = fill_paint(ink);
+    let round = |l: f32, t: f32, r: f32, b: f32, rad: f32| {
+        let rect = Rect::new(l * s, t * s, r * s, b * s);
+        canvas.draw_rrect(RRect::new_rect_xy(rect, rad * s, rad * s), &fill);
+    };
+    round(-2.3, -4.4, 2.3, -3.2, 0.5);
+    round(-1.2, -3.3, 1.2, -1.0, 0.0);
+    round(-3.0, -1.1, 3.0, -0.1, 0.5);
+    canvas.draw_line((0.0, 0.0), (0.0, 3.8 * s), &stroke_paint(ink, 1.0 * s));
+    canvas.restore();
+}
+
+/// The tab menu: a pill-coloured rounded rect with a hairline border and a soft shadow, one
+/// label per row, the hovered enabled row on a plate and a disabled row dim. Drawn over the
+/// header and the grid, inside the panel's clip.
+fn tab_menu(
+    canvas: &Canvas,
+    fonts: &mut Fonts,
+    t: &ResolvedTokens,
+    area: Rect,
+    s: f32,
+    menu: &MenuView,
+) {
+    let r = local(area, menu.rect, s);
+    if !drawable(&r) {
+        return;
+    }
+    let rad = (MENU_R * s).min(r.width() / 2.0).min(r.height() / 2.0);
+    let body = RRect::new_rect_xy(r, rad, rad);
+    let alpha = if matches!(t.mode, Mode::Light) {
+        MENU_SHADOW_LIGHT
+    } else {
+        MENU_SHADOW_DARK
+    };
+    let mut shadow = fill_paint(Color::from_argb((alpha * 255.0 + 0.5) as u8, 0, 0, 0));
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, MENU_BLUR * s, false));
+    canvas.draw_rrect(body.with_offset((0.0, MENU_DROP * s)), &shadow);
+    canvas.draw_rrect(body, &fill_paint(col(t.pill, 1.0)));
+
+    canvas.save();
+    canvas.clip_rrect(body, ClipOp::Intersect, true);
+    let font = fonts.font(&t.font_label, Weight::Medium, TEXT_SIZE * s);
+    let tracking = TEXT_TRACKING * TEXT_SIZE * s;
+    for (i, item) in menu.items.iter().enumerate() {
+        let row = local(area, item.rect, s);
+        if !drawable(&row) {
+            continue;
+        }
+        if item.enabled && menu.hover == Some(i) {
+            let (dx, dy) = (MENU_PLATE_INSET.0 * s, MENU_PLATE_INSET.1 * s);
+            let plate = Rect::new(row.left + dx, row.top + dy, row.right - dx, row.bottom - dy);
+            if drawable(&plate) {
+                let rr = (MENU_PLATE_R * s).min(plate.height() / 2.0);
+                canvas.draw_rrect(
+                    RRect::new_rect_xy(plate, rr, rr),
+                    &fill_paint(col(t.surface2, 1.0)),
+                );
+            }
+        }
+        let x = row.left + MENU_PAD_X * s;
+        let label = fit(&font, item.label, tracking, row.right - x - MENU_PAD_X * s);
+        let ink = if item.enabled {
+            col(t.text, 1.0)
+        } else {
+            col(t.text_dim, MENU_DISABLED_ALPHA)
+        };
+        draw_text(
+            canvas,
+            &font,
+            &label,
+            x,
+            row.center_y() + 0.35 * TEXT_SIZE * s,
+            tracking,
+            &fill_paint(ink),
+        );
+    }
+    canvas.restore();
+
+    // The hairline: one device px just inside the edge.
+    let edge = r.with_inset((0.5, 0.5));
+    let rr = (rad - 0.5).max(0.0);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(edge, rr, rr),
+        &stroke_paint(col(t.text, MENU_BORDER_ALPHA), 1.0),
     );
 }
 
@@ -845,6 +1266,21 @@ mod tests {
             b
         }
 
+        /// The extent of the pixels of the rect that are not `bg` (a plate's colour, or
+        /// transparent), as (min x, min y, max x, max y).
+        fn ink_bounds(&self, r: IRect, bg: [u8; 4]) -> Option<(i32, i32, i32, i32)> {
+            let mut b: Option<(i32, i32, i32, i32)> = None;
+            self.each(r, |x, y, p| {
+                if distance(p, bg) > 6 {
+                    b = Some(match b {
+                        None => (x, y, x, y),
+                        Some((a, c, d, e)) => (a.min(x), c.min(y), d.max(x), e.max(y)),
+                    });
+                }
+            });
+            b
+        }
+
         /// The alpha of each pixel of the rect, row by row.
         fn pattern(&self, r: IRect) -> Vec<u8> {
             let mut v = Vec::new();
@@ -948,6 +1384,17 @@ mod tests {
             )
         }
 
+        /// A panel-local logical rect in device px, each edge rounded as the painter does.
+        fn rect(&self, r: LRect) -> IRect {
+            let e = |v: f32| (v * self.s).round() as i32;
+            (
+                self.panel.0 + e(r.x),
+                self.panel.1 + e(r.y),
+                e(r.x + r.w) - e(r.x),
+                e(r.y + r.h) - e(r.y),
+            )
+        }
+
         /// A point of the panel at logical (x, y) from its top-left, in device px.
         fn pt(&self, x: f32, y: f32) -> (i32, i32) {
             (
@@ -984,6 +1431,14 @@ mod tests {
         Style::default()
     }
 
+    /// The tab view of a panel with no tabs: the header shows the title.
+    static NO_TABS: TabBarView = TabBarView {
+        tabs: Vec::new(),
+        plus: None,
+        hover: None,
+        menu: None,
+    };
+
     fn panel<'a>(sc: &'a Screen, pal: &'a Palette) -> TerminalPanel<'a> {
         TerminalPanel {
             title: "pwsh",
@@ -993,6 +1448,7 @@ mod tests {
             font_size: SIZE,
             notice: None,
             close_hover: false,
+            tabs: &NO_TABS,
         }
     }
 
@@ -1936,6 +2392,1219 @@ mod tests {
             assert!(
                 shot.lit_in(g.header()) > 50,
                 "scale {s}: but the header is there"
+            );
+        }
+    }
+
+    // ----- tabs -----
+
+    fn tab(id: u64, x: f32, w: f32, title: &str) -> TabSlot {
+        TabSlot {
+            id,
+            rect: LRect::new(x, 6.0, w, 24.0),
+            title: title.to_string(),
+            pinned: false,
+            active: false,
+            activity: false,
+            exited: false,
+            close: None,
+            dragging: false,
+        }
+    }
+
+    /// The ✕ a regular tab shows: 16 px square at the tab's right end, as the model places it.
+    fn with_close(mut t: TabSlot) -> TabSlot {
+        t.close = Some(LRect::new(t.rect.x + t.rect.w - 20.0, 10.0, 16.0, 16.0));
+        t
+    }
+
+    fn view(tabs: Vec<TabSlot>) -> TabBarView {
+        let end = tabs.last().map_or(30.0, |t| t.rect.x + t.rect.w);
+        TabBarView {
+            plus: Some(LRect::new(end + 2.0, 6.0, term_tabs::PLUS_W, 24.0)),
+            tabs,
+            hover: None,
+            menu: None,
+        }
+    }
+
+    fn themes() -> Vec<ResolvedTokens> {
+        let reg = ThemeRegistry::with_builtins();
+        let all: Vec<ResolvedTokens> = reg
+            .ids()
+            .iter()
+            .map(|id| reg.get(id).unwrap().clone())
+            .collect();
+        assert_eq!(all.len(), 4, "the four built-in themes");
+        all
+    }
+
+    fn render_tabs(t: &ResolvedTokens, v: &TabBarView, s: f32) -> (Shot, Geo) {
+        let pal = palette(t);
+        let sc = blank(80, 20, &pal);
+        let p = TerminalPanel {
+            tabs: v,
+            ..panel(&sc, &pal)
+        };
+        render(t, &p, s)
+    }
+
+    /// The strip the tabs are confined to, the lamp, the panel's ✕ and the hairline: the only
+    /// places the header may draw when no menu is open.
+    fn header_parts(g: &Geo) -> [IRect; 4] {
+        [
+            g.rect(term_tabs::TABS),
+            g.rect(LRect::new(13.0, 10.0, 15.0, 16.0)),
+            g.rect(layout::TERM_CLOSE),
+            (g.text.0, g.line_y(), g.text.2, 1),
+        ]
+    }
+
+    /// The part of a tab's rect a title can fill: inside the padding, clear of its plate's top
+    /// and bottom, in device px.
+    fn title_box(g: &Geo, t: &TabSlot) -> IRect {
+        let (from, to) = title_span(t);
+        let r = g.rect(LRect::new(from, t.rect.y + 5.0, (to - from).max(0.0), 14.0));
+        (r.0, r.1, r.2.max(0), r.3)
+    }
+
+    /// The device box of the pin mark of a tab (its left end, `PIN_W` wide).
+    fn pin_box(g: &Geo, t: &TabSlot) -> IRect {
+        g.rect(LRect::new(t.rect.x + TAB_PAD, t.rect.y + 4.0, PIN_W, 16.0))
+    }
+
+    /// The device pixel at the centre of a tab's `n`th mark.
+    fn mark_pt(g: &Geo, t: &TabSlot, n: usize) -> (i32, i32) {
+        g.pt(mark_x(&t.rect, n), t.rect.y + t.rect.h / 2.0)
+    }
+
+    /// A pixel inside a tab's rect near its top edge, clear of its title and corners.
+    fn plate_pt(g: &Geo, t: &TabSlot) -> (i32, i32) {
+        let r = g.rect(t.rect);
+        (r.0 + r.2 / 2, r.1 + (2.0 * g.s) as i32)
+    }
+
+    #[test]
+    fn the_four_themes_give_the_tab_plates_a_clear_step_and_readable_titles() {
+        for t in themes() {
+            let n = &t.name;
+            let (pill, hover, active) = (t.pill, t.surface1, t.surface2);
+            // pill -> hovered plate -> active plate: a step each, in that order.
+            assert!(
+                pill.contrast(active) >= 1.2,
+                "{n}: the active plate stands out"
+            );
+            assert!(pill.contrast(hover) >= 1.06, "{n}: the hovered plate shows");
+            assert!(
+                hover.contrast(active) >= 1.04,
+                "{n}: hovered and active differ"
+            );
+            assert!(
+                pill.contrast(hover) < pill.contrast(active),
+                "{n}: hover is the fainter"
+            );
+            // Titles: text on the active and hovered plates, dim text on the pill.
+            assert!(t.text.contrast(active) >= 4.5, "{n}: active title");
+            assert!(t.text.contrast(hover) >= 4.5, "{n}: hovered title");
+            assert!(t.text_dim.contrast(pill) >= 4.5, "{n}: inactive title");
+            // The exited active tab and the exited hovered one stay dim, and still readable.
+            assert!(
+                t.text_dim.contrast(active) >= 3.0,
+                "{n}: exited active title"
+            );
+            assert!(
+                t.text_dim.contrast(hover) >= 3.0,
+                "{n}: exited hovered title"
+            );
+            // The activity dot against the pill and the hovered plate.
+            assert!(t.accent.contrast(pill) >= 3.0, "{n}: activity dot");
+            assert!(
+                t.accent.contrast(hover) >= 3.0,
+                "{n}: activity dot on a hovered tab"
+            );
+        }
+    }
+
+    #[test]
+    fn active_hovered_and_plain_tabs_have_their_own_plates_on_every_theme() {
+        for t in themes() {
+            for s in SCALES {
+                let mut active = tab(1, 30.0, 100.0, "active");
+                active.active = true;
+                let hot = tab(2, 132.0, 100.0, "hovered");
+                let plain = tab(3, 234.0, 100.0, "plain");
+                let mut v = view(vec![active, hot, plain]);
+                v.hover = Some(BarHit::Tab(1));
+                let (shot, g) = render_tabs(&t, &v, s);
+                let at = |i: usize| {
+                    let (x, y) = plate_pt(&g, &v.tabs[i]);
+                    shot.at(x, y)
+                };
+                let who = format!("{} scale {s}", t.name);
+                assert_eq!(at(0), bgra(t.surface2), "{who}: active plate");
+                assert_eq!(at(1), bgra(t.surface1), "{who}: hovered plate");
+                assert_eq!(at(2)[3], 0, "{who}: a plain tab has no plate");
+                // The corners are rounded: the plate's corner pixel is not the plate.
+                let r = g.rect(v.tabs[0].rect);
+                assert_ne!(shot.at(r.0, r.1), bgra(t.surface2), "{who}: rounded corner");
+                // The title colours: text, text (hovered), dim.
+                let ink = |i: usize, c: Rgb| shot.closest(title_box(&g, &v.tabs[i]), bgra(c));
+                assert!(
+                    ink(0, t.text) < 60,
+                    "{who}: active title {}",
+                    ink(0, t.text)
+                );
+                assert!(
+                    ink(1, t.text) < 60,
+                    "{who}: hovered title {}",
+                    ink(1, t.text)
+                );
+                assert!(
+                    ink(2, t.text_dim) < 60,
+                    "{who}: plain title {}",
+                    ink(2, t.text_dim)
+                );
+                assert!(
+                    ink(2, t.text) > ink(2, t.text_dim) + 20,
+                    "{who}: the plain title is dim, not bright"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_title_is_cut_inside_its_tab_and_clear_of_what_sits_beside_it() {
+        let t = tokens();
+        let long = "very-long-title-".repeat(8);
+        for s in SCALES {
+            let plain = tab(1, 30.0, 140.0, &long);
+            let mut busy = tab(2, 172.0, 140.0, &long);
+            busy.activity = true;
+            let mut pinned = tab(3, 314.0, 76.0, &long);
+            pinned.pinned = true;
+            let mut closing = with_close(tab(4, 392.0, 140.0, &long));
+            closing.active = true;
+            let mut dead = tab(5, 534.0, 100.0, &long);
+            dead.exited = true;
+            dead.activity = true;
+            for one in [plain, busy, pinned, closing, dead] {
+                let mut v = view(vec![one.clone()]);
+                v.plus = None;
+                let (shot, g) = render_tabs(&t, &v, s);
+                let r = g.rect(one.rect);
+                // Everything drawn is inside the tab's rect...
+                assert_eq!(
+                    shot.lit_outside(
+                        shot.whole(),
+                        &[
+                            r,
+                            g.rect(layout::TERM_CLOSE),
+                            header_parts(&g)[1],
+                            header_parts(&g)[3]
+                        ]
+                    ),
+                    None,
+                    "scale {s}: {}",
+                    one.id
+                );
+                // ...and the title stops short of what sits beside it: the ✕, the first mark
+                // or, with neither, the tab's edge. `guard` is that thing's left edge and `gap`
+                // the room the title leaves before it, both written out here rather than taken
+                // from `title_span`.
+                let (activity, exited) = marks(&one);
+                let n = activity as usize + exited as usize;
+                let (guard, gap) = if let Some(c) = one.close {
+                    (g.rect(c).0, 2.0)
+                } else if n > 0 {
+                    (
+                        g.pt(mark_x(&one.rect, n - 1) - MARK_R, 0.0).0,
+                        TAB_TITLE_GAP,
+                    )
+                } else {
+                    (r.0 + r.2, TAB_PAD)
+                };
+                let one_px = s.ceil() as i32;
+                // Where nothing is drawn, the tab shows its plate (the active one) or nothing.
+                let bg = if one.active {
+                    bgra(t.surface2)
+                } else {
+                    [0, 0, 0, 0]
+                };
+                let beside = (
+                    guard - one_px,
+                    r.1 + 4 * s as i32,
+                    one_px,
+                    r.3 - 8 * s as i32,
+                );
+                assert_eq!(
+                    shot.ink_bounds(beside, bg),
+                    None,
+                    "scale {s}: {} touches what is beside it",
+                    one.id
+                );
+                let begin = g.pt(title_span(&one).0, 0.0).0;
+                let (x0, _, x1, _) = shot
+                    .ink_bounds(
+                        (begin, r.1 + 4 * s as i32, guard - begin, r.3 - 8 * s as i32),
+                        bg,
+                    )
+                    .expect("a cut title is not gone");
+                assert!(x0 >= begin - 1, "scale {s}: {} starts at {x0}", one.id);
+                assert!(x0 >= begin - 1, "scale {s}: {} starts at {x0}", one.id);
+                // It is cut as late as it can be: the next glyph would not have fit.
+                let room = guard - (gap * s) as i32;
+                assert!(
+                    x1 <= room && x1 >= room - (10.0 * s) as i32,
+                    "scale {s}: {} ends at {x1}, room ends at {room}",
+                    one.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_titles_span_is_inside_the_tab_and_clear_of_its_marks_and_close() {
+        let mut regular = tab(1, 30.0, 100.0, "x");
+        let (l0, r0) = title_span(&regular);
+        assert_eq!((l0, r0), (30.0 + TAB_PAD, 130.0 - TAB_PAD));
+        regular.activity = true;
+        let (_, r1) = title_span(&regular);
+        assert!(
+            r1 <= mark_x(&regular.rect, 0) - MARK_R,
+            "clear of the dot: {r1}"
+        );
+        regular.exited = true;
+        let (_, r2) = title_span(&regular);
+        assert!(
+            r2 <= mark_x(&regular.rect, 1) - MARK_R && r2 < r1,
+            "clear of both marks: {r2}"
+        );
+        let closing = with_close(regular.clone());
+        let (_, r3) = title_span(&closing);
+        assert!(r3 <= closing.close.unwrap().x, "clear of the ✕: {r3}");
+        assert_eq!(
+            marks(&closing),
+            (false, false),
+            "the ✕ takes the marks' place"
+        );
+        let mut pinned = tab(2, 30.0, 76.0, "x");
+        pinned.pinned = true;
+        let (l, _) = title_span(&pinned);
+        assert!(l >= 30.0 + TAB_PAD + PIN_W, "after the pin mark: {l}");
+        // A tab too narrow for anything gives an empty span, never a reversed one inside it.
+        for w in [0.0, 5.0, 20.0, 40.0] {
+            let mut t = with_close(tab(3, 100.0, w, "x"));
+            t.pinned = true;
+            t.activity = true;
+            let (l, r) = title_span(&t);
+            assert!(l >= t.rect.x && r <= t.rect.x + t.rect.w, "w {w}: {l}..{r}");
+        }
+    }
+
+    #[test]
+    fn titles_are_one_line() {
+        assert_eq!(one_line("a\nb\tc\r\n"), "a b c");
+        assert_eq!(one_line("  pwsh \u{7} "), "pwsh");
+        assert_eq!(one_line(""), "");
+    }
+
+    #[test]
+    fn twelve_tabs_with_long_titles_do_not_overlap_or_leave_the_strip() {
+        let t = tokens();
+        let w = (term_tabs::TABS.w - 11.0 * term_tabs::TAB_GAP) / 12.0;
+        let slots: Vec<TabSlot> = (0..12)
+            .map(|i| {
+                let x = term_tabs::TABS.x + i as f32 * (w + term_tabs::TAB_GAP);
+                let mut s = tab(
+                    i as u64,
+                    x,
+                    w,
+                    &format!("a-very-long-tab-title-{i}-{}", "w".repeat(60)),
+                );
+                s.pinned = i < 2;
+                s.active = i == 5;
+                s.activity = i == 7 || i == 3;
+                s.exited = i == 9;
+                if s.active {
+                    s = with_close(s);
+                }
+                s
+            })
+            .collect();
+        for s in SCALES {
+            let mut v = view(slots.clone());
+            v.plus = None;
+            v.hover = Some(BarHit::Close(5));
+            let (shot, g) = render_tabs(&t, &v, s);
+            let rects: Vec<IRect> = slots.iter().map(|x| g.rect(x.rect)).collect();
+            let parts = header_parts(&g);
+            // Together: ink only in the tabs (and the lamp, the panel's ✕, the hairline).
+            let mut allowed = rects.clone();
+            allowed.extend([parts[1], parts[2], parts[3]]);
+            assert_eq!(shot.lit_outside(shot.whole(), &allowed), None, "scale {s}");
+            // The gaps between neighbours are empty, and the tabs are inside the strip.
+            for pair in rects.windows(2) {
+                let gap = (
+                    pair[0].0 + pair[0].2,
+                    pair[0].1,
+                    pair[1].0 - (pair[0].0 + pair[0].2),
+                    pair[0].3,
+                );
+                assert!(gap.2 > 0, "scale {s}: there is a gap");
+                assert_eq!(shot.lit_in(gap), 0, "scale {s}: the gap is empty");
+            }
+            let strip = parts[0];
+            assert!(
+                rects[0].0 >= strip.0 && rects[11].0 + rects[11].2 <= strip.0 + strip.2,
+                "scale {s}"
+            );
+            // One at a time: no tab's title reaches past its own rect.
+            for (x, r) in slots.iter().zip(&rects) {
+                let mut alone = view(vec![x.clone()]);
+                alone.plus = None;
+                let (shot, g) = render_tabs(&t, &alone, s);
+                let p = header_parts(&g);
+                assert_eq!(
+                    shot.lit_outside(shot.whole(), &[*r, p[1], p[2], p[3]]),
+                    None,
+                    "scale {s}: tab {} spills",
+                    x.id
+                );
+                assert!(
+                    shot.lit_in(*r) > 20,
+                    "scale {s}: tab {} has its title",
+                    x.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_pinned_tab_has_a_drawn_pin_before_a_shorter_title() {
+        let t = tokens();
+        for s in SCALES {
+            // The mark alone: an empty title.
+            let mut pinned = tab(1, 30.0, 76.0, "");
+            pinned.pinned = true;
+            let mut active = pinned.clone();
+            active.id = 2;
+            active.rect.x = 108.0;
+            active.active = true;
+            let plain = tab(3, 186.0, 76.0, "");
+            let v = view(vec![pinned.clone(), active.clone(), plain.clone()]);
+            let (shot, g) = render_tabs(&t, &v, s);
+            let boxed = pin_box(&g, &pinned);
+            let (x0, y0, x1, y1) = shot.lit_bounds(boxed).expect("the pin is drawn");
+            assert!(
+                x0 >= boxed.0 - 1 && x1 <= boxed.0 + boxed.2,
+                "scale {s}: x {x0}..{x1} in {boxed:?}"
+            );
+            assert!(
+                y1 - y0 >= (6.0 * s) as i32,
+                "scale {s}: the pin is a real shape, {} px tall",
+                y1 - y0
+            );
+            assert!(
+                y0 >= g.rect(pinned.rect).1 && y1 < g.rect(pinned.rect).1 + g.rect(pinned.rect).3,
+                "scale {s}"
+            );
+            // The mark is the only ink in the tab (give or take the edge's anti-aliasing).
+            assert_eq!(
+                shot.lit_outside(
+                    g.rect(pinned.rect),
+                    &[(boxed.0 - 1, boxed.1, boxed.2 + 2, boxed.3)]
+                ),
+                None,
+                "scale {s}"
+            );
+            assert!(
+                shot.closest(boxed, bgra(t.text_dim)) < 40,
+                "scale {s}: dim on an inactive tab"
+            );
+            let on = pin_box(&g, &active);
+            assert!(
+                shot.closest(on, bgra(t.text)) < 40,
+                "scale {s}: bright on the active tab"
+            );
+            assert_eq!(
+                shot.lit_in(pin_box(&g, &plain)),
+                0,
+                "scale {s}: a regular tab has none"
+            );
+
+            // With a title: it starts after the pin, later than an unpinned tab's.
+            let mut p2 = tab(1, 30.0, 76.0, "Notes");
+            p2.pinned = true;
+            let r2 = tab(2, 108.0, 76.0, "Notes");
+            let v = view(vec![p2.clone(), r2.clone()]);
+            let (shot, g) = render_tabs(&t, &v, s);
+            // The title's own left edge: the first ink after the pin's box (a pinned tab) or
+            // after the padding.
+            let left = |x: &TabSlot| {
+                let r = g.rect(x.rect);
+                let from = if x.pinned {
+                    r.0 + ((TAB_PAD + PIN_W) * s) as i32 + 2
+                } else {
+                    r.0
+                };
+                shot.lit_bounds((from, r.1, r.0 + r.2 - from, r.3))
+                    .unwrap()
+                    .0
+                    - r.0
+            };
+            let shift = ((PIN_W + TAB_TITLE_GAP) * s) as i32 - 3;
+            assert!(
+                left(&p2) >= left(&r2) + shift,
+                "scale {s}: {} vs {}",
+                left(&p2),
+                left(&r2)
+            );
+        }
+    }
+
+    #[test]
+    fn the_activity_dot_is_accent_and_the_exited_ring_is_hollow() {
+        let t = tokens();
+        for s in SCALES {
+            let quiet = tab(1, 30.0, 100.0, "");
+            let mut busy = tab(2, 132.0, 100.0, "");
+            busy.activity = true;
+            let mut gone = tab(3, 234.0, 100.0, "");
+            gone.exited = true;
+            let mut both = tab(4, 336.0, 100.0, "");
+            both.activity = true;
+            both.exited = true;
+            let v = view(vec![
+                quiet.clone(),
+                busy.clone(),
+                gone.clone(),
+                both.clone(),
+            ]);
+            let (shot, g) = render_tabs(&t, &v, s);
+            let (qx, qy) = mark_pt(&g, &quiet, 0);
+            assert_eq!(shot.at(qx, qy)[3], 0, "scale {s}: no dot without activity");
+            let (bx, by) = mark_pt(&g, &busy, 0);
+            assert!(
+                near(shot.at(bx, by), bgra(t.accent), 6),
+                "scale {s}: accent dot {:?}",
+                shot.at(bx, by)
+            );
+            // The ring: empty in the middle, text_dim on the stroke.
+            let (gx, gy) = mark_pt(&g, &gone, 0);
+            assert_eq!(shot.at(gx, gy)[3], 0, "scale {s}: hollow");
+            let reach = ((MARK_R - MARK_RING / 2.0) * s).round() as i32;
+            let ring = (gx - reach - 1, gy - reach - 1, 2 * reach + 3, 2 * reach + 3);
+            assert!(
+                shot.closest(ring, bgra(t.text_dim)) < 70,
+                "scale {s}: ring ink"
+            );
+            assert_eq!(
+                shot.count_in(ring, bgra(t.accent), 40),
+                0,
+                "scale {s}: not the accent"
+            );
+            // Both: the dot at the edge, the ring beside it.
+            let (dx, dy) = mark_pt(&g, &both, 0);
+            let (rx, ry) = mark_pt(&g, &both, 1);
+            assert!(
+                near(shot.at(dx, dy), bgra(t.accent), 6),
+                "scale {s}: dot of both"
+            );
+            assert_eq!(shot.at(rx, ry)[3], 0, "scale {s}: ring of both is hollow");
+            assert!(
+                rx < dx - (2.0 * MARK_R * s) as i32,
+                "scale {s}: side by side"
+            );
+            // An exited tab's title is dim even when it is the active one.
+            let mut dead = tab(5, 30.0, 100.0, "dead");
+            dead.exited = true;
+            dead.active = true;
+            let mut live = dead.clone();
+            live.exited = false;
+            live.id = 6;
+            live.rect.x = 132.0;
+            let v = view(vec![dead.clone(), live.clone()]);
+            let (shot, g) = render_tabs(&t, &v, s);
+            let ink = |x: &TabSlot, c: Rgb| shot.closest(title_box(&g, x), bgra(c));
+            assert!(
+                ink(&dead, t.text_dim) < 60 && ink(&dead, t.text_dim) + 20 < ink(&dead, t.text),
+                "scale {s}: exited is dim"
+            );
+            assert!(ink(&live, t.text) < 60, "scale {s}: live is bright");
+        }
+    }
+
+    #[test]
+    fn the_close_cross_shows_only_where_the_tab_has_one_and_brightens_on_hover() {
+        for t in themes() {
+            for s in SCALES {
+                let with = with_close(tab(1, 30.0, 120.0, ""));
+                let without = tab(2, 152.0, 120.0, "");
+                let mut v = view(vec![with.clone(), without.clone()]);
+                let (shot, g) = render_tabs(&t, &v, s);
+                let c = g.rect(with.close.unwrap());
+                let who = format!("{} scale {s}", t.name);
+                let lit = shot.lit_in(c);
+                assert!(
+                    lit > 8 && lit < (c.2 * c.3) as usize / 2,
+                    "{who}: two strokes, {lit}"
+                );
+                assert!(shot.closest(c, bgra(t.text_dim)) < 70, "{who}: dim at rest");
+                let (cx, cy) = (c.0 + c.2 / 2, c.1 + c.3 / 2);
+                assert!(
+                    shot.at(cx, cy)[3] > 200,
+                    "{who}: the arms cross in the middle"
+                );
+                // The same spot of the tab without one is empty, and nothing leaves the rect.
+                let other = (
+                    c.0 + g.rect(without.rect).0 - g.rect(with.rect).0,
+                    c.1,
+                    c.2,
+                    c.3,
+                );
+                assert_eq!(shot.lit_in(other), 0, "{who}: no ✕ on the other tab");
+                let own = g.rect(with.rect);
+                assert_eq!(shot.lit_outside(own, &[c]), None, "{who}: inside its rect");
+
+                // Hover on the ✕: bright, on a faint round plate (over the hovered tab's plate).
+                v.hover = Some(BarHit::Close(0));
+                let (hot, _) = render_tabs(&t, &v, s);
+                assert!(hot.closest(c, bgra(t.text)) < 70, "{who}: bright on hover");
+                assert!(shot.closest(c, bgra(t.text)) > 70, "{who}: it was dim");
+                let edge = (c.0 + (c.2 as f32 * 0.2) as i32, cy);
+                let want = blend(bgra(t.surface1), t.text, 0.14);
+                assert!(
+                    near(hot.at(edge.0, edge.1), want, 4),
+                    "{who}: plate {:?} vs {want:?}",
+                    hot.at(edge.0, edge.1)
+                );
+                // Hovering the tab but not the ✕ keeps it dim.
+                v.hover = Some(BarHit::Tab(0));
+                let (warm, _) = render_tabs(&t, &v, s);
+                assert_eq!(
+                    warm.at(edge.0, edge.1),
+                    bgra(t.surface1),
+                    "{who}: no plate on the tab hover"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dragged_tab_is_lifted_over_its_neighbours() {
+        for t in themes() {
+            for s in SCALES {
+                let mut dragged = tab(1, 100.0, 100.0, "ab");
+                dragged.active = true;
+                dragged.dragging = true;
+                let under = tab(2, 150.0, 100.0, &"neighbour ".repeat(8));
+                let mut v = view(vec![dragged.clone(), under.clone()]);
+                v.plus = None;
+                let (lifted, g) = render_tabs(&t, &v, s);
+                v.tabs[0].dragging = false;
+                let (flat, _) = render_tabs(&t, &v, s);
+                let who = format!("{} scale {s}", t.name);
+                let r = g.rect(dragged.rect);
+
+                // Opaque, and lighter (dark) or darker (light) than the plain active plate.
+                let sheen = blend(bgra(t.surface2), t.text, 0.07);
+                let on_neighbour = (
+                    r.0 + r.2 * 3 / 4,
+                    r.1 + 3 * s as i32,
+                    r.2 / 4 - 3,
+                    r.3 - 6 * s as i32,
+                );
+                assert_eq!(
+                    lifted.count_in(on_neighbour, sheen, 3),
+                    (on_neighbour.2 * on_neighbour.3) as usize,
+                    "{who}: the plate hides the title under it"
+                );
+                assert!(
+                    flat.lit_in(on_neighbour) > 0
+                        && flat.count_in(on_neighbour, bgra(t.surface2), 3)
+                            < (on_neighbour.2 * on_neighbour.3) as usize,
+                    "{who}: the neighbour's title shows when not lifted"
+                );
+                assert!(
+                    distance(sheen, bgra(t.surface2)) >= 6,
+                    "{who}: visibly not the plain plate"
+                );
+                // The outline: one device px, the text colour faintly, over the plate.
+                let top = (r.0 + r.2 / 2, r.1);
+                let want = blend(sheen, t.text, 0.24);
+                assert!(
+                    near(lifted.at(top.0, top.1), want, 4),
+                    "{who}: outline {:?} vs {want:?}",
+                    lifted.at(top.0, top.1)
+                );
+                assert!(
+                    near(lifted.at(top.0, top.1 + 1), sheen, 3),
+                    "{who}: and it is only one px"
+                );
+                // The shadow beside it, where nothing else is: coverage, and none when flat.
+                let side = (r.0 - (2.0 * s) as i32, r.1 + r.3 / 2);
+                assert!(
+                    lifted.at(side.0, side.1)[3] > 0,
+                    "{who}: a shadow beside it"
+                );
+                assert_eq!(flat.at(side.0, side.1)[3], 0, "{who}: none when not lifted");
+                // Nothing leaves the strip: the shadow is clipped like the tabs.
+                let p = header_parts(&g);
+                assert_eq!(
+                    lifted.lit_outside(lifted.whole(), &[p[0], p[1], p[2], p[3]]),
+                    None,
+                    "{who}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dragged_tab_is_drawn_last_even_when_it_comes_first() {
+        let t = tokens();
+        for s in SCALES {
+            let mut first = tab(1, 100.0, 100.0, "");
+            first.dragging = true;
+            first.active = true;
+            let second = tab(2, 150.0, 100.0, "xxxxxxxxxxxxxxxxxxxxxxxx");
+            let v = view(vec![first.clone(), second]);
+            let (shot, g) = render_tabs(&t, &v, s);
+            let r = g.rect(first.rect);
+            let over = (
+                r.0 + r.2 / 2 + 2,
+                r.1 + 4 * s as i32,
+                r.2 / 2 - 6,
+                r.3 - 8 * s as i32,
+            );
+            let sheen = blend(bgra(t.surface2), t.text, 0.07);
+            assert_eq!(
+                shot.count_in(over, sheen, 3),
+                (over.2 * over.3) as usize,
+                "scale {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn plus_is_two_strokes_brighter_on_hover_and_gone_at_the_limit() {
+        for t in themes() {
+            for s in SCALES {
+                let one = tab(1, 30.0, 100.0, "pwsh");
+                let mut v = view(vec![one]);
+                let plus = v.plus.unwrap();
+                let (shot, g) = render_tabs(&t, &v, s);
+                let r = g.rect(plus);
+                let who = format!("{} scale {s}", t.name);
+                let (cx, cy) = (r.0 + r.2 / 2, r.1 + r.3 / 2);
+                let lit = shot.lit_in(r);
+                assert!(
+                    lit > 10 && lit < (r.2 * r.3) as usize / 3,
+                    "{who}: two strokes, {lit}"
+                );
+                assert!(shot.at(cx, cy)[3] > 200, "{who}: they cross in the middle");
+                let reach = (3.0 * s) as i32;
+                for (dx, dy) in [(reach, 0), (-reach, 0), (0, reach), (0, -reach)] {
+                    assert!(shot.at(cx + dx, cy + dy)[3] > 100, "{who}: arm ({dx},{dy})");
+                }
+                assert_eq!(shot.at(r.0 + 1, r.1 + 1)[3], 0, "{who}: not a filled box");
+                assert!(shot.closest(r, bgra(t.text_dim)) < 70, "{who}: dim at rest");
+                assert_eq!(
+                    shot.lit_outside(
+                        shot.whole(),
+                        &[
+                            r,
+                            g.rect(v.tabs[0].rect),
+                            header_parts(&g)[1],
+                            header_parts(&g)[2],
+                            header_parts(&g)[3]
+                        ]
+                    ),
+                    None,
+                    "{who}: inside its square"
+                );
+
+                v.hover = Some(BarHit::Plus);
+                let (hot, _) = render_tabs(&t, &v, s);
+                assert!(hot.closest(r, bgra(t.text)) < 70, "{who}: bright on hover");
+                let plate = (r.0 + 1, cy);
+                assert!(
+                    near(hot.at(plate.0, plate.1), bgra(t.surface1), 3),
+                    "{who}: on a faint plate"
+                );
+
+                // At the limit "+" is absent: nothing is drawn where it was.
+                v.hover = None;
+                v.plus = None;
+                let (none, _) = render_tabs(&t, &v, s);
+                assert_eq!(none.lit_in(r), 0, "{who}: absent at the limit");
+            }
+        }
+    }
+
+    /// A menu of the four items at (x, 30), the second row hovered, the third disabled.
+    fn menu_at(x: f32, hover: Option<usize>) -> MenuView {
+        let items = [
+            (term_tabs::MenuAction::Unpin, "Unpin tab", true),
+            (term_tabs::MenuAction::Close, "Close", true),
+            (term_tabs::MenuAction::CloseOthers, "Close others", false),
+            (
+                term_tabs::MenuAction::CloseRight,
+                "Close to the right",
+                true,
+            ),
+        ];
+        MenuView {
+            rect: LRect::new(x, 30.0, term_tabs::MENU_W, 4.0 * term_tabs::MENU_ROW_H),
+            items: items
+                .iter()
+                .enumerate()
+                .map(|(i, &(action, label, enabled))| term_tabs::MenuItemView {
+                    action,
+                    label,
+                    rect: LRect::new(
+                        x,
+                        30.0 + term_tabs::MENU_ROW_H * i as f32,
+                        term_tabs::MENU_W,
+                        term_tabs::MENU_ROW_H,
+                    ),
+                    enabled,
+                })
+                .collect(),
+            hover,
+        }
+    }
+
+    /// A screen of red `x` over the rows the menu hangs over, to show the menu hides them.
+    fn red_rows(pal: &Palette) -> Screen {
+        let mut sc = blank(90, 12, pal);
+        for r in 0..12 {
+            for c in 0..90 {
+                put(&mut sc, c, r, 'x', RED, None, plain());
+            }
+        }
+        sc
+    }
+
+    #[test]
+    fn the_menu_is_a_pill_coloured_card_with_a_hairline_a_shadow_and_a_hovered_row() {
+        for t in themes() {
+            let pal = palette(&t);
+            let sc = red_rows(&pal);
+            for s in SCALES {
+                let mut v = view(vec![tab(1, 30.0, 120.0, "pwsh")]);
+                v.menu = Some(menu_at(264.0, Some(1)));
+                let m = v.menu.clone().unwrap();
+                let p = TerminalPanel {
+                    tabs: &v,
+                    ..panel(&sc, &pal)
+                };
+                let (shot, g) = render(&t, &p, s);
+                let who = format!("{} scale {s}", t.name);
+                let r = g.rect(m.rect);
+
+                // The card: opaque pill colour hides the grid under it, a hairline edge.
+                let inner = (
+                    r.0 + (8.0 * s) as i32,
+                    r.1 + (3.0 * s) as i32,
+                    r.2 - (16.0 * s) as i32,
+                    r.3 - (6.0 * s) as i32,
+                );
+                assert!(
+                    shot.closest(inner, bgra(RED)) > 150,
+                    "{who}: the grid does not show through"
+                );
+                assert_eq!(
+                    shot.at(r.0 + (8.0 * s) as i32, r.1 + (3.0 * s) as i32),
+                    bgra(t.pill),
+                    "{who}: pill colour"
+                );
+                let top = shot.at(r.0 + r.2 / 2, r.1);
+                assert!(
+                    near(top, blend(bgra(t.pill), t.text, 0.16), 3),
+                    "{who}: hairline {top:?}"
+                );
+                assert_ne!(shot.at(r.0, r.1), bgra(t.pill), "{who}: rounded corner");
+                // The grid shows around it.
+                let outside = (
+                    r.0 - (14.0 * s) as i32,
+                    r.1 + (10.0 * s) as i32,
+                    (12.0 * s) as i32,
+                    (10.0 * s) as i32,
+                );
+                assert!(
+                    shot.closest(outside, bgra(RED)) < 40,
+                    "{who}: the grid left of the menu"
+                );
+                // The shadow below it: some coverage and dark, where the grid has nothing.
+                let below = shot.at(r.0 + r.2 / 2, r.1 + r.3 + (3.0 * s) as i32);
+                assert!(below[3] > 0, "{who}: a shadow below");
+
+                // Rows: the hovered enabled row is on a surface2 plate; others, and a hovered
+                // disabled row, are not.
+                let row = |i: usize| g.rect(m.items[i].rect);
+                let plate_px = |i: usize| {
+                    let q = row(i);
+                    shot.at(q.0 + (5.0 * s) as i32, q.1 + q.3 / 2)
+                };
+                assert_eq!(plate_px(1), bgra(t.surface2), "{who}: hovered row");
+                assert_eq!(plate_px(0), bgra(t.pill), "{who}: other row");
+                assert_eq!(plate_px(3), bgra(t.pill), "{who}: other row");
+
+                // Labels: text on an enabled row, dim and half-faded on a disabled one.
+                let label = |i: usize| {
+                    let q = row(i);
+                    (
+                        q.0 + (12.0 * s) as i32,
+                        q.1 + (6.0 * s) as i32,
+                        (96.0 * s) as i32,
+                        q.3 - (12.0 * s) as i32,
+                    )
+                };
+                assert!(
+                    shot.closest(label(0), bgra(t.text)) < 70,
+                    "{who}: enabled label"
+                );
+                assert!(
+                    shot.closest(label(3), bgra(t.text)) < 70,
+                    "{who}: enabled label"
+                );
+                let faded = blend(bgra(t.pill), t.text_dim, 0.5);
+                assert!(
+                    shot.closest(label(2), faded) < 40,
+                    "{who}: disabled label is faded"
+                );
+                assert!(
+                    shot.closest(label(2), bgra(t.text)) > 120,
+                    "{who}: and not the text colour"
+                );
+
+                // A hovered disabled row gets no plate.
+                v.menu = Some(menu_at(264.0, Some(2)));
+                let p = TerminalPanel {
+                    tabs: &v,
+                    ..panel(&sc, &pal)
+                };
+                let (shot, g) = render(&t, &p, s);
+                let q = g.rect(m.items[2].rect);
+                assert_eq!(
+                    shot.at(q.0 + (5.0 * s) as i32, q.1 + q.3 / 2),
+                    bgra(t.pill),
+                    "{who}: disabled, no plate"
+                );
+
+                // No hover, no plate anywhere.
+                v.menu = Some(menu_at(264.0, None));
+                let p = TerminalPanel {
+                    tabs: &v,
+                    ..panel(&sc, &pal)
+                };
+                let (shot, g) = render(&t, &p, s);
+                for i in 0..4 {
+                    let q = g.rect(m.items[i].rect);
+                    assert_eq!(
+                        shot.at(q.0 + (5.0 * s) as i32, q.1 + q.3 / 2),
+                        bgra(t.pill),
+                        "{who}: row {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_menu_at_the_right_edge_stays_inside_the_panel() {
+        let t = tokens();
+        let pal = palette(&t);
+        let sc = red_rows(&pal);
+        for s in SCALES {
+            // Flush with the panel's right edge, and (to prove the clip) hanging off it.
+            for x in [layout::TERM_W - term_tabs::MENU_W, layout::TERM_W - 60.0] {
+                let mut v = view(vec![tab(1, 30.0, 120.0, "pwsh")]);
+                v.menu = Some(menu_at(x, Some(0)));
+                let p = TerminalPanel {
+                    tabs: &v,
+                    ..panel(&sc, &pal)
+                };
+                let (shot, g) = render(&t, &p, s);
+                assert_eq!(
+                    shot.lit_outside(shot.whole(), &[g.panel]),
+                    None,
+                    "scale {s} x {x}"
+                );
+                let r = g.rect(v.menu.as_ref().unwrap().rect);
+                assert!(
+                    shot.at(r.0 + 6, r.1 + 6)[3] == 255,
+                    "scale {s}: the card is there"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_menu_is_drawn_after_everything_over_tabs_cells_and_the_notice() {
+        let t = tokens();
+        let pal = palette(&t);
+        let sc = red_rows(&pal);
+        for s in SCALES {
+            let mut v = view(vec![
+                tab(1, 30.0, 120.0, "xxxxxxxxxxxxxxxxxxx"),
+                tab(2, 152.0, 120.0, "yyyyyyyyyyyyyyyyyyy"),
+            ]);
+            let mut m = menu_at(60.0, Some(3));
+            m.rect.y = 12.0;
+            for (i, it) in m.items.iter_mut().enumerate() {
+                it.rect.y = 12.0 + term_tabs::MENU_ROW_H * i as f32;
+            }
+            v.menu = Some(m.clone());
+            let p = TerminalPanel {
+                tabs: &v,
+                notice: Some("process exited"),
+                ..panel(&sc, &pal)
+            };
+            let (shot, g) = render(&t, &p, s);
+            // The card covers a slice of the tab strip, the header's hairline and the grid.
+            let r = g.rect(m.rect);
+            let inner = (
+                r.0 + (3.0 * s) as i32,
+                r.1 + (3.0 * s) as i32,
+                r.2 - (6.0 * s) as i32,
+                r.3 - (6.0 * s) as i32,
+            );
+            assert!(
+                shot.closest(inner, bgra(RED)) > 150,
+                "scale {s}: no grid in the card"
+            );
+            assert!(
+                shot.at(r.0 + (40.0 * s) as i32, g.line_y() - 1)[3] == 255,
+                "scale {s}: the hairline is under the card"
+            );
+            assert_eq!(
+                shot.at(r.0 + (40.0 * s) as i32, g.line_y()),
+                bgra(t.pill),
+                "scale {s}: not through it"
+            );
+            // The panel still holds: nothing outside it.
+            assert_eq!(
+                shot.lit_outside(shot.whole(), &[g.panel]),
+                None,
+                "scale {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_no_tabs_the_header_is_the_title_as_before() {
+        let t = tokens();
+        let pal = palette(&t);
+        let sc = blank(80, 20, &pal);
+        let long = "M".repeat(60);
+        for s in SCALES {
+            let base = TerminalPanel {
+                title: &long,
+                ..panel(&sc, &pal)
+            };
+            let (a, g) = render(&t, &base, s);
+            // Hover, "+" and a menu rect mean nothing without tabs: the header is the same.
+            let stray = TabBarView {
+                tabs: Vec::new(),
+                plus: Some(LRect::new(100.0, 6.0, 24.0, 24.0)),
+                hover: Some(BarHit::Plus),
+                menu: None,
+            };
+            let p = TerminalPanel {
+                tabs: &stray,
+                ..base
+            };
+            let (b, _) = render(&t, &p, s);
+            assert_eq!(a.pattern(g.header()), b.pattern(g.header()), "scale {s}");
+            let area = (
+                g.pt(35.0, 6.0).0,
+                g.pt(35.0, 6.0).1,
+                g.pt(layout::TERM_CLOSE.x - 12.0, 0.0).0 - g.pt(35.0, 0.0).0,
+                (24.0 * s) as i32,
+            );
+            assert!(a.lit_in(area) > 100, "scale {s}: the title is drawn");
+
+            // With a tab the title is replaced: the title's span is empty left of the tab.
+            let mut v = view(vec![tab(1, 500.0, 100.0, "")]);
+            v.plus = None;
+            let p = TerminalPanel { tabs: &v, ..base };
+            let (c, _) = render(&t, &p, s);
+            let left = (area.0, area.1, g.pt(480.0, 0.0).0 - area.0, area.3);
+            assert_eq!(c.lit_in(left), 0, "scale {s}: no title beside the tabs");
+            // The lamp, the ✕ and the hairline are still there.
+            assert!(
+                c.lit_in(header_parts(&g)[1]) > 20
+                    && c.lit_in(header_parts(&g)[2]) > 10
+                    && c.lit_in(header_parts(&g)[3]) > 100,
+                "scale {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hostile_tab_view_never_panics_or_draws_outside_the_panel() {
+        let t = tokens();
+        let pal = palette(&t);
+        let sc = red_rows(&pal);
+        let nan = LRect::new(f32::NAN, 6.0, 50.0, 24.0);
+        let huge = LRect::new(-1e6, -1e6, 3e6, 3e6);
+        let zero = LRect::new(100.0, 6.0, 0.0, 24.0);
+        let neg = LRect::new(200.0, 6.0, -30.0, 24.0);
+        let rects = [nan, huge, zero, neg, LRect::new(740.0, 6.0, 80.0, 24.0)];
+        for s in SCALES {
+            let tabs: Vec<TabSlot> = rects
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let mut x = tab(
+                        i as u64,
+                        0.0,
+                        10.0,
+                        "tab\nwith\u{7}controls and a long, long title",
+                    );
+                    x.rect = *r;
+                    x.close = Some(*r);
+                    x.pinned = i % 2 == 0;
+                    x.active = i == 1;
+                    x.activity = true;
+                    x.exited = i == 3;
+                    x.dragging = i == 4;
+                    x
+                })
+                .collect();
+            let v = TabBarView {
+                tabs,
+                plus: Some(huge),
+                hover: Some(BarHit::Close(99)),
+                menu: Some(MenuView {
+                    rect: huge,
+                    items: vec![term_tabs::MenuItemView {
+                        action: term_tabs::MenuAction::Close,
+                        label: "Close",
+                        rect: nan,
+                        enabled: true,
+                    }],
+                    hover: Some(7),
+                }),
+            };
+            // Without the menu the tabs, whatever their rects, stay in the strip.
+            let no_menu = TabBarView {
+                menu: None,
+                ..v.clone()
+            };
+            let p = TerminalPanel {
+                tabs: &no_menu,
+                ..panel(&sc, &pal)
+            };
+            let (shot, g) = render(&t, &p, s);
+            assert!(shot.lit_in(header_parts(&g)[0]) > 100, "scale {s}: drawn");
+            assert_eq!(
+                shot.lit_outside(g.header(), &header_parts(&g)),
+                None,
+                "scale {s}: header ink outside the strip"
+            );
+            let p = TerminalPanel {
+                tabs: &v,
+                ..panel(&sc, &pal)
+            };
+            let (shot, g) = render(&t, &p, s);
+            assert_eq!(
+                shot.lit_outside(shot.whole(), &[g.panel]),
+                None,
+                "scale {s}"
+            );
+            // An empty menu and no items are fine too.
+            let v = TabBarView {
+                tabs: vec![tab(1, 30.0, 100.0, "")],
+                plus: None,
+                hover: None,
+                menu: Some(MenuView {
+                    rect: LRect::new(100.0, 30.0, 168.0, 0.0),
+                    items: Vec::new(),
+                    hover: None,
+                }),
+            };
+            let p = TerminalPanel {
+                tabs: &v,
+                ..panel(&sc, &pal)
+            };
+            let (shot, g) = render(&t, &p, s);
+            assert_eq!(
+                shot.lit_outside(shot.whole(), &[g.panel]),
+                None,
+                "scale {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn everything_at_once_stays_inside_the_panel_and_the_tabs_inside_the_strip() {
+        let t = tokens();
+        let pal = palette(&t);
+        let long = "title ".repeat(80);
+        let note = "notice ".repeat(80);
+        let w = (term_tabs::TABS.w - 11.0 * term_tabs::TAB_GAP) / 12.0;
+        for s in SCALES {
+            let sc = dense(&pal);
+            let tabs: Vec<TabSlot> = (0..12)
+                .map(|i| {
+                    let mut x = tab(i as u64, term_tabs::TABS.x + i as f32 * (w + 2.0), w, &long);
+                    x.pinned = i < 3;
+                    x.activity = i % 2 == 1;
+                    x.exited = i == 10;
+                    x.active = i == 4;
+                    if i == 4 || i == 6 {
+                        x = with_close(x);
+                    }
+                    x
+                })
+                .collect();
+            let mut v = TabBarView {
+                plus: None,
+                tabs,
+                hover: Some(BarHit::Close(4)),
+                menu: None,
+            };
+            // Without the menu the tab bar stays in its strip, whatever else is on.
+            let p = TerminalPanel {
+                title: &long,
+                notice: Some(&note),
+                close_hover: true,
+                tabs: &v,
+                ..panel(&sc, &pal)
+            };
+            let (shot, g) = render(&t, &p, s);
+            assert_eq!(
+                shot.lit_outside(shot.whole(), &[g.panel]),
+                None,
+                "scale {s}: outside the panel"
+            );
+            assert_eq!(
+                shot.lit_outside(shot.whole(), &[g.header(), g.text]),
+                None,
+                "scale {s}: outside the header and the grid"
+            );
+            let header_ink = shot.lit_outside(g.header(), &header_parts(&g));
+            assert_eq!(
+                header_ink, None,
+                "scale {s}: header ink outside the strip, lamp, ✕ and hairline"
+            );
+            // And with a dragged tab and the menu on top, still inside the panel.
+            v.tabs[8].dragging = true;
+            v.menu = Some(menu_at(layout::TERM_W - term_tabs::MENU_W, Some(3)));
+            let p = TerminalPanel {
+                title: &long,
+                notice: Some(&note),
+                close_hover: true,
+                tabs: &v,
+                ..panel(&sc, &pal)
+            };
+            let (shot, g) = render(&t, &p, s);
+            assert_eq!(
+                shot.lit_outside(shot.whole(), &[g.panel]),
+                None,
+                "scale {s}: menu and drag"
             );
         }
     }
