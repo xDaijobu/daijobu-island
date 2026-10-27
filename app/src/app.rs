@@ -2505,6 +2505,14 @@ impl Handler for App {
             }
             Event::VitalsReady => self.drain_vitals(),
             Event::SweepReady => self.drain_sweep(),
+            // Terminal input (Stage T, wired by the coordinator): only sent in keyboard
+            // mode, except `DoubleClick`.
+            Event::Key { .. }
+            | Event::Char { .. }
+            | Event::Wheel { .. }
+            | Event::RightClick { .. }
+            | Event::DoubleClick { .. }
+            | Event::FocusLost => {}
         }
         self.sync_vu_timer();
         self.sync_vitals();
