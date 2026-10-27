@@ -2054,6 +2054,7 @@ impl Handler for App {
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
             Event::Previews(input) => self.previews.input(input, Instant::now()),
+            Event::Assist(_) => {}
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
             Event::DpiChanged => self.relayout(),
