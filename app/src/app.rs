@@ -2742,6 +2742,7 @@ impl Handler for App {
             | Event::Char { .. }
             | Event::Wheel { .. }
             | Event::RightClick { .. }
+            | Event::MiddleClick { .. }
             | Event::DoubleClick { .. }
             | Event::FocusLost => {}
         }

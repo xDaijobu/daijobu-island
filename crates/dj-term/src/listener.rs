@@ -83,6 +83,13 @@ impl Shared {
         std::mem::take(&mut *lock(&self.events))
     }
 
+    /// As `take_events`, and whether anything woke the UI since the last call (output or an
+    /// event): a tab in the background uses it to show that it printed something.
+    pub(crate) fn drain(&self) -> (bool, Vec<TermEvent>) {
+        let woke = self.armed.swap(false, Ordering::AcqRel);
+        (woke, std::mem::take(&mut *lock(&self.events)))
+    }
+
     /// Queues `Exited` the first time only.
     pub(crate) fn mark_exited(&self, code: Option<i32>) {
         if !self.exited.swap(true, Ordering::AcqRel) {

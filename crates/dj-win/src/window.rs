@@ -135,6 +135,12 @@ pub enum Event {
         x: i32,
         y: i32,
     },
+    /// Middle button released, client coordinates in device pixels. Sent only in keyboard
+    /// mode.
+    MiddleClick {
+        x: i32,
+        y: i32,
+    },
     /// The second press of a double click (the left button), client coordinates in device
     /// pixels. It follows that press's own `Click`. Sent in every mode.
     DoubleClick {
@@ -551,7 +557,7 @@ fn consumed(msg: u32, wp: usize, keyboard_on: bool) -> bool {
     keyboard_on
         && match msg {
             WM_KEYDOWN | WM_SYSKEYDOWN | WM_SYSKEYUP | WM_CHAR | WM_SYSCHAR | WM_MOUSEWHEEL
-            | WM_RBUTTONDOWN | WM_RBUTTONUP => true,
+            | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => true,
             WM_SYSCOMMAND => (wp & 0xFFF0) as u32 == SC_KEYMENU,
             _ => false,
         }
@@ -590,6 +596,11 @@ fn translate(msg: u32, wp: usize, lp: isize, ctx: &Ctx, high: &mut Option<u16>) 
         WM_RBUTTONDOWN => {
             let (x, y) = lparam_xy(lp);
             Some(Event::RightClick { x, y })
+        }
+        // On the release, as browsers close a tab: a press that drags elsewhere is no click.
+        WM_MBUTTONUP => {
+            let (x, y) = lparam_xy(lp);
+            Some(Event::MiddleClick { x, y })
         }
         WM_KILLFOCUS => Some(Event::FocusLost),
         // The low word of `wparam` is the activation state; the high word is "minimized".
@@ -1017,6 +1028,22 @@ mod tests {
         );
         // The release makes no event of its own.
         assert_eq!(tr(WM_RBUTTONUP, 0, lp(-3, 40), &c), None);
+    }
+
+    #[test]
+    fn a_middle_release_is_a_middle_click() {
+        let c = ctx(ON, Mods::default());
+        assert_eq!(tr(WM_MBUTTONDOWN, 0x10, lp(7, 9), &c), None);
+        assert_eq!(
+            tr(WM_MBUTTONUP, 0, lp(7, 9), &c),
+            Some(Event::MiddleClick { x: 7, y: 9 })
+        );
+        assert_eq!(
+            tr(WM_MBUTTONUP, 0, lp(7, 9), &ctx(OFF, Mods::default())),
+            None
+        );
+        assert!(consumed(WM_MBUTTONUP, 0, ON) && consumed(WM_MBUTTONDOWN, 0, ON));
+        assert!(!consumed(WM_MBUTTONUP, 0, OFF));
     }
 
     #[test]

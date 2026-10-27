@@ -681,6 +681,20 @@ fn wake_is_called_once_until_take_events_rearms_it() {
 }
 
 #[test]
+fn drain_says_whether_anything_woke_the_ui() {
+    let mut w = wired(20, 5);
+    assert_eq!(w.shared.drain(), (false, Vec::new()));
+    Listener(w.shared.clone()).send_event(Event::Wakeup);
+    assert_eq!(w.shared.drain(), (true, Vec::new()), "output");
+    assert_eq!(w.shared.drain(), (false, Vec::new()), "and only once");
+    w.t.feed("\x07");
+    assert_eq!(w.shared.drain(), (true, vec![TermEvent::Bell]));
+    // Re-armed: the next output wakes again.
+    Listener(w.shared.clone()).send_event(Event::Wakeup);
+    assert_eq!(w.wakes(), 3);
+}
+
+#[test]
 fn no_wake_after_close() {
     let w = wired(20, 5);
     w.shared.close();

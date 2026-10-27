@@ -293,6 +293,12 @@ impl Session {
         self.shared.take_events()
     }
 
+    /// Whether the shell printed (or sent an event) since the last call, and the events;
+    /// also re-arms `wake`.
+    pub fn drain(&mut self) -> (bool, Vec<TermEvent>) {
+        self.shared.drain()
+    }
+
     /// `true` once the shell has ended (or its terminal loop has).
     pub fn exited(&self) -> bool {
         self.shared.exited.load(Ordering::Acquire)
