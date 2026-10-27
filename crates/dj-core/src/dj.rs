@@ -86,9 +86,14 @@ pub struct Dj {
 }
 
 impl Dj {
-    /// Sets or updates the progress. The label always replaces the old one, an empty one
-    /// included; `None` is open-ended. A pending done is cancelled. Percent is clamped to 100.
+    /// Sets or updates the progress. A label replaces the old one; an empty one keeps it
+    /// (`dj progress 80` after `dj progress 40 deploy` is still "deploy"). `None` is
+    /// open-ended. A pending done is cancelled. Percent is clamped to 100.
     pub fn progress(&mut self, percent: Option<u8>, label: String, now: Instant) {
+        let label = match (&self.bar, label.is_empty()) {
+            (Some(old), true) if old.done.is_none() => old.label.clone(),
+            _ => label,
+        };
         self.bar = Some(Bar {
             label,
             percent: percent.map(|p| p.min(100)),
@@ -277,14 +282,21 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_label_is_kept_as_empty() {
+    fn an_empty_label_keeps_the_running_one() {
         let t0 = Instant::now();
         let mut dj = Dj::default();
         dj.progress(Some(40), label("deploy"), t0);
         dj.progress(Some(60), String::new(), t0 + secs(1));
-        assert_eq!(bar(&dj), running("", Some(60)));
+        assert_eq!(bar(&dj), running("deploy", Some(60)));
         dj.progress(None, String::new(), t0 + secs(2));
-        assert_eq!(bar(&dj), running("", None));
+        assert_eq!(bar(&dj), running("deploy", None));
+        // With nothing running (or after a done), an empty label stays empty ("working").
+        let mut fresh = Dj::default();
+        fresh.progress(Some(10), String::new(), t0);
+        assert_eq!(bar(&fresh), running("", Some(10)));
+        fresh.done(String::new(), t0 + secs(1));
+        fresh.progress(Some(20), String::new(), t0 + secs(2));
+        assert_eq!(bar(&fresh), running("", Some(20)));
     }
 
     #[test]
