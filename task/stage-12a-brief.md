@@ -1,6 +1,6 @@
 # Stage 12a brief: Tile (window zones)
 
-Status: contract written with the user on 2026-10-27, waiting for the user's review. Worktree `stage-12a-tile` starts at master `5ad1f8d` (Stage 7c merged). Implementation starts only after the review and the interface plan (`stage-12a-plan.md`).
+Status: built 2026-10-27 on `xDaijobu/stage-12a-tile` (see [`stage-12a-report.md`](stage-12a-report.md)); live acceptance pending.
 
 ## Contract and scope
 

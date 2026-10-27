@@ -249,7 +249,7 @@ impl App {
         );
         let (custom, errors) = dj_core::tile::parse_custom(&storage::read_layouts());
         for e in errors {
-            storage::log(&format!("layouts.toml: {e}"));
+            storage::log(&format!("tile: {e}"));
         }
         let tiler = Tiler::new(Box::new(SystemWindows), config.tile.clone(), &custom);
         let mut app = Self {
@@ -1349,21 +1349,30 @@ impl App {
 
     // ---- Tile ----
 
-    /// Where the island is for a window move, desktop px: the summon area under its
-    /// current lower edge (80 logical px tall, its width + 40 on each side) and the Tile
-    /// panel's final rect. No summon area while the island is hidden or a snap is up.
+    /// Where the island is for a window move, desktop px: the summon area (from the top of
+    /// the screen to 80 logical px under the island's current lower edge, its width + 40 on
+    /// each side, so an overshoot to the very top keeps the picker) and the Tile panel's
+    /// final rect. The picker only opens over a resting island (or its own panel): never
+    /// while the island is hidden, a snap is up, or another panel or the thumb is open.
     fn tile_geo(&self) -> IslandGeo {
         let s = self.scale;
         let px = |v: f32| (v * s).round() as i32;
         let pill = self.island.pill_rect();
         let cx = self.win_pos.0 + self.win_px.0 / 2;
-        let summon = if self.visible && self.overlay.is_none() {
+        let resting = matches!(
+            self.island.state(),
+            IslandState::Idle
+                | IslandState::MusicCompact
+                | IslandState::TimerCompact
+                | IslandState::TilePanel
+        );
+        let summon = if self.visible && self.overlay.is_none() && resting {
             let half = px(pill.w / 2.0 + 40.0);
             IRect::new(
                 cx - half,
-                self.win_pos.1 + px(pill.y + pill.h),
+                self.win_pos.1,
                 2 * half,
-                px(80.0),
+                px(pill.y + pill.h + 80.0),
             )
         } else {
             IRect::new(0, 0, 0, 0)
@@ -1464,16 +1473,26 @@ impl App {
             let tokens = self.anim.current().clone();
             self.island.collapse(&tokens);
             self.tile_panel = false;
+            // Whatever wanted it is over (or the island was hidden): it must not reopen.
+            self.tiler.panel_closed();
             self.dirty = true;
         }
         self.sync_tile_overlay();
     }
 
-    /// The zone overlay: made on the target monitor when a move shows zones, redrawn when
-    /// they change, gone when the move ends.
+    /// The zone overlay: made once per move on the target monitor (a new GPU device each
+    /// time, so never per hover), hidden while nothing is lit, redrawn only when the zones
+    /// change, gone when the move ends.
     fn sync_tile_overlay(&mut self) {
-        let Some(want) = self.tiler.overlay() else {
+        if !self.tiler.polling() {
             self.destroy_tile_overlay();
+            return;
+        }
+        let Some(want) = self.tiler.overlay() else {
+            if let Some(o) = self.tile_overlay.as_mut().filter(|o| o.shown) {
+                dj_win::tile::hide_overlay(o.hwnd);
+                o.shown = false;
+            }
             return;
         };
         if self
@@ -2017,7 +2036,7 @@ impl Handler for App {
                 self.show_volume();
             }
             Event::Leave => {
-                if self.island.clear_hover() {
+                if self.island.clear_hover() | self.tiler.clear_hover() {
                     self.dirty = true;
                 }
             }
@@ -2029,6 +2048,8 @@ impl Handler for App {
             Event::Hotkey(HOTKEY_SNAP_ESC) => self.snap_escape(),
             Event::Hotkey(id @ HOTKEY_ZONE_1..=HOTKEY_DOWN) => {
                 self.tiler.hotkey(id, Instant::now());
+                // An open panel may now carry the admin notice.
+                self.dirty = true;
             }
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
@@ -2090,7 +2111,7 @@ impl Handler for App {
             Event::Timer(TIMER_SNAP_STACK) => self.previews.timer(Instant::now()),
             Event::Timer(TIMER_TILE_POLL) => {
                 let geo = self.tile_geo();
-                if self.tiler.poll(geo) {
+                if self.tiler.poll(geo, Instant::now()) {
                     self.dirty = true;
                 }
             }

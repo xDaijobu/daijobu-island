@@ -27,7 +27,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON, VK_SHIFT,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// A window handle as a plain value (`HWND.0 as isize`), so the app and `dj-core` never
@@ -422,6 +424,86 @@ pub fn shift_down() -> bool {
     key_is_down(unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) })
 }
 
+/// The primary mouse button is held right now. `GetAsyncKeyState` reads the physical
+/// buttons, so with swapped buttons the primary one is the right one.
+pub fn primary_button_down() -> bool {
+    // SAFETY: no pointers involved.
+    unsafe {
+        let vk = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+            VK_RBUTTON
+        } else {
+            VK_LBUTTON
+        };
+        key_is_down(GetAsyncKeyState(i32::from(vk.0)))
+    }
+}
+
+/// `WM_NCHITTEST` results that mean a sizing border (or the size grip): a drag from there
+/// resizes the window instead of moving it.
+fn is_sizing_hit(code: isize) -> bool {
+    matches!(code as u32, HTSIZE | HTLEFT..=HTBOTTOMRIGHT)
+}
+
+/// Whether a move/size that just started at the desktop point `(x, y)` is a resize: the
+/// window's own hit test there is a sizing border. A window that doesn't answer in 50 ms
+/// (hung, or out of reach behind UIPI) counts as a move.
+pub fn is_resize_at(w: Raw, x: i32, y: i32) -> bool {
+    if w == 0 {
+        return false;
+    }
+    let lp = (x as u16 as u32 | (y as u16 as u32) << 16) as i32 as isize;
+    let mut result = 0usize;
+    // SAFETY: a message with no pointers in its parameters; `result` is a valid out
+    // pointer for the duration of the call, which returns within the timeout.
+    let ok = unsafe {
+        SendMessageTimeoutW(
+            hwnd_of(w),
+            WM_NCHITTEST,
+            WPARAM(0),
+            LPARAM(lp),
+            SMTO_ABORTIFHUNG,
+            50,
+            Some(&mut result),
+        )
+    };
+    ok.0 != 0 && is_sizing_hit(result as isize)
+}
+
+/// The window's thread is still in a move/size loop (`GUI_INMOVESIZE`). Used as a
+/// watchdog in case the end event never comes, so it only says no when it knows: a query
+/// that fails counts as still moving; a window that is gone is not.
+pub fn in_move_size(w: Raw) -> bool {
+    if w == 0 {
+        return false;
+    }
+    // SAFETY: a handle that may be stale (then the thread id is 0); `info` is a valid,
+    // sized out structure for the duration of the call.
+    unsafe {
+        let thread = GetWindowThreadProcessId(hwnd_of(w), None);
+        if thread == 0 {
+            return false;
+        }
+        let mut info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        GetGUIThreadInfo(thread, &mut info).is_err() || (info.flags & GUI_INMOVESIZE).0 != 0
+    }
+}
+
+/// Restores a maximized window to its normal size (before measuring it for a zone).
+pub fn restore(w: Raw) {
+    if w == 0 {
+        return;
+    }
+    // SAFETY: a plain call on a handle that may be stale (then it does nothing).
+    unsafe {
+        if IsZoomed(hwnd_of(w)).as_bool() {
+            let _ = ShowWindow(hwnd_of(w), SW_RESTORE);
+        }
+    }
+}
+
 // ---- the zone overlay window --------------------------------------------------------
 
 const OVERLAY_CLASS: PCWSTR = w!("DaijobuTileZones");
@@ -766,6 +848,34 @@ mod tests {
         // The low bit is "pressed since the last call", not "down".
         assert!(!key_is_down(1));
         assert!(!key_is_down(0));
+    }
+
+    #[test]
+    fn only_sizing_borders_and_the_grip_count_as_a_resize() {
+        for code in [
+            HTLEFT,
+            HTRIGHT,
+            HTTOP,
+            HTTOPLEFT,
+            HTTOPRIGHT,
+            HTBOTTOM,
+            HTBOTTOMLEFT,
+            HTBOTTOMRIGHT,
+            HTSIZE,
+        ] {
+            assert!(is_sizing_hit(code as isize), "{code}");
+        }
+        for code in [
+            HTCAPTION,
+            HTCLIENT,
+            HTSYSMENU,
+            HTNOWHERE,
+            HTTRANSPARENT as u32,
+        ] {
+            assert!(!is_sizing_hit(code as isize), "{code}");
+        }
+        assert!(!is_resize_at(0, 10, 10), "no window");
+        assert!(!in_move_size(0));
     }
 
     #[test]

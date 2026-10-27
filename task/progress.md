@@ -32,7 +32,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
 | 11 | dj CLI | 🔒 | — | |
-| 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | 🟡 contract | `xDaijobu/stage-12a-tile` | defined with the user 2026-10-27 · [`stage-12a-brief.md`](stage-12a-brief.md) |
+| 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | 🟡 built, live test pending | `xDaijobu/stage-12a-tile` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 658 tests · [`stage-12a-report.md`](stage-12a-report.md) |
 | 12b | Scenes: save / restore window arrangements, launch missing apps, theme + pomodoro | 🔒 | — | after 12a |
 | 12c | Boot Scene: a scene after login, with progress in the island | 🔒 | — | after 12b |
 | 12d | Admin apps in scenes: Task Scheduler + `dj-elevated` helper | 🔒 | — | after 12c; security review |
@@ -596,38 +596,38 @@ With no `[island]` in the config, the island starts as a notch flush with the to
 
 ## Stage 12a: Tile (window zones)
 
-**Status:** contract written with the user on 2026-10-27; waiting for the user's review before implementation. Tile & Scenes is split: **12a Tile** (this), **12b Scenes**, **12c Boot Scene**, **12d admin apps** (Task Scheduler + `dj-elevated`).
+**Status:** built and verified headless (fmt, clippy, 658 tests, release) on 2026-10-27; **live test pending**. Report: [`stage-12a-report.md`](stage-12a-report.md). Tile & Scenes is split: **12a Tile** (this), **12b Scenes**, **12c Boot Scene**, **12d admin apps** (Task Scheduler + `dj-elevated`).
 
 **Goal:** put any window into a zone without leaving the island's look. Drag a window up towards the island: the island opens a layout picker, drop on a zone and the window fills it. Shift while dragging shows the zones on any monitor; Ctrl+Alt+1‥9 and Ctrl+Alt+arrows do it from the keyboard.
 
 ### Scope
-- [ ] **Layouts.**
+- [x] **Layouts.**
   - Presets (named, in this order): `50/50`, `60/40`, `70/30`, `top/bottom`, `3 columns`, `1+2` (left 1.4 : right 1, right split in two rows), `wide center` (1 : 2 : 1, for ultrawide), `2x2`, `1+3` (left 1.6 : right 1, right split in three rows).
   - Custom layouts in `~/.daijobu/layouts.toml`: a grid of column and row ratios plus zones with spans (`[[layout]] name, cols = [..], rows = [..], zones = [[col, row, col_span, row_span], ..]`). Invalid ones (overlapping, out of the grid, a hole, more than 9 zones, empty name) are skipped and logged. The picker shows the presets and up to 3 custom layouts.
   - Zones are numbered in reading order (top-left first, then left to right, then down). At most 9 per layout.
   - Each monitor has an **active layout** (default `50/50`), remembered in `[tile.monitors]` by the monitor's device name. Picking a zone of another layout makes that layout active for that monitor.
-- [ ] **Zone rects.** From the monitor's work area (`rcWork`, so the taskbar and the notch's AppBar strip are respected), a `gap` (default 8 logical px × the monitor's scale) between zones and around the edge. Physical desktop px; monitors left of or above the primary have negative coordinates.
-- [ ] **Picker (drag to the island).**
+- [x] **Zone rects.** From the monitor's work area (`rcWork`, so the taskbar and the notch's AppBar strip are respected), a `gap` (default 8 logical px × the monitor's scale) between zones and around the edge. Physical desktop px; monitors left of or above the primary have negative coordinates.
+- [x] **Picker (drag to the island).**
   - While any window is being moved (`EVENT_SYSTEM_MOVESIZESTART` … `END`, out-of-context WinEvent hook), the app reads the cursor about 60×/s (timer, only during a move).
   - When the cursor enters the **summon area** (the island's lower edge down 80 logical px, island width + 40 px each side), the island opens the **Tile panel** (400 × 176 per the mockup, may grow to fit two rows): header "tile · drop on a zone" with the monitor as in the mockup ("monitor 1 · 3440×1440"), and a grid of layout thumbnails whose cells are the zones. The panel opens before the cursor reaches the top edge, so Windows 11's own snap bar isn't needed; it still works if the user keeps going up.
   - Hovering a cell highlights it and shows that zone translucently on the island's monitor (the zone overlay). Releasing the mouse over a cell puts the window in that zone; anywhere else leaves the window where Windows put it. Leaving the panel (and the summon area) closes it.
   - The picker always targets the **island's monitor**. Other monitors use Shift+drag or the hotkeys.
-- [ ] **Shift + drag.** While a move is in progress and Shift is held, the zone overlay shows the active layout's zones on the monitor under the cursor, the zone under the cursor highlighted. Releasing the mouse inside a zone puts the window there. Releasing Shift hides the overlay. No zone spanning.
-- [ ] **Hotkeys** (`RegisterHotKey`; a key another app holds is logged and skipped):
+- [x] **Shift + drag.** While a move is in progress and Shift is held, the zone overlay shows the active layout's zones on the monitor under the cursor, the zone under the cursor highlighted. Releasing the mouse inside a zone puts the window there. Releasing Shift hides the overlay. No zone spanning.
+- [x] **Hotkeys** (`RegisterHotKey`; a key another app holds is logged and skipped):
   - **Ctrl+Alt+1‥9**: the foreground window goes to zone N of its monitor's active layout (no-op if the layout has fewer zones).
   - **Ctrl+Alt+←→↑↓**: to the neighbouring zone in that direction (nearest zone centre in the half-plane); a window not in a zone goes to the zone nearest its centre.
   - `[tile] number_keys = true`, `arrow_keys = true` turn each group off.
-- [ ] **Home tile.** `tile` becomes `Available` (6 of 12). A click opens the Tile panel for the **last active window** (the foreground app; the island never takes activation). Clicking a cell places it on the island's monitor. An empty click collapses the panel, as with the other panels. No scenes row yet.
-- [ ] **Placement.**
+- [x] **Home tile.** `tile` becomes `Available` (6 of 12). A click opens the Tile panel for the **last active window** (the foreground app; the island never takes activation). Clicking a cell places it on the island's monitor. An empty click collapses the panel, as with the other panels. No scenes row yet.
+- [x] **Placement.**
   - Only normal top-level windows: visible, not minimized, not cloaked, with a caption or a sizing border, not a tool window, not ours. Maximized windows are restored first.
   - `SetWindowPos` corrected by the invisible resize border (`DWMWA_EXTENDED_FRAME_BOUNDS` vs `GetWindowRect`), so the visible frame matches the zone.
   - A window that moves itself back (or is still settling) is placed again up to 3 times over ~500 ms.
   - **Restore size:** a window the app put in a zone remembers its size from before. Dropped outside any zone after being dragged, it gets that size back at the drop position (`[tile] restore_size = true`). The memory is per window and dropped when the window goes away.
   - **Admin windows** (UIPI blocks `SetWindowPos` from a normal-integrity process): nothing moves, and the Tile panel's header line says "can't move an admin window". After a hotkey the panel shows for 2 s with that line. Real support is 12d.
-- [ ] **Zone overlay.** One topmost, no-activate, input-transparent window per use (made when a drag starts, destroyed at its end), drawn with Skia on its own DComp chain, sized to the target monitor: zones as rounded rects in the theme (pill fill at low alpha, accent outline on the hovered one, the zone number). Excluded from snap targets like our other windows.
-- [ ] **Idle and performance.** Nothing polls outside a move. The WinEvent hook is the only always-on part (out-of-context, delivered through the existing message loop). Island and overlay render only on change during a move.
-- [ ] **Config** `[tile]`: `gap = 8`, `restore_size = true`, `number_keys = true`, `arrow_keys = true`, `[tile.monitors]` active layouts. No new Settings rows.
-- [ ] **Tests** (headless):
+- [x] **Zone overlay.** One topmost, no-activate, input-transparent window per use (made when a drag starts, destroyed at its end), drawn with Skia on its own DComp chain, sized to the target monitor: zones as rounded rects in the theme (pill fill at low alpha, accent outline on the hovered one, the zone number). Excluded from snap targets like our other windows.
+- [x] **Idle and performance.** Nothing polls outside a move. The WinEvent hook is the only always-on part (out-of-context, delivered through the existing message loop). Island and overlay render only on change during a move.
+- [x] **Config** `[tile]`: `gap = 8`, `restore_size = true`, `number_keys = true`, `arrow_keys = true`, `[tile.monitors]` active layouts. No new Settings rows.
+- [x] **Tests** (headless):
   - dj-core: every preset's zones at 1920×1080 / 3440×1440 / 150 % / a negative-origin monitor, gap and work-area edges; reading-order numbering; custom layout parsing and every rejection; neighbour/nearest navigation; picker geometry and cell hit tests; the drag state machine (summon enter/leave, hover, drop on a cell, drop outside, Shift on/off, a second monitor); frame-border correction math; restore-size bookkeeping; config defaults and round trip.
   - dj-render: the Tile panel and the zone overlay on CPU raster surfaces (highlighted cell, overlay zones and numbers, transparent outside).
   - app: the controller with a fake window backend (placement rects, maximized → restored, retries, UIPI failure → notice and nothing moved, restore size on a drop outside, hotkeys on a layout with fewer zones, ignored window kinds).
@@ -650,6 +650,7 @@ Headless, as before: fmt, clippy, test and release only; no exe, no real windows
 
 ### Log
 - 2026-10-27: defined with the user after Stage 7c. Tile & Scenes split into 12a–12d; 12a first. Decisions: the picker opens early (summon area under the island) rather than turning Windows' snap bar off; Shift+drag zones, Ctrl+Alt+1‥9, Ctrl+Alt+arrows and the Home tile are all in; presets plus custom layouts in TOML, no visual editor; the picker targets the island's monitor; restore size on drag-out is on by default; admin windows get a notice until 12d.
+- 2026-10-27: built on `xDaijobu/stage-12a-tile`: four Sonnet 5.5 workers in parallel worktrees (core, island panel, native, render) from [`stage-12a-plan.md`](stage-12a-plan.md), wiring by the coordinator. A Sonnet review of the wiring found that dragging a maximized/snapped window counted as a resize and that the zone overlay was rebuilt on every gap; both fixed with the other findings (Esc cancel, panel reopening after a hide, maximized placement, retry vs a new drag, picker only over a resting island, top-edge overshoot, lost end event). fmt, clippy `-D warnings`, 658 workspace tests and the release build pass. **Live test pending.**
 
 ---
 

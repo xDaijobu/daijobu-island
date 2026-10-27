@@ -40,16 +40,25 @@ const DRIFT: i32 = 4;
 const IN_ZONE: i32 = 8;
 const NOTICE: Duration = Duration::from_secs(2);
 pub const ADMIN_NOTICE: &str = "can't move an admin window";
+const NO_WINDOW: &str = "click a window first, then the tile";
 const HINT: &str = "shift+drag · ctrl+alt+1‥9";
 
 /// The windows: queries and placement. The real one is [`SystemWindows`].
 pub trait WindowOps {
     fn info(&self, w: Raw) -> Option<WinInfo>;
     fn place(&mut self, w: Raw, r: IRect) -> Result<(), PlaceError>;
+    /// Un-maximizes a maximized window (so it can be measured before placing).
+    fn restore(&mut self, w: Raw);
     fn foreground(&self) -> Raw;
     fn monitors(&self) -> Vec<MonitorInfo>;
     fn cursor(&self) -> (i32, i32);
     fn shift_down(&self) -> bool;
+    /// The primary mouse button is down (still held at the end of a move = Esc cancelled).
+    fn button_down(&self) -> bool;
+    /// A move/size that starts with the cursor at `at` grabs a sizing border.
+    fn is_resize(&self, w: Raw, at: (i32, i32)) -> bool;
+    /// The window's thread is still in its move/size loop.
+    fn still_moving(&self, w: Raw) -> bool;
 }
 
 pub struct SystemWindows;
@@ -61,6 +70,22 @@ impl WindowOps for SystemWindows {
 
     fn place(&mut self, w: Raw, r: IRect) -> Result<(), PlaceError> {
         dj_win::tile::place(w, r.x, r.y, r.w, r.h)
+    }
+
+    fn restore(&mut self, w: Raw) {
+        dj_win::tile::restore(w);
+    }
+
+    fn button_down(&self) -> bool {
+        dj_win::tile::primary_button_down()
+    }
+
+    fn is_resize(&self, w: Raw, at: (i32, i32)) -> bool {
+        dj_win::tile::is_resize_at(w, at.0, at.1)
+    }
+
+    fn still_moving(&self, w: Raw) -> bool {
+        dj_win::tile::in_move_size(w)
     }
 
     fn foreground(&self) -> Raw {
@@ -115,11 +140,11 @@ pub struct Panel<'a> {
     pub footer: (&'static str, bool),
 }
 
-/// A window being moved.
+/// A window being moved (never resized: a resize is not followed at all).
 struct Moving {
     drag: Drag,
     w: Raw,
-    /// Its rect when the move started (a different size later means a resize).
+    /// Its rect when the move started, for restore size.
     start: IRect,
 }
 
@@ -232,13 +257,26 @@ impl Tiler {
 
     // ---- moves ----
 
-    /// `EVENT_SYSTEM_MOVESIZESTART`: a window started moving (or resizing).
+    /// `EVENT_SYSTEM_MOVESIZESTART`: a window started moving or resizing. Only a move is
+    /// followed; the start is decided by what the cursor grabbed, because a maximized or
+    /// snapped window changes size as soon as it is dragged.
     pub fn move_start(&mut self, w: Raw) {
         self.moving = None;
         self.view = DragView::default();
+        // A drag supersedes the Home panel, and a window grabbed again isn't pulled back.
+        self.home = None;
+        self.home_hover = None;
+        if self.retry.as_ref().is_some_and(|r| r.w == w) {
+            self.retry = None;
+        }
         let Some(info) = self.ops.info(w).filter(|i| i.eligible) else {
             return;
         };
+        if self.ops.is_resize(w, self.ops.cursor()) {
+            // The user picks this size: no restore later.
+            self.placed.forget(w as u64);
+            return;
+        }
         self.refresh_monitors();
         self.moving = Some(Moving {
             drag: Drag::new(w as u64),
@@ -253,10 +291,14 @@ impl Tiler {
     }
 
     /// One cursor sample during a move (`TIMER_TILE_POLL`). True if what the island or
-    /// the overlay shows changed.
-    pub fn poll(&mut self, geo: IslandGeo) -> bool {
+    /// the overlay shows changed. If the window's thread has left its move loop without
+    /// an end event, the move ends here.
+    pub fn poll(&mut self, geo: IslandGeo, now: Instant) -> bool {
         let before = self.view;
-        self.sample(geo);
+        match self.moving.as_ref().map(|m| m.w) {
+            Some(w) if !self.ops.still_moving(w) => self.move_end(w, geo, now),
+            _ => self.sample(geo),
+        }
         self.view != before
     }
 
@@ -265,14 +307,12 @@ impl Tiler {
             return;
         };
         // The window went away mid-move: drop it quietly.
-        let Some(info) = self.ops.info(mv.w) else {
+        if self.ops.info(mv.w).is_none() {
             self.placed.forget(mv.w as u64);
             self.moving = None;
             self.view = DragView::default();
             return;
-        };
-        let now = irect(info.rect);
-        let resizing = (now.w, now.h) != (mv.start.w, mv.start.h);
+        }
         let cursor = self.ops.cursor();
         let shift = self.ops.shift_down();
         let active = self.active();
@@ -287,7 +327,7 @@ impl Tiler {
             gap: self.config.gap,
         };
         let view = match self.moving.as_mut() {
-            Some(mv) => mv.drag.poll(cursor, shift, resizing, &geometry),
+            Some(mv) => mv.drag.poll(cursor, shift, false, &geometry),
             None => return,
         };
         self.view = view;
@@ -305,6 +345,10 @@ impl Tiler {
         let Some(mv) = self.moving.take() else {
             return;
         };
+        // The button is still down: Esc cancelled the move and Windows put it back.
+        if self.ops.button_down() {
+            return;
+        }
         let start = mv.start;
         match mv.drag.end() {
             Some(target) => self.place_target(w, target, now),
@@ -329,29 +373,34 @@ impl Tiler {
         let Some(zone) = self.zones_on(t.monitor, t.layout).get(t.zone).copied() else {
             return;
         };
-        if self.place_in(w, zone, now) && t.from_panel {
+        let active = self.active().get(t.monitor).copied();
+        if self.place_in(w, zone, now) && t.from_panel && active != Some(t.layout) {
             // The layout just used becomes the monitor's active one.
             if let (Some(m), Some(l)) = (self.monitors.get(t.monitor), self.layouts.get(t.layout)) {
-                if self.config.monitors.get(&m.id) != Some(&l.name) {
-                    self.config.monitors.insert(m.id.clone(), l.name.clone());
-                    self.config_dirty = true;
-                }
+                self.config.monitors.insert(m.id.clone(), l.name.clone());
+                self.config_dirty = true;
             }
         }
     }
 
     /// Puts `w` so that its visible frame fills `zone`. True if the window was moved.
     fn place_in(&mut self, w: Raw, zone: IRect, now: Instant) -> bool {
-        let Some(info) = self.ops.info(w).filter(|i| i.eligible) else {
+        let Some(mut info) = self.ops.info(w).filter(|i| i.eligible) else {
             return false;
         };
-        let rect = tile::window_rect_for(zone, irect(info.rect), irect(info.frame));
-        // A maximized window's own rect is the monitor's; its old size would mean nothing.
-        let before = (!info.maximized).then_some((info.rect.2, info.rect.3));
-        self.apply(w, rect, Some(zone), now) && {
-            if let Some(size) = before {
-                self.placed.placed(w as u64, size);
+        if info.maximized {
+            // Measured as a normal window: a maximized one has another border, and its
+            // size would be the monitor's.
+            self.ops.restore(w);
+            match self.ops.info(w) {
+                Some(i) => info = i,
+                None => return false,
             }
+        }
+        let rect = tile::window_rect_for(zone, irect(info.rect), irect(info.frame));
+        let before = (info.rect.2, info.rect.3);
+        self.apply(w, rect, Some(zone), now) && {
+            self.placed.placed(w as u64, before);
             true
         }
     }
@@ -361,12 +410,14 @@ impl Tiler {
     fn apply(&mut self, w: Raw, rect: IRect, zone: Option<IRect>, now: Instant) -> bool {
         match self.ops.place(w, rect) {
             Ok(()) => {
-                self.retry = zone.map(|zone| Retry {
-                    w,
-                    zone,
-                    at: now,
-                    step: 0,
-                });
+                if let Some(zone) = zone {
+                    self.retry = Some(Retry {
+                        w,
+                        zone,
+                        at: now,
+                        step: 0,
+                    });
+                }
                 true
             }
             Err(PlaceError::AccessDenied) => {
@@ -484,6 +535,11 @@ impl Tiler {
         changed
     }
 
+    /// The pointer left the island. True if a cell was lit.
+    pub fn clear_hover(&mut self) -> bool {
+        self.home_hover.take().is_some()
+    }
+
     /// A click in the panel (panel-local logical px): a cell places the Home window there.
     /// The app collapses the panel either way.
     pub fn panel_click(&mut self, x: f32, y: f32, now: Instant) {
@@ -541,6 +597,12 @@ impl Tiler {
                 .unwrap_or_default(),
             footer: if self.notice_up(now) {
                 (ADMIN_NOTICE, true)
+            } else if self
+                .home
+                .is_some_and(|w| !self.ops.info(w).is_some_and(|i| i.eligible))
+            {
+                // The app in front is the desktop, the taskbar or one of ours.
+                (NO_WINDOW, true)
             } else {
                 (HINT, false)
             },
@@ -606,14 +668,32 @@ mod tests {
         }
     }
 
+    /// A maximized window on `work`: the border hangs 8 px outside on every side.
+    fn maxed(work: IRect) -> WinInfo {
+        WinInfo {
+            rect: (work.x - 8, work.y - 8, work.w + 16, work.h + 16),
+            frame: (work.x, work.y, work.w, work.h),
+            maximized: true,
+            eligible: true,
+        }
+    }
+
     #[derive(Default)]
     struct State {
         windows: HashMap<Raw, WinInfo>,
+        /// The visible frame a maximized window restores to.
+        normal: HashMap<Raw, IRect>,
         places: Vec<(Raw, IRect)>,
         deny: bool,
         foreground: Raw,
         cursor: (i32, i32),
         shift: bool,
+        /// The primary button is still held (at the end: Esc cancelled the move).
+        button: bool,
+        /// The move starts on a sizing border.
+        resize: bool,
+        /// The window's thread left its move loop (the watchdog's view).
+        ended: bool,
     }
 
     struct Fake(Rc<RefCell<State>>);
@@ -643,6 +723,28 @@ mod tests {
                 },
             );
             Ok(())
+        }
+
+        fn restore(&mut self, w: Raw) {
+            let mut s = self.0.borrow_mut();
+            let normal = s.normal.get(&w).copied();
+            if let (Some(frame), Some(info)) = (normal, s.windows.get_mut(&w)) {
+                if info.maximized {
+                    *info = win(frame);
+                }
+            }
+        }
+
+        fn button_down(&self) -> bool {
+            self.0.borrow().button
+        }
+
+        fn is_resize(&self, _w: Raw, _at: (i32, i32)) -> bool {
+            self.0.borrow().resize
+        }
+
+        fn still_moving(&self, _w: Raw) -> bool {
+            !self.0.borrow().ended
         }
 
         fn foreground(&self) -> Raw {
@@ -724,12 +826,12 @@ mod tests {
         assert!(t.polling());
         // Up into the summon area: the panel opens.
         s.borrow_mut().cursor = (960, 60);
-        assert!(t.poll(GEO));
+        assert!(t.poll(GEO, now));
         assert!(t.panel_wanted(now));
         // Onto the right cell of "1+2"'s thumbnail.
         let l = tile::find(&t.layouts, "1+2").unwrap();
         s.borrow_mut().cursor = cell(&t, l, 1);
-        t.poll(GEO);
+        t.poll(GEO, now);
         assert_eq!(t.panel(now).hover, Some((l, 1)));
         let overlay = t.overlay().unwrap();
         assert_eq!(
@@ -763,7 +865,7 @@ mod tests {
         // Dragged into the middle of the screen, same size, no zone under the cursor.
         t.move_start(1);
         s.borrow_mut().cursor = (900, 600);
-        t.poll(GEO);
+        t.poll(GEO, now);
         let (x, y) = (400, 300);
         s.borrow_mut().windows.get_mut(&1).unwrap().rect = (x, y, placed.rect.2, placed.rect.3);
         t.move_end(1, GEO, now);
@@ -781,21 +883,131 @@ mod tests {
         s.borrow_mut().foreground = 1;
         t.hotkey(HOTKEY_ZONE_1, now);
         let places = s.borrow().places.len();
+        // The edge is grabbed: a resize is not followed at all, even across the panel.
+        s.borrow_mut().resize = true;
         t.move_start(1);
-        // The edge is dragged: the size changes. The cursor even crosses the panel.
-        s.borrow_mut().windows.get_mut(&1).unwrap().rect.2 += 50;
-        s.borrow_mut().cursor = (960, 60);
-        t.poll(GEO);
-        assert!(!t.panel_wanted(now));
+        assert!(!t.polling());
         s.borrow_mut().cursor = cell(&t, 0, 0);
-        t.poll(GEO);
+        t.poll(GEO, now);
+        assert!(!t.panel_wanted(now));
+        s.borrow_mut().windows.get_mut(&1).unwrap().rect.2 += 50;
         t.move_end(1, GEO, now);
         assert_eq!(s.borrow().places.len(), places, "nothing moved");
         // And the size memory is gone: a later drag out restores nothing.
+        s.borrow_mut().resize = false;
         t.move_start(1);
         s.borrow_mut().windows.get_mut(&1).unwrap().rect.0 += 300;
         t.move_end(1, GEO, now);
         assert_eq!(s.borrow().places.len(), places);
+    }
+
+    #[test]
+    fn dragging_a_maximized_window_by_its_title_still_opens_the_picker() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        {
+            let mut st = s.borrow_mut();
+            st.windows.insert(1, maxed(work1()));
+            st.normal.insert(1, IRect::new(300, 200, 900, 700));
+        }
+        t.move_start(1);
+        // Windows restores it as the drag begins: a new size, but still a move.
+        s.borrow_mut()
+            .windows
+            .insert(1, win(IRect::new(600, 0, 900, 700)));
+        s.borrow_mut().cursor = (960, 60);
+        t.poll(GEO, now);
+        assert!(t.panel_wanted(now));
+        s.borrow_mut().cursor = cell(&t, 0, 0);
+        t.poll(GEO, now);
+        t.move_end(1, GEO, now);
+        assert_eq!(frame_of(&s, 1), zones1(&t, "50/50")[0]);
+    }
+
+    #[test]
+    fn esc_during_a_drag_over_a_cell_places_nothing() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        s.borrow_mut()
+            .windows
+            .insert(1, win(IRect::new(100, 100, 800, 600)));
+        t.move_start(1);
+        s.borrow_mut().cursor = (960, 60);
+        t.poll(GEO, now);
+        s.borrow_mut().cursor = cell(&t, 0, 1);
+        t.poll(GEO, now);
+        // Esc ends the move while the button is still held.
+        s.borrow_mut().button = true;
+        t.move_end(1, GEO, now);
+        assert!(s.borrow().places.is_empty());
+        assert!(!t.panel_wanted(now));
+        assert!(t.take_config().is_none());
+    }
+
+    #[test]
+    fn a_lost_end_event_ends_the_move_at_the_next_poll() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        s.borrow_mut()
+            .windows
+            .insert(1, win(IRect::new(100, 100, 800, 600)));
+        t.move_start(1);
+        s.borrow_mut().cursor = (960, 60);
+        t.poll(GEO, now);
+        s.borrow_mut().cursor = cell(&t, 0, 1);
+        t.poll(GEO, now);
+        // The thread left its move loop; no end event arrives.
+        s.borrow_mut().ended = true;
+        assert!(t.poll(GEO, now));
+        assert!(!t.polling());
+        assert!(!t.panel_wanted(now));
+        assert_eq!(frame_of(&s, 1), zones1(&t, "50/50")[1]);
+        // The late end event changes nothing.
+        let count = s.borrow().places.len();
+        t.move_end(1, GEO, now);
+        assert_eq!(s.borrow().places.len(), count);
+    }
+
+    #[test]
+    fn grabbing_a_placed_window_again_cancels_its_retry() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        s.borrow_mut()
+            .windows
+            .insert(1, win(IRect::new(100, 100, 800, 600)));
+        s.borrow_mut().foreground = 1;
+        t.hotkey(HOTKEY_ZONE_1, now);
+        assert!(t.next_timer(now).0.is_some());
+        t.move_start(1);
+        assert_eq!(t.next_timer(now).0, None);
+        // The user drags it somewhere: the old zone doesn't pull it back.
+        s.borrow_mut()
+            .windows
+            .insert(1, win(IRect::new(500, 500, 700, 500)));
+        let count = s.borrow().places.len();
+        t.retry(now + Duration::from_millis(150));
+        assert_eq!(s.borrow().places.len(), count);
+    }
+
+    #[test]
+    fn picking_the_layout_that_is_already_active_writes_no_config() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        s.borrow_mut()
+            .windows
+            .insert(1, win(IRect::new(100, 100, 800, 600)));
+        t.move_start(1);
+        s.borrow_mut().cursor = (960, 60);
+        t.poll(GEO, now);
+        let l = tile::find(&t.layouts, "50/50").unwrap();
+        s.borrow_mut().cursor = cell(&t, l, 0);
+        t.poll(GEO, now);
+        t.move_end(1, GEO, now);
+        assert_eq!(frame_of(&s, 1), zones1(&t, "50/50")[0]);
+        assert!(
+            t.take_config().is_none(),
+            "50/50 was already the active one"
+        );
     }
 
     #[test]
@@ -811,7 +1023,7 @@ mod tests {
             st.cursor = (-1500, 500);
             st.shift = true;
         }
-        t.poll(GEO);
+        t.poll(GEO, now);
         let overlay = t.overlay().unwrap();
         assert_eq!(overlay.monitor, IRect::new(-1920, 0, 1920, 1080));
         assert_eq!(overlay.scale, 1.5);
@@ -827,16 +1039,45 @@ mod tests {
     }
 
     #[test]
-    fn a_maximized_window_is_placed_but_not_remembered() {
+    fn a_maximized_window_is_restored_first_and_lands_exactly_at_once() {
         let (mut t, s) = rig();
         let now = Instant::now();
-        let mut info = win(IRect::new(0, 0, 1920, 1032));
-        info.maximized = true;
-        s.borrow_mut().windows.insert(1, info);
-        s.borrow_mut().foreground = 1;
+        {
+            let mut st = s.borrow_mut();
+            st.windows.insert(1, maxed(work1()));
+            st.normal.insert(1, IRect::new(300, 200, 900, 700));
+            st.foreground = 1;
+        }
         t.hotkey(HOTKEY_ZONE_1 + 1, now);
+        // One placement, measured on the restored window: no fix-up needed.
+        assert_eq!(s.borrow().places.len(), 1);
         assert_eq!(frame_of(&s, 1), zones1(&t, "50/50")[1]);
-        assert!(!t.placed.is_placed(1));
+        // Its normal size is what a drag out gives back.
+        t.move_start(1);
+        let placed = s.borrow().windows[&1];
+        s.borrow_mut().windows.get_mut(&1).unwrap().rect.0 += 100;
+        t.move_end(1, GEO, now);
+        let last = s.borrow().places.last().unwrap().1;
+        assert_eq!((last.w, last.h), (914, 707));
+        assert_eq!(last.x, placed.rect.0 + 100);
+    }
+
+    #[test]
+    fn the_home_panel_says_when_there_is_no_window_to_place() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        let mut info = win(IRect::new(0, 0, 1920, 1080));
+        info.eligible = false;
+        s.borrow_mut().windows.insert(5, info);
+        s.borrow_mut().foreground = 5;
+        t.open_home();
+        assert_eq!(t.panel(now).footer, (NO_WINDOW, true));
+        // A lit cell goes when the pointer leaves the island.
+        let c = t.thumbs[0].cells[0];
+        t.home_hover(c.x + 1.0, c.y + 1.0);
+        assert!(t.clear_hover());
+        assert_eq!(t.panel(now).hover, None);
+        assert!(!t.clear_hover());
     }
 
     #[test]
@@ -918,9 +1159,9 @@ mod tests {
             .insert(1, win(IRect::new(100, 100, 800, 600)));
         t.move_start(1);
         s.borrow_mut().cursor = (960, 60);
-        t.poll(GEO);
+        t.poll(GEO, now);
         s.borrow_mut().windows.remove(&1);
-        t.poll(GEO);
+        t.poll(GEO, now);
         assert!(!t.polling());
         assert!(!t.panel_wanted(now));
         t.move_end(1, GEO, now);
