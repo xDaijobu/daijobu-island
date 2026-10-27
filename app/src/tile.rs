@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(t.next_timer(now).1, Some(NOTICE));
         let later = now + NOTICE + Duration::from_millis(1);
         assert!(!t.panel_wanted(later));
-        assert_eq!(t.panel(later).footer.1, false);
+        assert!(!t.panel(later).footer.1);
         t.notice_done(later);
         assert_eq!(t.next_timer(later).1, None);
     }
