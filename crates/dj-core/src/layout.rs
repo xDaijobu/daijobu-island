@@ -178,6 +178,19 @@ pub const SN_CAPTION: Rect = Rect::new(98.0, 14.0, 218.0, 16.0);
 pub const SN_COPY: Rect = Rect::new(98.0, 38.0, 56.0, 22.0);
 pub const SN_SAVE: Rect = Rect::new(160.0, 38.0, 56.0, 22.0);
 
+/// The dj progress pill (`dj progress`, plan.html `dev`: 300 x 36, radius 18): a lamp, the
+/// label, a bar and the percent. Its content is the renderer's; the island only owns the
+/// size and routes the click (it opens Home, like Idle).
+pub const DJ_PROGRESS_W: f32 = 300.0;
+pub const DJ_PROGRESS_H: f32 = 36.0;
+pub const DJ_PROGRESS_R: f32 = 18.0;
+/// The dj notice pill (`dj notify`: 360 x 36, radius 18): a lamp in the highlight colour
+/// and the message. A click dismisses it. Both dj pills are as tall as the compact views, so
+/// they fit the reserved top strip (`RESERVE_H`).
+pub const DJ_NOTICE_W: f32 = 360.0;
+pub const DJ_NOTICE_H: f32 = 36.0;
+pub const DJ_NOTICE_R: f32 = 18.0;
+
 /// The small timer on Music compact while a timer runs: mono mm:ss before the VU. The
 /// title gives up this much room.
 pub const MC_TIMER: Rect = Rect::new(118.0, 0.0, 42.0, 36.0);
@@ -213,7 +226,7 @@ pub const NOTCH_SHOULDER: f32 = 8.0;
 
 /// Notch style with `[island] reserve_top`: the height of the strip reserved along the
 /// top of the screen (logical px). It holds the notch in every rest state (idle, Music
-/// and Timer compact), so only the expanded panels hang over other windows.
+/// and Timer compact, the dj pills), so only the expanded panels hang over other windows.
 pub const RESERVE_H: f32 = TOP_MARGIN + 36.0;
 
 /// Notch style: the box the notch shape covers for a pill rect (window-logical px):
@@ -520,11 +533,46 @@ mod tests {
 
     #[test]
     fn the_reserved_strip_holds_every_rest_state() {
-        for h in [IDLE_H, MUSIC_COMPACT_H, TIMER_COMPACT_H] {
+        let compact = [
+            IDLE_H,
+            MUSIC_COMPACT_H,
+            TIMER_COMPACT_H,
+            DJ_PROGRESS_H,
+            DJ_NOTICE_H,
+        ];
+        for h in compact {
             assert!(TOP_MARGIN + h <= RESERVE_H, "{h}");
         }
         // But not more than that: the expanded views hang over other windows.
-        assert_eq!(RESERVE_H, TOP_MARGIN + MUSIC_COMPACT_H.max(TIMER_COMPACT_H));
+        assert_eq!(
+            RESERVE_H,
+            TOP_MARGIN + compact.into_iter().fold(0.0, f32::max)
+        );
+    }
+
+    #[test]
+    fn the_dj_pills_are_36_tall_and_fit_the_window() {
+        assert_eq!(
+            (DJ_PROGRESS_W, DJ_PROGRESS_H, DJ_PROGRESS_R),
+            (300.0, 36.0, 18.0)
+        );
+        assert_eq!((DJ_NOTICE_W, DJ_NOTICE_H, DJ_NOTICE_R), (360.0, 36.0, 18.0));
+        let (w, h) = window_size();
+        for (pw, ph, r) in [
+            (DJ_PROGRESS_W, DJ_PROGRESS_H, DJ_PROGRESS_R),
+            (DJ_NOTICE_W, DJ_NOTICE_H, DJ_NOTICE_R),
+        ] {
+            assert!(pw <= w && TOP_MARGIN + ph <= h);
+            // A full pill: the radius is half the height, like the compact views.
+            assert_eq!(r, ph / 2.0);
+            // Inside the reserved strip, so a maximized window never reaches them.
+            assert!(TOP_MARGIN + ph <= RESERVE_H);
+        }
+        // Wider than the Music and Timer compact views, narrower than Home.
+        const {
+            assert!(DJ_PROGRESS_W > MUSIC_COMPACT_W && DJ_NOTICE_W > DJ_PROGRESS_W);
+            assert!(DJ_NOTICE_W < HOME_W);
+        }
     }
 
     #[test]
@@ -535,7 +583,7 @@ mod tests {
     }
 
     /// Every view size the island morphs between, as `(w, h, corner radius)`.
-    const VIEWS: [(f32, f32, f32); 13] = [
+    const VIEWS: [(f32, f32, f32); 15] = [
         (IDLE_W, IDLE_H, IDLE_R),
         (HOME_W, HOME_H, HOME_R),
         (VITALS_W, VITALS_H, VITALS_R),
@@ -548,6 +596,8 @@ mod tests {
         (SNAP_W, SNAP_H, SNAP_R),
         (SETTINGS_W, SETTINGS_H, SETTINGS_R),
         (TILE_PANEL_W, TILE_PANEL_H, TILE_PANEL_R),
+        (DJ_PROGRESS_W, DJ_PROGRESS_H, DJ_PROGRESS_R),
+        (DJ_NOTICE_W, DJ_NOTICE_H, DJ_NOTICE_R),
         (OSD_W, OSD_H, OSD_R),
     ];
 

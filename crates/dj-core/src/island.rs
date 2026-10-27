@@ -1,10 +1,11 @@
 //! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel with
-//! its Sweep view, the Timer views, Settings, the Tile panel, the snap thumb and the OSD
-//! overlay, driven by springs.
+//! its Sweep view, the Timer views, Settings, the Tile panel, the snap thumb, the dj
+//! progress and notice pills and the OSD overlay, driven by springs.
 //! Time only enters through `step(dt)`, so everything here is deterministic. The timer
 //! itself (`timer::Pomodoro`) lives in the app; the island only hears whether it is active
 //! or done. Likewise the snap thumb's countdown and its shot live in the app; the island
-//! only hears whether a thumb is up.
+//! only hears whether a thumb is up. The same goes for `dj` activity: its text, percent and
+//! timeouts are the app's, and the island only hears whether a progress and a notice are up.
 
 use crate::features::{Availability, FEATURES};
 use crate::layout::{self, Rect};
@@ -49,10 +50,18 @@ pub enum IslandState {
     /// towards the island or from the Home tile. Every click inside it is the app's to
     /// read (`ClickOutcome::Tile`); the app collapses it on an empty spot.
     TilePanel,
+    /// A `dj progress` (or the ✓ after `dj done`) is up: a 300 x 36 pill. A rest state below
+    /// the dj notice, the timer alert and the snap thumb, above Music and Timer compact. A
+    /// click expands to Home, as from Idle.
+    DjProgress,
+    /// A `dj notify` message: a 360 x 36 pill. A rest state that outranks everything but the
+    /// snap thumb (the OSD only covers it). A click is the app's to answer
+    /// (`ClickOutcome::DjDismiss`).
+    DjNotice,
 }
 
 /// Number of content layers (one per `IslandState`).
-const LAYERS: usize = 12;
+const LAYERS: usize = 14;
 
 impl IslandState {
     /// Index into the per-content opacity springs.
@@ -70,11 +79,13 @@ impl IslandState {
             IslandState::SnapThumb => 9,
             IslandState::Settings => 10,
             IslandState::TilePanel => 11,
+            IslandState::DjProgress => 12,
+            IslandState::DjNotice => 13,
         }
     }
 
     /// The states the island rests in. Facts that change the rest state (a track, the
-    /// timer) move the island only from one of these; an open panel stays put.
+    /// timer, dj activity) move the island only from one of these; an open panel stays put.
     fn is_rest(self) -> bool {
         matches!(
             self,
@@ -83,6 +94,8 @@ impl IslandState {
                 | IslandState::TimerCompact
                 | IslandState::TimerAlert
                 | IslandState::SnapThumb
+                | IslandState::DjProgress
+                | IslandState::DjNotice
         )
     }
 }
@@ -94,6 +107,16 @@ pub struct TimerUi {
     pub active: bool,
     /// A session ended and nobody has answered the alert yet.
     pub done: bool,
+}
+
+/// What the app knows about `dj` activity, pushed into the island on every change. The
+/// text, the percent and the timeouts stay in the app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DjUi {
+    /// A progress pill is up (a progress, or the ✓ that follows `dj done`).
+    pub progress: bool,
+    /// A notice pill is up.
+    pub notice: bool,
 }
 
 /// A control in the Timer panel or the alert.
@@ -177,6 +200,9 @@ pub enum ClickOutcome {
         x: f32,
         y: f32,
     },
+    /// A click on the dj notice pill. The island has not moved: the app dismisses the
+    /// notice and pushes the new `DjUi`, and the island leaves the pill then.
+    DjDismiss,
 }
 
 /// What a click on the snap thumb asks for.
@@ -205,6 +231,8 @@ pub struct Layers {
     pub snap: f32,
     pub settings: f32,
     pub tile: f32,
+    pub dj_progress: f32,
+    pub dj_notice: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -239,6 +267,7 @@ pub struct Island {
     hint: Option<(usize, f32)>,
     music: MusicUi,
     timer: TimerUi,
+    dj: DjUi,
     /// A snap thumb is up (until the app's countdown ends or it is dismissed).
     snap: bool,
     /// The pointer is over the snap thumb, and the button under it.
@@ -268,6 +297,7 @@ impl Island {
             hint: None,
             music: MusicUi::default(),
             timer: TimerUi::default(),
+            dj: DjUi::default(),
             snap: false,
             snap_pointer: false,
             snap_hover: None,
@@ -316,17 +346,32 @@ impl Island {
                 layout::TILE_PANEL_H,
                 layout::TILE_PANEL_R,
             ),
+            IslandState::DjProgress => (
+                layout::DJ_PROGRESS_W,
+                layout::DJ_PROGRESS_H,
+                layout::DJ_PROGRESS_R,
+            ),
+            IslandState::DjNotice => (
+                layout::DJ_NOTICE_W,
+                layout::DJ_NOTICE_H,
+                layout::DJ_NOTICE_R,
+            ),
         }
     }
 
     /// The state the island rests in when nothing is being opened, by activity
-    /// priority (plan.html): snap thumb > timer done > media > timer running > idle.
-    /// The OSD sits above all of these but only covers the state (see `target_size`).
+    /// priority (plan.html): snap thumb > dj notice > timer done > dj progress > media >
+    /// timer running > idle. The OSD sits above all of these but only covers the state
+    /// (see `target_size`).
     fn rest_state(&self) -> IslandState {
         if self.snap {
             IslandState::SnapThumb
+        } else if self.dj.notice {
+            IslandState::DjNotice
         } else if self.timer.done {
             IslandState::TimerAlert
+        } else if self.dj.progress {
+            IslandState::DjProgress
         } else if self.music.has_track {
             IslandState::MusicCompact
         } else if self.timer.active {
@@ -356,6 +401,22 @@ impl Island {
             return;
         }
         self.timer = ui;
+        self.settle_rest(tokens);
+    }
+
+    pub fn dj_ui(&self) -> DjUi {
+        self.dj
+    }
+
+    /// Pushes new `dj` facts. A progress or a notice shows over the rest states it
+    /// outranks (see `rest_state`); over an open panel (Home, Music, Vitals, Sweep, Timer,
+    /// Settings, Tile) it waits for the collapse, and so does its removal. Under the snap
+    /// thumb it waits for the thumb to go.
+    pub fn set_dj(&mut self, ui: DjUi, tokens: &ResolvedTokens) {
+        if ui == self.dj {
+            return;
+        }
+        self.dj = ui;
         self.settle_rest(tokens);
     }
 
@@ -521,9 +582,9 @@ impl Island {
         (x - (win_w - w) / 2.0, y - layout::TOP_MARGIN)
     }
 
-    /// Collapses to the rest state (see `rest_state`): the timer alert when a session
-    /// ended, Music compact when a track is loaded, Timer compact while a timer runs,
-    /// otherwise Idle.
+    /// Collapses to the rest state (see `rest_state`): the snap thumb or a dj notice when
+    /// one is up, the timer alert when a session ended, the dj progress, Music compact
+    /// when a track is loaded, Timer compact while a timer runs, otherwise Idle.
     pub fn collapse(&mut self, tokens: &ResolvedTokens) {
         let rest = self.rest_state();
         if self.state != rest {
@@ -596,10 +657,13 @@ impl Island {
             return ClickOutcome::Ignored;
         }
         match self.state {
-            IslandState::Idle => {
+            // The progress pill opens Home like the idle island; the notice only reports the
+            // click, and the app dismisses it.
+            IslandState::Idle | IslandState::DjProgress => {
                 self.expand(tokens);
                 ClickOutcome::Expanded
             }
+            IslandState::DjNotice => ClickOutcome::DjDismiss,
             IslandState::MusicCompact => {
                 self.open_music(tokens);
                 ClickOutcome::Expanded
@@ -858,6 +922,8 @@ impl Island {
                 snap: v(9),
                 settings: v(10),
                 tile: v(11),
+                dj_progress: v(12),
+                dj_notice: v(13),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -2076,7 +2142,7 @@ mod tests {
     fn each_state_lights_exactly_its_own_layer() {
         let t = tokens();
         type Setup = fn(&mut Island, &ResolvedTokens);
-        let states: [(IslandState, Setup); 12] = [
+        let states: [(IslandState, Setup); 14] = [
             (IslandState::Idle, |_, _| {}),
             (IslandState::Home, Island::expand),
             (IslandState::MusicCompact, |i, t| {
@@ -2091,6 +2157,8 @@ mod tests {
             (IslandState::SnapThumb, Island::show_snap),
             (IslandState::Settings, Island::open_settings),
             (IslandState::TilePanel, Island::open_tile),
+            (IslandState::DjProgress, |i, t| i.set_dj(DJ_PROGRESS, t)),
+            (IslandState::DjNotice, |i, t| i.set_dj(DJ_NOTICE, t)),
         ];
         assert_eq!(states.len(), LAYERS);
         for (state, setup) in states {
@@ -2112,6 +2180,8 @@ mod tests {
                 l.snap,
                 l.settings,
                 l.tile,
+                l.dj_progress,
+                l.dj_notice,
             ];
             let want: [f32; LAYERS] =
                 std::array::from_fn(|n| if n == state.layer() { 1.0 } else { 0.0 });
@@ -2253,5 +2323,570 @@ mod tests {
         i.open_tile(&t);
         settle(&mut i, &t);
         assert_eq!(i.view().layers.tile, 1.0);
+    }
+
+    // ---- dj ----
+
+    const DJ_PROGRESS: DjUi = DjUi {
+        progress: true,
+        notice: false,
+    };
+    const DJ_NOTICE: DjUi = DjUi {
+        progress: false,
+        notice: true,
+    };
+    const DJ_BOTH: DjUi = DjUi {
+        progress: true,
+        notice: true,
+    };
+
+    /// One fact that picks the rest state, switched on or off on its own.
+    type Fact = fn(&mut Island, bool, &ResolvedTokens);
+
+    fn snap_fact(i: &mut Island, on: bool, t: &ResolvedTokens) {
+        if on {
+            i.show_snap(t);
+        } else {
+            i.hide_snap(t);
+        }
+    }
+
+    fn notice_fact(i: &mut Island, on: bool, t: &ResolvedTokens) {
+        let ui = DjUi {
+            notice: on,
+            ..i.dj_ui()
+        };
+        i.set_dj(ui, t);
+    }
+
+    fn progress_fact(i: &mut Island, on: bool, t: &ResolvedTokens) {
+        let ui = DjUi {
+            progress: on,
+            ..i.dj_ui()
+        };
+        i.set_dj(ui, t);
+    }
+
+    fn alert_fact(i: &mut Island, on: bool, t: &ResolvedTokens) {
+        let ui = TimerUi {
+            done: on,
+            ..i.timer_ui()
+        };
+        i.set_timer(ui, t);
+    }
+
+    fn timer_fact(i: &mut Island, on: bool, t: &ResolvedTokens) {
+        let ui = TimerUi {
+            active: on,
+            ..i.timer_ui()
+        };
+        i.set_timer(ui, t);
+    }
+
+    fn music_fact(i: &mut Island, on: bool, t: &ResolvedTokens) {
+        let ui = MusicUi {
+            has_track: on,
+            ..i.music_ui()
+        };
+        i.set_music(ui, t);
+    }
+
+    /// Every fact that picks the rest state, highest priority first, and the state it gives.
+    const BY_PRIORITY: [(&str, Fact, IslandState); 6] = [
+        ("snap thumb", snap_fact, IslandState::SnapThumb),
+        ("dj notice", notice_fact, IslandState::DjNotice),
+        ("timer alert", alert_fact, IslandState::TimerAlert),
+        ("dj progress", progress_fact, IslandState::DjProgress),
+        ("music", music_fact, IslandState::MusicCompact),
+        ("timer", timer_fact, IslandState::TimerCompact),
+    ];
+
+    #[test]
+    fn the_dj_pills_show_at_their_sizes_and_cross_fade() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        assert_eq!(i.dj_ui(), DjUi::default());
+        i.set_dj(DJ_PROGRESS, &t);
+        assert_eq!(i.state(), IslandState::DjProgress);
+        assert_eq!(i.dj_ui(), DJ_PROGRESS);
+        assert!(i.is_animating());
+        // Mid-flight both contents are partly visible: the cross-fade.
+        for _ in 0..6 {
+            i.step(1.0 / 144.0, &t);
+        }
+        let l = i.view().layers;
+        assert!(
+            l.dj_progress > 0.0 && l.dj_progress < 1.0,
+            "{}",
+            l.dj_progress
+        );
+        assert!(l.idle > 0.0 && l.idle < 1.0, "{}", l.idle);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (300.0, 36.0));
+        let v = i.view();
+        let radius = |r: f32, h: f32| (r * t.radius_scale).min(h / 2.0);
+        assert_eq!(
+            v.radius,
+            radius(layout::DJ_PROGRESS_R, layout::DJ_PROGRESS_H)
+        );
+        assert_eq!(
+            (v.layers.idle, v.layers.dj_progress, v.layers.dj_notice),
+            (0.0, 1.0, 0.0)
+        );
+        assert!(!i.is_animating());
+
+        // A notice takes the pill over, at its own size.
+        i.set_dj(DJ_BOTH, &t);
+        assert_eq!(i.state(), IslandState::DjNotice);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (360.0, 36.0));
+        let v = i.view();
+        assert_eq!(v.radius, radius(layout::DJ_NOTICE_R, layout::DJ_NOTICE_H));
+        assert_eq!(
+            (v.layers.dj_progress, v.layers.dj_notice, v.layers.idle),
+            (0.0, 1.0, 0.0)
+        );
+
+        // The notice going hands the pill back to the progress, and that going to Idle.
+        i.set_dj(DJ_PROGRESS, &t);
+        assert_eq!(i.state(), IslandState::DjProgress);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (300.0, 36.0));
+        assert_eq!(i.view().layers.dj_notice, 0.0);
+        i.set_dj(DjUi::default(), &t);
+        assert_eq!(i.state(), IslandState::Idle);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::IDLE_W, layout::IDLE_H));
+        assert_eq!(i.view().layers.dj_progress, 0.0);
+    }
+
+    #[test]
+    fn the_dj_pills_sit_inside_the_reserved_strip() {
+        let t = tokens();
+        for ui in [DJ_PROGRESS, DJ_NOTICE] {
+            let mut i = Island::new(&t);
+            i.set_dj(ui, &t);
+            settle(&mut i, &t);
+            let p = i.pill_rect();
+            assert_eq!(p.h, 36.0);
+            assert!(p.y + p.h <= layout::RESERVE_H, "{ui:?}");
+            // Centred like every other view.
+            let (win_w, _) = layout::window_size();
+            assert_eq!(p.x, (win_w - p.w) / 2.0);
+        }
+    }
+
+    #[test]
+    fn setting_the_same_dj_facts_again_changes_nothing() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_dj(DjUi::default(), &t);
+        assert!(!i.is_animating());
+        i.set_dj(DJ_NOTICE, &t);
+        settle(&mut i, &t);
+        i.set_dj(DJ_NOTICE, &t);
+        assert!(!i.is_animating());
+        assert_eq!(i.state(), IslandState::DjNotice);
+    }
+
+    #[test]
+    fn every_pair_of_rest_facts_resolves_by_priority() {
+        let t = tokens();
+        for (a, (hi_name, hi, hi_state)) in BY_PRIORITY.iter().enumerate() {
+            for (lo_name, lo, lo_state) in &BY_PRIORITY[a + 1..] {
+                // Either arrival order gives the same state.
+                for hi_first in [false, true] {
+                    let why = format!("{hi_name} over {lo_name} (higher first: {hi_first})");
+                    let mut i = Island::new(&t);
+                    if hi_first {
+                        hi(&mut i, true, &t);
+                        lo(&mut i, true, &t);
+                    } else {
+                        lo(&mut i, true, &t);
+                        hi(&mut i, true, &t);
+                    }
+                    assert_eq!(i.state(), *hi_state, "{why}");
+                    settle(&mut i, &t);
+                    let (w, h, _) = Island::base_size(*hi_state);
+                    assert_eq!(size(&i), (w, h), "{why}");
+                    // The higher one leaving hands the pill to the lower one, then Idle.
+                    hi(&mut i, false, &t);
+                    assert_eq!(i.state(), *lo_state, "{why}: higher gone");
+                    settle(&mut i, &t);
+                    let (w, h, _) = Island::base_size(*lo_state);
+                    assert_eq!(size(&i), (w, h), "{why}: higher gone");
+                    lo(&mut i, false, &t);
+                    assert_eq!(i.state(), IslandState::Idle, "{why}: both gone");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_rest_states_climb_and_fall_in_priority_order() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        for (name, fact, state) in BY_PRIORITY.iter().rev() {
+            fact(&mut i, true, &t);
+            assert_eq!(i.state(), *state, "{name} on");
+        }
+        for (k, (name, fact, _)) in BY_PRIORITY.iter().enumerate() {
+            fact(&mut i, false, &t);
+            let next = BY_PRIORITY
+                .get(k + 1)
+                .map_or(IslandState::Idle, |(_, _, state)| *state);
+            assert_eq!(i.state(), next, "{name} off");
+        }
+    }
+
+    #[test]
+    fn dj_facts_move_a_resting_island_from_every_rest_state() {
+        let t = tokens();
+        type Setup = fn(&mut Island, &ResolvedTokens);
+        // (setup, the rest state, the state with a progress up, the state with a notice up)
+        let cases: [(Setup, IslandState, IslandState, IslandState); 5] = [
+            (
+                |_, _| {},
+                IslandState::Idle,
+                IslandState::DjProgress,
+                IslandState::DjNotice,
+            ),
+            (
+                |i, t| i.set_music(with_track(), t),
+                IslandState::MusicCompact,
+                IslandState::DjProgress,
+                IslandState::DjNotice,
+            ),
+            (
+                |i, t| i.set_timer(RUNNING, t),
+                IslandState::TimerCompact,
+                IslandState::DjProgress,
+                IslandState::DjNotice,
+            ),
+            // The alert outranks a progress but not a notice.
+            (
+                |i, t| i.set_timer(DONE, t),
+                IslandState::TimerAlert,
+                IslandState::TimerAlert,
+                IslandState::DjNotice,
+            ),
+            // The thumb outranks both.
+            (
+                Island::show_snap,
+                IslandState::SnapThumb,
+                IslandState::SnapThumb,
+                IslandState::SnapThumb,
+            ),
+        ];
+        for (setup, rest, with_progress, with_notice) in cases {
+            for (ui, want) in [
+                (DJ_PROGRESS, with_progress),
+                (DJ_NOTICE, with_notice),
+                (DJ_BOTH, with_notice),
+            ] {
+                let why = format!("{ui:?} over {rest:?}");
+                let mut i = Island::new(&t);
+                setup(&mut i, &t);
+                assert_eq!(i.state(), rest, "{why}");
+                i.set_dj(ui, &t);
+                assert_eq!(i.state(), want, "{why}");
+                settle(&mut i, &t);
+                let (w, h, _) = Island::base_size(want);
+                assert_eq!(size(&i), (w, h), "{why}");
+                // The same facts again change nothing.
+                i.set_dj(ui, &t);
+                assert!(!i.is_animating(), "{why}");
+                // And clearing them returns to where the island was.
+                i.set_dj(DjUi::default(), &t);
+                assert_eq!(i.state(), rest, "{why}: cleared");
+            }
+        }
+    }
+
+    #[test]
+    fn dj_facts_over_an_open_panel_wait_for_the_collapse() {
+        let t = tokens();
+        type Open = fn(&mut Island, &ResolvedTokens);
+        let panels: [(IslandState, Open); 7] = [
+            (IslandState::Home, Island::expand),
+            (IslandState::MusicExpanded, Island::open_music),
+            (IslandState::Vitals, Island::open_vitals),
+            (IslandState::Sweep, Island::open_sweep),
+            (IslandState::TimerPanel, Island::open_timer),
+            (IslandState::Settings, Island::open_settings),
+            (IslandState::TilePanel, Island::open_tile),
+        ];
+        for (state, open) in panels {
+            for (ui, rest) in [
+                (DJ_PROGRESS, IslandState::DjProgress),
+                (DJ_NOTICE, IslandState::DjNotice),
+                (DJ_BOTH, IslandState::DjNotice),
+            ] {
+                let why = format!("{ui:?} over {state:?}");
+                let mut i = Island::new(&t);
+                open(&mut i, &t);
+                settle(&mut i, &t);
+                i.set_dj(ui, &t);
+                // The panel stays put: same state, same size, still lit.
+                assert_eq!(i.state(), state, "{why}");
+                assert!(!i.is_animating(), "{why}");
+                let (w, h, _) = Island::base_size(state);
+                assert_eq!(size(&i), (w, h), "{why}");
+                assert_eq!(i.view().layers.dj_progress, 0.0, "{why}");
+                assert_eq!(i.view().layers.dj_notice, 0.0, "{why}");
+                // It shows once the panel collapses.
+                i.collapse(&t);
+                assert_eq!(i.state(), rest, "{why}: collapsed");
+                settle(&mut i, &t);
+                let (w, h, _) = Island::base_size(rest);
+                assert_eq!(size(&i), (w, h), "{why}: collapsed");
+            }
+            // A pill that came and went under the panel leaves nothing to show.
+            let mut i = Island::new(&t);
+            open(&mut i, &t);
+            i.set_dj(DJ_NOTICE, &t);
+            i.set_dj(DjUi::default(), &t);
+            assert_eq!(i.state(), state);
+            i.collapse(&t);
+            assert_eq!(i.state(), IslandState::Idle, "after {state:?}");
+        }
+    }
+
+    #[test]
+    fn a_panel_opened_over_a_dj_pill_gives_it_back_on_collapse() {
+        let t = tokens();
+        type Open = fn(&mut Island, &ResolvedTokens);
+        let opens: [Open; 3] = [Island::expand, Island::open_timer, Island::open_tile];
+        for open in opens {
+            for (ui, rest) in [
+                (DJ_PROGRESS, IslandState::DjProgress),
+                (DJ_NOTICE, IslandState::DjNotice),
+            ] {
+                let mut i = Island::new(&t);
+                i.set_dj(ui, &t);
+                settle(&mut i, &t);
+                open(&mut i, &t);
+                settle(&mut i, &t);
+                assert_ne!(i.state(), rest);
+                assert_eq!(i.view().layers.dj_progress, 0.0);
+                assert_eq!(i.view().layers.dj_notice, 0.0);
+                i.collapse(&t);
+                assert_eq!(i.state(), rest);
+                settle(&mut i, &t);
+                let (w, h, _) = Island::base_size(rest);
+                assert_eq!(size(&i), (w, h));
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_on_the_progress_pill_opens_home_like_idle() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_dj(DJ_PROGRESS, &t);
+        settle(&mut i, &t);
+        // Outside the pill is not its click.
+        assert_eq!(i.click(1.0, 1.0, &t), ClickOutcome::Ignored);
+        let p = i.pill_rect();
+        assert_eq!(i.click(p.x - 1.0, p.y + 10.0, &t), ClickOutcome::Ignored);
+        assert_eq!(i.state(), IslandState::DjProgress);
+        let (cx, cy) = center(&i);
+        assert_eq!(i.click(cx, cy, &t), ClickOutcome::Expanded);
+        assert_eq!(i.state(), IslandState::Home);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::HOME_W, layout::HOME_H));
+        let l = i.view().layers;
+        assert_eq!((l.home, l.dj_progress, l.idle), (1.0, 0.0, 0.0));
+        // A notice arriving while Home is open waits for the collapse.
+        i.set_dj(DJ_BOTH, &t);
+        assert_eq!(i.state(), IslandState::Home);
+        // An empty click on Home (the header) collapses to the pill that is up by then.
+        let r = i.pill_rect();
+        assert_eq!(i.click(r.x + 40.0, r.y + 28.0, &t), ClickOutcome::Collapsed);
+        assert_eq!(i.state(), IslandState::DjNotice);
+        // Had the notice gone meanwhile, the progress pill is the one left.
+        i.open_tile(&t);
+        i.set_dj(DJ_PROGRESS, &t);
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::DjProgress);
+    }
+
+    #[test]
+    fn a_click_on_the_notice_asks_the_app_to_dismiss_it() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_dj(DJ_BOTH, &t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::DjNotice);
+        let p = i.pill_rect();
+        for (x, y) in [
+            center(&i),
+            (p.x + 2.0, p.y + 2.0),
+            (p.x + p.w - 2.0, p.y + p.h - 2.0),
+        ] {
+            assert_eq!(i.click(x, y, &t), ClickOutcome::DjDismiss, "{x},{y}");
+            // The island has not moved: it leaves when the app pushes the new facts.
+            assert_eq!(i.state(), IslandState::DjNotice);
+        }
+        // Just outside the pill: not the notice's.
+        for (x, y) in [
+            (p.x - 1.0, p.y + 10.0),
+            (p.x + p.w, p.y + 10.0),
+            (p.x + 10.0, p.y - 1.0),
+            (p.x + 10.0, p.y + p.h),
+        ] {
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored, "{x},{y}");
+        }
+        // The app dismissed the notice: the progress is next, and after it Idle.
+        i.set_dj(DJ_PROGRESS, &t);
+        assert_eq!(i.state(), IslandState::DjProgress);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::DJ_PROGRESS_W, layout::DJ_PROGRESS_H));
+        i.set_dj(DjUi::default(), &t);
+        assert_eq!(i.state(), IslandState::Idle);
+        // A notice that was up alone goes straight to what is under it.
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.set_dj(DJ_NOTICE, &t);
+        settle(&mut i, &t);
+        let (cx, cy) = center(&i);
+        assert_eq!(i.click(cx, cy, &t), ClickOutcome::DjDismiss);
+        i.set_dj(DjUi::default(), &t);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+    }
+
+    #[test]
+    fn the_notice_is_clickable_mid_morph_where_the_pill_is() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_dj(DJ_NOTICE, &t);
+        i.step(1.0 / 144.0, &t);
+        assert!(i.is_animating());
+        // The pill is still growing from Idle: its centre is inside it already.
+        let (cx, cy) = center(&i);
+        assert_eq!(i.click(cx, cy, &t), ClickOutcome::DjDismiss);
+    }
+
+    #[test]
+    fn the_dj_pills_have_no_hover() {
+        let t = tokens();
+        for ui in [DJ_PROGRESS, DJ_NOTICE] {
+            let mut i = Island::new(&t);
+            i.set_dj(ui, &t);
+            settle(&mut i, &t);
+            let (x, y) = center(&i);
+            assert!(!i.hover(x, y), "{ui:?}");
+            assert!(!i.snap_hovered());
+            let v = i.view();
+            assert_eq!((v.hover, v.snap_hover, v.gear_hover), (None, None, false));
+            assert!(!i.clear_hover());
+        }
+    }
+
+    #[test]
+    fn the_osd_covers_the_dj_pills_and_they_return() {
+        let t = tokens();
+        for (ui, state, w) in [
+            (DJ_PROGRESS, IslandState::DjProgress, layout::DJ_PROGRESS_W),
+            (DJ_NOTICE, IslandState::DjNotice, layout::DJ_NOTICE_W),
+        ] {
+            let mut i = Island::new(&t);
+            i.set_dj(ui, &t);
+            settle(&mut i, &t);
+            i.show_osd(vol(0.5), &t);
+            settle_pinned(&mut i, &t);
+            // The OSD takes the pill; the state stays put.
+            assert_eq!(i.state(), state);
+            assert_eq!(size(&i), (layout::OSD_W, layout::OSD_H));
+            // Its clicks are the OSD's: off the bar nothing happens, not even a dismiss.
+            let r = layout::osd_rect();
+            assert_eq!(i.click(r.x + 2.0, r.y + 2.0, &t), ClickOutcome::Ignored);
+            let (cx, cy) = center(&i);
+            let out = i.click(cx, cy, &t);
+            assert!(
+                matches!(out, ClickOutcome::Ignored | ClickOutcome::SetVolume(_)),
+                "{out:?}"
+            );
+            i.release();
+            i.osd.pin(false);
+            settle(&mut i, &t);
+            assert_eq!(i.state(), state);
+            assert_eq!(size(&i), (w, 36.0));
+            assert_eq!(i.view().osd.alpha, 0.0);
+            let (cx, cy) = center(&i);
+            let want = match state {
+                IslandState::DjNotice => ClickOutcome::DjDismiss,
+                _ => ClickOutcome::Expanded,
+            };
+            assert_eq!(i.click(cx, cy, &t), want);
+        }
+        // A fact arriving under the OSD moves the state, not the pill: it stays the OSD.
+        let mut i = Island::new(&t);
+        i.show_osd(vol(0.5), &t);
+        settle_pinned(&mut i, &t);
+        i.set_dj(DJ_NOTICE, &t);
+        assert_eq!(i.state(), IslandState::DjNotice);
+        settle_pinned(&mut i, &t);
+        assert_eq!(size(&i), (layout::OSD_W, layout::OSD_H));
+        i.osd.pin(false);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::DJ_NOTICE_W, layout::DJ_NOTICE_H));
+        assert_eq!(i.view().layers.dj_notice, 1.0);
+    }
+
+    #[test]
+    fn dj_facts_under_the_thumb_wait_for_it_and_hand_back_when_it_goes() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_snap(&t);
+        i.set_dj(DJ_BOTH, &t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::SNAP_W, layout::SNAP_H));
+        assert_eq!(i.view().layers.snap, 1.0);
+        // Dismissing the thumb shows the notice, which still outranks the progress.
+        let (x, y) = view_at(layout::SNAP_W, layout::SN_SHOT);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Dismiss));
+        assert_eq!(i.state(), IslandState::DjNotice);
+        i.set_dj(DJ_PROGRESS, &t);
+        assert_eq!(i.state(), IslandState::DjProgress);
+        // A new thumb takes over a visible pill and hands it back.
+        i.show_snap(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::DjProgress);
+        // If the facts went while the thumb was up there is nothing to give back.
+        i.show_snap(&t);
+        i.set_dj(DjUi::default(), &t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn the_alert_and_the_dj_notice_hand_the_pill_to_each_other() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_timer(DONE, &t);
+        i.set_dj(DJ_NOTICE, &t);
+        // The notice outranks the alert; the alert's buttons are not reachable under it.
+        assert_eq!(i.state(), IslandState::DjNotice);
+        settle(&mut i, &t);
+        let (x, y) = view_at(layout::ALERT_W, layout::AL_STOP);
+        let out = i.click(x, y, &t);
+        assert!(!matches!(out, ClickOutcome::Timer(_)), "{out:?}");
+        let (cx, cy) = center(&i);
+        assert_eq!(i.click(cx, cy, &t), ClickOutcome::DjDismiss);
+        // The app dismisses it and the alert is back with its buttons.
+        i.set_dj(DjUi::default(), &t);
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        settle(&mut i, &t);
+        let (x, y) = view_at(layout::ALERT_W, layout::AL_STOP);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Timer(TimerAction::Stop));
+        // A progress under the alert waits: the alert's answer shows it.
+        i.set_dj(DJ_PROGRESS, &t);
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        i.set_timer(TimerUi::default(), &t);
+        assert_eq!(i.state(), IslandState::DjProgress);
     }
 }
