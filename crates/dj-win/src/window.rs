@@ -98,6 +98,8 @@ pub enum Event {
     /// [`crate::tile`]). Raised by an out-of-context WinEvent hook, so it arrives only
     /// while the loop is pumping messages, which a thread message from the hook ensures.
     TileMove(crate::tile::MoveEvent),
+    /// Input on the Tile window picker's window (see [`crate::assist`]).
+    Assist(crate::assist::AssistInput),
 }
 
 pub trait Handler {
