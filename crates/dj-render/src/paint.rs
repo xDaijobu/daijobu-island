@@ -53,6 +53,10 @@ pub struct Frame<'a> {
     pub settings: &'a SettingsView,
     /// The Tile panel's content, drawn while `view.layers.tile` is up.
     pub tile: Option<crate::tile::TilePanel<'a>>,
+    /// The dj CLI's pills, drawn while `view.layers.dj_progress` / `dj_notice` are up. The
+    /// app keeps a pill's content until it has faded out.
+    pub dj_progress: Option<crate::dj::DjProgressPill<'a>>,
+    pub dj_notice: Option<crate::dj::DjNoticePill<'a>>,
     /// Pill or notch (config `[island] style`): the shape of the island's body.
     pub island_style: IslandStyle,
 }
@@ -214,6 +218,8 @@ impl Painter {
         let snap_op = smoothstep(0.35, 1.0, lay.snap) * not_osd;
         let settings_op = smoothstep(0.35, 1.0, lay.settings) * not_osd;
         let tile_op = smoothstep(0.35, 1.0, lay.tile) * not_osd;
+        let dj_progress_op = smoothstep(0.35, 1.0, lay.dj_progress) * not_osd;
+        let dj_notice_op = smoothstep(0.35, 1.0, lay.dj_notice) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -258,6 +264,16 @@ impl Painter {
         if alert_op > 0.01 {
             begin_layer(canvas, &rect, alert_op, center, s);
             self.timer_alert(canvas, f, &rect);
+            canvas.restore();
+        }
+        if let Some(p) = f.dj_progress.as_ref().filter(|_| dj_progress_op > 0.01) {
+            begin_layer(canvas, &rect, dj_progress_op, center, s);
+            crate::dj::paint_progress(canvas, &mut self.fonts, t, rect, s, p);
+            canvas.restore();
+        }
+        if let Some(p) = f.dj_notice.as_ref().filter(|_| dj_notice_op > 0.01) {
+            begin_layer(canvas, &rect, dj_notice_op, center, s);
+            crate::dj::paint_notice(canvas, &mut self.fonts, t, rect, s, p);
             canvas.restore();
         }
         if snap_op > 0.01 {

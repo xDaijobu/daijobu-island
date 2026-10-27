@@ -147,6 +147,7 @@ crates/dj-win     window, tray, hotkeys, autostart, sound
 crates/dj-music   YouTube Music engine (hidden WebView2)
 crates/dj-vitals  CPU, RAM, disk, net, disk I/O, battery, top processes
 crates/dj-sweep   disk cleanup: scanners, protected-path guard, recycle, operations log
+crates/dj-ipc     the dj CLI: the island's named pipe, its client, and dj.exe
 ```
 
 More crates (capture, clipboard, tiling, …) are added as their stages start. [`AGENTS.md`](AGENTS.md) describes the conventions and the stage-by-stage workflow.

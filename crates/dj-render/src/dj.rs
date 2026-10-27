@@ -22,6 +22,7 @@
 use crate::fonts::{Fonts, Weight};
 use crate::paint::{col, draw_text, fill_paint, fit, stroke_paint, text_width};
 use dj_core::color::Rgb;
+use dj_core::layout;
 use dj_core::theme::ResolvedTokens;
 use skia_safe::{Canvas, ClipOp, Font, Paint, PathBuilder, RRect, Rect};
 
@@ -40,11 +41,11 @@ pub struct DjNoticePill<'a> {
     pub message: &'a str,
 }
 
-// Logical px. The two widths and the height are `layout::DJ_PROGRESS_*` and
-// `layout::DJ_NOTICE_*` (part B); they are repeated here so this module stands alone.
-const PROGRESS_W: f32 = 300.0;
-const NOTICE_W: f32 = 360.0;
-const PILL_H: f32 = 36.0;
+// Logical px. Both pills share a height.
+const PROGRESS_W: f32 = layout::DJ_PROGRESS_W;
+const NOTICE_W: f32 = layout::DJ_NOTICE_W;
+const PILL_H: f32 = layout::DJ_PROGRESS_H;
+const _: () = assert!(layout::DJ_PROGRESS_H == layout::DJ_NOTICE_H);
 /// Left and right padding, as in the plan's `dev` mock-up.
 const PAD: f32 = 14.0;
 /// The lamp and its halo (radius, alpha), the same as the idle pill's lamp.
@@ -215,8 +216,6 @@ impl ProgressGeom {
 ///
 /// The content is anchored at `rect`'s horizontal centre and top at the pill's final size
 /// (300 x 36 logical px) and clipped to `rect`.
-// Hooked into `Painter::paint` by the wiring step; until then only the tests call it.
-#[allow(dead_code)]
 pub(crate) fn paint_progress(
     canvas: &Canvas,
     fonts: &mut Fonts,
@@ -313,8 +312,6 @@ impl NoticeGeom {
 /// The notice pill inside `rect` (device px, the pill's current rect): a lamp in
 /// `highlight` and the message (title face, 12, cut to fit), the pair centred. Anchored and
 /// clipped like [`paint_progress`] (360 x 36 logical px at its final size).
-// Hooked into `Painter::paint` by the wiring step; until then only the tests call it.
-#[allow(dead_code)]
 pub(crate) fn paint_notice(
     canvas: &Canvas,
     fonts: &mut Fonts,

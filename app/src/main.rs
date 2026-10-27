@@ -3,6 +3,7 @@
 
 mod app;
 mod chime;
+mod dj;
 mod notch;
 mod preview_store;
 mod previews;

@@ -2,6 +2,7 @@
 //! Win32 events.
 
 use crate::chime::SystemChime;
+use crate::dj::{self as djcli, Activity, Arm, Effect, TIMER_DJ};
 use crate::notch::{self, Edges};
 use crate::preview_store::Store;
 use crate::previews::{self, Model, Previews, TIMER_SNAP_STACK};
@@ -20,6 +21,7 @@ use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
 use dj_core::config::{AnnotateConfig, Config, IslandStyle, SnapHotkey};
+use dj_core::dj::DjView;
 use dj_core::features::FEATURES;
 use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, SnapAction, TimerAction};
 use dj_core::layout;
@@ -36,8 +38,9 @@ use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{
-    AssistCard, AssistScene, AssistSurface, EditScene, Frame, MusicFrame, RenderError, Renderer,
-    SnapFrame, SnapOverlay, SnapScene, TextMetrics, TilePanel, TileThumb, ZoneOverlay, ZoneScene,
+    AssistCard, AssistScene, AssistSurface, DjNoticePill, DjProgressPill, EditScene, Frame,
+    MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene, TextMetrics, TilePanel,
+    TileThumb, ZoneOverlay, ZoneScene,
 };
 use dj_win::assist::{AssistInput, Thumbnail};
 use dj_win::overlay::{self, SnapInput};
@@ -175,6 +178,12 @@ pub struct App {
     tile_notice_at: Option<Instant>,
     /// The window picker's window while it fills a layout.
     assist_win: Option<AssistWin>,
+    /// The dj CLI: the pills' activity, the pipe server and its requests, and what the
+    /// pills last showed (kept while one fades out).
+    dj: Activity,
+    dj_server: Option<dj_ipc::Server>,
+    dj_rx: Option<Receiver<dj_ipc::Incoming>>,
+    dj_shown: DjView,
 }
 
 /// The window picker on the zone it fills: its window, surface, live thumbnails and input.
@@ -339,6 +348,10 @@ impl App {
             tile_retry_at: None,
             tile_notice_at: None,
             assist_win: None,
+            dj: Activity::default(),
+            dj_server: None,
+            dj_rx: None,
+            dj_shown: DjView::default(),
         };
         app.relayout();
         app.install_shell_integration();
@@ -374,6 +387,16 @@ impl App {
             if !window::register_hotkey(self.hwnd, *id, window::MOD_CTRL_ALT, *vk) {
                 storage::log(&format!("tile: {name} is already taken by another app"));
             }
+        }
+        // dj CLI: scripts reach the island through a pipe only this user and session can
+        // open; its thread wakes the loop for each request.
+        let raw = self.hwnd.0 as isize;
+        match dj_ipc::Server::start(Box::new(move || window::wake(raw))) {
+            Ok((server, rx)) => {
+                self.dj_server = Some(server);
+                self.dj_rx = Some(rx);
+            }
+            Err(e) => storage::log(&format!("dj: {e}")),
         }
         system::install_topmost_hook(self.hwnd);
         system::watch_dir(self.hwnd, &storage::themes_dir());
@@ -1344,6 +1367,54 @@ impl App {
         }
     }
 
+    // ---- dj CLI ----
+
+    /// Answers the requests the pipe thread handed over. Each reply goes out before its
+    /// theme switch or snap, so the script isn't held up by them.
+    fn drain_dj(&mut self) {
+        let Some(rx) = self.dj_rx.as_ref() else {
+            return;
+        };
+        let pending: Vec<dj_ipc::Incoming> = rx.try_iter().collect();
+        if pending.is_empty() {
+            return;
+        }
+        for incoming in pending {
+            let cx = djcli::Context {
+                themes: &self.registry,
+                current: &self.theme_id,
+                snapping: self.overlay.is_some() || self.snap_pending,
+            };
+            let (reply, effect) = self
+                .dj
+                .handle(incoming.request.clone(), &cx, Instant::now());
+            incoming.reply(reply);
+            match effect {
+                Effect::None => {}
+                Effect::Theme(id) => self.set_theme(&id),
+                Effect::Snap => self.request_snap(),
+            }
+        }
+        self.apply_dj();
+    }
+
+    /// Pushes which pills are up into the island, which may change its state, and redraws
+    /// (a percent or a message may have changed).
+    fn apply_dj(&mut self) {
+        let tokens = self.anim.current().clone();
+        self.island.set_dj(self.dj.ui(), &tokens);
+        self.dirty = true;
+    }
+
+    /// Arms or kills the one-shot `TIMER_DJ` for the next timeout.
+    fn sync_dj(&mut self) {
+        match self.dj.plan_timer(Instant::now()) {
+            Arm::Set(ms) => window::set_timer(self.hwnd, TIMER_DJ, ms),
+            Arm::Kill => window::kill_timer(self.hwnd, TIMER_DJ),
+            Arm::Keep => {}
+        }
+    }
+
     /// Fires at the next minute boundary so the clock never needs polling.
     fn arm_clock_timer(&self) {
         let (_, _, sec) = system::local_time();
@@ -1397,6 +1468,8 @@ impl App {
             IslandState::Idle
                 | IslandState::MusicCompact
                 | IslandState::TimerCompact
+                | IslandState::DjProgress
+                | IslandState::DjNotice
                 | IslandState::TilePanel
         );
         let summon = if self.visible && self.overlay.is_none() && resting {
@@ -2222,6 +2295,9 @@ impl App {
         // Give the strip back first, or the work area stays short after we're gone.
         appbar::release(self.hwnd);
         self.reserved = None;
+        // Scripts get "not running" from here on.
+        self.dj_server = None;
+        self.dj_rx = None;
         self.end_snap(End::Cancel);
         self.previews.shutdown();
         dj_win::tile::uninstall_move_hook();
@@ -2319,6 +2395,10 @@ impl Handler for App {
                     }
                     ClickOutcome::Snap(action) => self.snap_action(action),
                     ClickOutcome::Timer(action) => self.timer_action(action),
+                    ClickOutcome::DjDismiss => {
+                        self.dj.dismiss_notice();
+                        self.apply_dj();
+                    }
                     ClickOutcome::Settings(action) => self.settings_action(action),
                     // A clean that is still running keeps its view; otherwise preview afresh.
                     ClickOutcome::OpenSweep if !self.cleaning => self.start_preview(),
@@ -2474,9 +2554,17 @@ impl Handler for App {
                 self.tiler.notice_done(Instant::now());
                 self.dirty = true;
             }
+            // One-shot, like the timer's: `sync_dj` arms it again if something is still due.
+            Event::Timer(TIMER_DJ) => {
+                window::kill_timer(self.hwnd, TIMER_DJ);
+                if self.dj.fired(Instant::now()) {
+                    self.apply_dj();
+                }
+            }
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => {
+                self.drain_dj();
                 self.drain_art();
                 // A card saved the thumb's shot: the thumb reads "open" too.
                 let saved = self.previews.drain(Instant::now());
@@ -2512,6 +2600,7 @@ impl Handler for App {
         self.sync_timer();
         self.sync_snap();
         self.sync_tile();
+        self.sync_dj();
     }
 
     fn wants_frame(&self) -> bool {
@@ -2605,6 +2694,18 @@ impl Handler for App {
             header: dj_core::tile::PANEL_HEADER,
             footer_rect: dj_core::tile::PANEL_FOOTER,
         });
+        let layers = (view.layers.dj_progress, view.layers.dj_notice);
+        djcli::hold(&mut self.dj_shown, self.dj.view(), layers);
+        let dj_progress = self.dj_shown.progress.as_ref().map(|p| DjProgressPill {
+            label: &p.label,
+            percent: p.percent,
+            done: p.done.as_deref(),
+        });
+        let dj_notice = self
+            .dj_shown
+            .notice
+            .as_deref()
+            .map(|message| DjNoticePill { message });
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
             return;
@@ -2625,6 +2726,8 @@ impl Handler for App {
             snap: self.snap_frame,
             settings: &settings,
             tile: tile_panel,
+            dj_progress,
+            dj_notice,
             island_style: self.config.island.style(),
         };
         match renderer.render(&frame) {
