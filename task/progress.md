@@ -617,7 +617,13 @@ With no `[island]` in the config, the island starts as a notch flush with the to
   - **Ctrl+Alt+1‥9**: the foreground window goes to zone N of its monitor's active layout (no-op if the layout has fewer zones).
   - **Ctrl+Alt+←→↑↓**: to the neighbouring zone in that direction (nearest zone centre in the half-plane); a window not in a zone goes to the zone nearest its centre.
   - `[tile] number_keys = true`, `arrow_keys = true` turn each group off.
-- [x] **Home tile.** `tile` becomes `Available` (6 of 12). A click opens the Tile panel for the **last active window** (the foreground app; the island never takes activation). Clicking a cell places it on the island's monitor. An empty click collapses the panel, as with the other panels. No scenes row yet.
+- [x] **Home tile.** `tile` becomes `Available` (6 of 12). A click opens the Tile panel. An empty click collapses the panel, as with the other panels. No scenes row yet.
+- [ ] **Window picker (assist), added with the user on 2026-10-27.** Clicking a cell in the Home-opened panel no longer moves the app in front; it starts filling that layout (which becomes the monitor's active one), Snap Assist style:
+  - The clicked zone is lit on the island's monitor and a picker window covers exactly that zone: a header ("pick a window · zone 1 of 2"), a grid of cards for the open windows (icon, title, a **live DWM thumbnail**), newest first like Alt-Tab, and a footer with the keys.
+  - Click a card (or arrows + Enter) → that window fills the zone; the picker moves on to the next zone in reading order (the clicked zone first), without the windows already picked. After the last zone it closes and the picked windows come to the front.
+  - Minimized windows are listed and restored when picked (icon + title only if Windows has no thumbnail for them). Elevated windows carry an "admin" badge; picking one leaves it alone and the footer says "can't move an admin window".
+  - Esc, a click outside the zone (the picker loses focus), hiding the island or a snap cancel the rest; zones already filled stay filled.
+  - Only from the Home panel; dragging to the island and the hotkeys work as before.
 - [x] **Placement.**
   - Only normal top-level windows: visible, not minimized, not cloaked, with a caption or a sizing border, not a tool window, not ours. Maximized windows are restored first.
   - `SetWindowPos` corrected by the invisible resize border (`DWMWA_EXTENDED_FRAME_BOUNDS` vs `GetWindowRect`), so the visible frame matches the zone.
@@ -641,7 +647,7 @@ Scenes (12b), Boot Scene (12c), admin windows (12d), a visual layout editor, zon
 2. Drag the same window out and drop it in the middle of the screen: it gets its old size back.
 3. On any monitor, Shift+drag shows the active layout's zones; dropping in one places the window; releasing Shift hides them.
 4. Ctrl+Alt+1, 2, 3 cycle a window through the zones; Ctrl+Alt+→ / ← move it to the neighbour. With `50/50` active, Ctrl+Alt+3 does nothing.
-5. Click the Home tile with Notepad active: the panel opens; clicking a cell moves Notepad.
+5. Click the Home tile, then the left cell of `50/50`: the left half lights up with cards of the open windows (live previews); pick one → it fills the left half and the picker moves to the right half; pick another → both halves filled, picker gone. Esc halfway leaves the first one placed.
 6. Try Task Manager (elevated): nothing moves and the panel says "can't move an admin window".
 7. 100 % and 150 % DPI, the ultrawide, a second monitor if available; idle CPU ≈ 0 when nothing is being dragged.
 
