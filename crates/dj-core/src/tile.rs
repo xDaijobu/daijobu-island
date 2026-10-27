@@ -17,9 +17,9 @@ use crate::snap::IRect;
 use std::collections::{BTreeMap, HashMap};
 use toml::Value;
 
-/// The Tile panel's size in logical px (mirrors `layout::TILE_W` / `TILE_H`).
-pub const PANEL_W: f32 = 400.0;
-pub const PANEL_H: f32 = 168.0;
+/// The Tile panel's size in logical px (the island's `layout::TILE_PANEL_W` / `TILE_PANEL_H`).
+pub const PANEL_W: f32 = crate::layout::TILE_PANEL_W;
+pub const PANEL_H: f32 = crate::layout::TILE_PANEL_H;
 /// Most zones in one layout.
 pub const MAX_ZONES: usize = 9;
 /// Custom layouts the picker shows (after the presets).

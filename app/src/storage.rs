@@ -79,6 +79,11 @@ pub fn read_user_themes() -> Vec<(String, String)> {
     out
 }
 
+/// `layouts.toml`: the user's custom Tile layouts. Empty if there is none.
+pub fn read_layouts() -> String {
+    fs::read_to_string(data_dir().join("layouts.toml")).unwrap_or_default()
+}
+
 pub fn log(msg: &str) {
     dj_win::system::log(msg);
 }

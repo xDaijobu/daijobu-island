@@ -12,6 +12,10 @@ use crate::snap::{
 };
 use crate::storage;
 use crate::sweep::{Job, Msg, ScanId, Sweeper};
+use crate::tile::{
+    IslandGeo, SystemWindows, Tiler, HOTKEY_DOWN, HOTKEY_LEFT, HOTKEY_RIGHT, HOTKEY_UP,
+    HOTKEY_ZONE_1, HOTKEY_ZONE_9, POLL_MS, TIMER_TILE_NOTICE, TIMER_TILE_POLL, TIMER_TILE_RETRY,
+};
 use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
@@ -32,9 +36,10 @@ use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{
     EditScene, Frame, MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene,
-    TextMetrics,
+    TextMetrics, TilePanel, TileThumb, ZoneOverlay, ZoneScene,
 };
 use dj_win::overlay::{self, SnapInput};
+use dj_win::tile::MoveEvent;
 use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
 use dj_win::{appbar, hook, system, volume, window, Event, Handler, HICON, HWND};
 use std::path::PathBuf;
@@ -157,7 +162,44 @@ pub struct App {
     previews: Previews,
     /// The island window's desktop position (device px).
     win_pos: (i32, i32),
+    /// Tile: window zones, the zone overlay while a move shows one, and the timers.
+    tiler: Tiler,
+    tile_overlay: Option<TileOverlay>,
+    /// The island's Tile panel was opened for Tile (so Tile closes it again).
+    tile_panel: bool,
+    tile_poll_armed: bool,
+    /// The one-shot retry and notice timers, by when they fire.
+    tile_retry_at: Option<Instant>,
+    tile_notice_at: Option<Instant>,
 }
+
+/// The zone overlay on one monitor while a move shows it: its window and its surface.
+struct TileOverlay {
+    hwnd: HWND,
+    /// Dropped before the window is destroyed.
+    surface: Option<ZoneOverlay>,
+    monitor: IRect,
+    shown: bool,
+    /// What it last drew, so a poll redraws only on change.
+    drawn: Option<(Vec<IRect>, Option<usize>)>,
+}
+
+/// The zone keys: Ctrl+Alt+1..9, then the arrows.
+const TILE_KEYS: [(i32, u32, &str); 13] = [
+    (HOTKEY_ZONE_1, 0x31, "Ctrl+Alt+1"),
+    (HOTKEY_ZONE_1 + 1, 0x32, "Ctrl+Alt+2"),
+    (HOTKEY_ZONE_1 + 2, 0x33, "Ctrl+Alt+3"),
+    (HOTKEY_ZONE_1 + 3, 0x34, "Ctrl+Alt+4"),
+    (HOTKEY_ZONE_1 + 4, 0x35, "Ctrl+Alt+5"),
+    (HOTKEY_ZONE_1 + 5, 0x36, "Ctrl+Alt+6"),
+    (HOTKEY_ZONE_1 + 6, 0x37, "Ctrl+Alt+7"),
+    (HOTKEY_ZONE_1 + 7, 0x38, "Ctrl+Alt+8"),
+    (HOTKEY_ZONE_9, 0x39, "Ctrl+Alt+9"),
+    (HOTKEY_LEFT, 0x25, "Ctrl+Alt+Left"),
+    (HOTKEY_RIGHT, 0x27, "Ctrl+Alt+Right"),
+    (HOTKEY_UP, 0x26, "Ctrl+Alt+Up"),
+    (HOTKEY_DOWN, 0x28, "Ctrl+Alt+Down"),
+];
 
 impl App {
     pub fn new(hwnd: HWND, config: Config, exe: PathBuf) -> Self {
@@ -205,6 +247,11 @@ impl App {
             hwnd,
             &tokens,
         );
+        let (custom, errors) = dj_core::tile::parse_custom(&storage::read_layouts());
+        for e in errors {
+            storage::log(&format!("layouts.toml: {e}"));
+        }
+        let tiler = Tiler::new(Box::new(SystemWindows), config.tile.clone(), &custom);
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -259,6 +306,12 @@ impl App {
             reserved: None,
             previews,
             win_pos: (0, 0),
+            tiler,
+            tile_overlay: None,
+            tile_panel: false,
+            tile_poll_armed: false,
+            tile_retry_at: None,
+            tile_notice_at: None,
         };
         app.relayout();
         app.install_shell_integration();
@@ -285,6 +338,16 @@ impl App {
             storage::log("Ctrl+Alt+T is already taken by another app");
         }
         self.register_snap_hotkey();
+        // Tile: window moves of other apps, and the zone keys `[tile]` turns on.
+        if !dj_win::tile::install_move_hook() {
+            storage::log("tile: cannot watch window moves");
+        }
+        let wanted = self.tiler.hotkeys();
+        for (id, vk, name) in TILE_KEYS.iter().filter(|k| wanted.contains(&k.0)) {
+            if !window::register_hotkey(self.hwnd, *id, window::MOD_CTRL_ALT, *vk) {
+                storage::log(&format!("tile: {name} is already taken by another app"));
+            }
+        }
         system::install_topmost_hook(self.hwnd);
         system::watch_dir(self.hwnd, &storage::themes_dir());
         self.install_volume();
@@ -1284,6 +1347,209 @@ impl App {
         self.visible && (self.dirty || self.island.is_animating() || self.anim.animating())
     }
 
+    // ---- Tile ----
+
+    /// Where the island is for a window move, desktop px: the summon area under its
+    /// current lower edge (80 logical px tall, its width + 40 on each side) and the Tile
+    /// panel's final rect. No summon area while the island is hidden or a snap is up.
+    fn tile_geo(&self) -> IslandGeo {
+        let s = self.scale;
+        let px = |v: f32| (v * s).round() as i32;
+        let pill = self.island.pill_rect();
+        let cx = self.win_pos.0 + self.win_px.0 / 2;
+        let summon = if self.visible && self.overlay.is_none() {
+            let half = px(pill.w / 2.0 + 40.0);
+            IRect::new(
+                cx - half,
+                self.win_pos.1 + px(pill.y + pill.h),
+                2 * half,
+                px(80.0),
+            )
+        } else {
+            IRect::new(0, 0, 0, 0)
+        };
+        IslandGeo {
+            summon,
+            panel: IRect::new(
+                cx - px(layout::TILE_PANEL_W / 2.0),
+                self.win_pos.1 + px(layout::TOP_MARGIN),
+                px(layout::TILE_PANEL_W),
+                px(layout::TILE_PANEL_H),
+            ),
+            scale: s,
+        }
+    }
+
+    /// A window-logical point in the Tile panel's own px (the island's `view_local`).
+    fn tile_local(lx: f32, ly: f32) -> (f32, f32) {
+        let (win_w, _) = layout::window_size();
+        (
+            lx - (win_w - layout::TILE_PANEL_W) / 2.0,
+            ly - layout::TOP_MARGIN,
+        )
+    }
+
+    /// Arms a one-shot timer for `want`, leaving one already armed for about that time
+    /// alone (re-arming on every event would keep it from firing).
+    fn arm_once(
+        hwnd: HWND,
+        id: usize,
+        armed: &mut Option<Instant>,
+        want: Option<Instant>,
+        now: Instant,
+    ) {
+        match want {
+            Some(t) if armed.is_none_or(|a| a.max(t) - a.min(t) > Duration::from_millis(5)) => {
+                let ms = t.saturating_duration_since(now).as_millis() as u32;
+                window::set_timer(hwnd, id, ms.saturating_add(1));
+                *armed = Some(t);
+            }
+            None if armed.is_some() => {
+                window::kill_timer(hwnd, id);
+                *armed = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Keeps the island's Tile panel, the zone overlay and the Tile timers in step with
+    /// `tiler`, and writes `[tile]` when a monitor's active layout changed.
+    fn sync_tile(&mut self) {
+        let now = Instant::now();
+        for e in self.tiler.take_errors() {
+            storage::log(&e);
+        }
+        if let Some(tile) = self.tiler.take_config() {
+            self.config.tile = tile;
+            storage::save_config(&self.config);
+        }
+        // The cursor is polled only while a window moves.
+        let polling = self.tiler.polling();
+        if polling != self.tile_poll_armed {
+            if polling {
+                window::set_timer(self.hwnd, TIMER_TILE_POLL, POLL_MS);
+            } else {
+                window::kill_timer(self.hwnd, TIMER_TILE_POLL);
+            }
+            self.tile_poll_armed = polling;
+        }
+        let (retry, notice) = self.tiler.next_timer(now);
+        Self::arm_once(
+            self.hwnd,
+            TIMER_TILE_RETRY,
+            &mut self.tile_retry_at,
+            retry.map(|d| now + d),
+            now,
+        );
+        Self::arm_once(
+            self.hwnd,
+            TIMER_TILE_NOTICE,
+            &mut self.tile_notice_at,
+            notice.map(|d| now + d),
+            now,
+        );
+
+        // Something else took the island over (the snap thumb, a hidden island).
+        if self.tile_panel && !self.island.tile_open() {
+            self.tiler.panel_closed();
+            self.tile_panel = false;
+        }
+        let want = self.tiler.panel_wanted(now) && self.visible && self.overlay.is_none();
+        if want && !self.island.tile_open() {
+            let tokens = self.anim.current().clone();
+            self.island.open_tile(&tokens);
+            self.tile_panel = true;
+            self.dirty = true;
+        } else if !want && self.tile_panel {
+            let tokens = self.anim.current().clone();
+            self.island.collapse(&tokens);
+            self.tile_panel = false;
+            self.dirty = true;
+        }
+        self.sync_tile_overlay();
+    }
+
+    /// The zone overlay: made on the target monitor when a move shows zones, redrawn when
+    /// they change, gone when the move ends.
+    fn sync_tile_overlay(&mut self) {
+        let Some(want) = self.tiler.overlay() else {
+            self.destroy_tile_overlay();
+            return;
+        };
+        if self
+            .tile_overlay
+            .as_ref()
+            .is_some_and(|o| o.monitor != want.monitor)
+        {
+            self.destroy_tile_overlay();
+        }
+        if self.tile_overlay.is_none() {
+            let m = want.monitor;
+            let hwnd = match dj_win::tile::create_overlay(m.x, m.y, m.w, m.h) {
+                Ok(h) => h,
+                Err(e) => {
+                    storage::log(&format!("tile: cannot create the zone overlay: {e}"));
+                    return;
+                }
+            };
+            let surface = match ZoneOverlay::new(hwnd.0 as isize, m.w as u32, m.h as u32) {
+                Ok(s) => s,
+                Err(e) => {
+                    storage::log(&format!("tile: zone overlay renderer: {e}"));
+                    dj_win::tile::destroy_overlay(hwnd);
+                    return;
+                }
+            };
+            self.tile_overlay = Some(TileOverlay {
+                hwnd,
+                surface: Some(surface),
+                monitor: m,
+                shown: false,
+                drawn: None,
+            });
+        }
+        let Some(o) = self.tile_overlay.as_mut() else {
+            return;
+        };
+        let key = (want.zones.clone(), want.highlight);
+        if o.drawn.as_ref() != Some(&key) {
+            let zones: Vec<layout::Rect> = want
+                .zones
+                .iter()
+                .map(|z| {
+                    layout::Rect::new(
+                        (z.x - o.monitor.x) as f32,
+                        (z.y - o.monitor.y) as f32,
+                        z.w as f32,
+                        z.h as f32,
+                    )
+                })
+                .collect();
+            let scene = ZoneScene {
+                tokens: self.anim.current(),
+                scale: want.scale,
+                zones: &zones,
+                highlight: want.highlight,
+            };
+            if let Some(Err(e)) = o.surface.as_mut().map(|s| s.render(&scene)) {
+                storage::log(&format!("tile: zone overlay render: {e}"));
+            }
+            o.drawn = Some(key);
+        }
+        if !o.shown {
+            // Under the island (both topmost), so the zones never cover the Tile panel.
+            dj_win::tile::show_overlay_below(o.hwnd, self.hwnd);
+            o.shown = true;
+        }
+    }
+
+    fn destroy_tile_overlay(&mut self) {
+        if let Some(mut o) = self.tile_overlay.take() {
+            o.surface = None;
+            dj_win::tile::destroy_overlay(o.hwnd);
+        }
+    }
+
     /// The island's centre and lower edge, desktop px: the Snap preview stack hangs
     /// below it and follows it as panels open and close.
     fn stack_anchor(&self) -> (i32, i32) {
@@ -1605,6 +1871,11 @@ impl App {
         self.reserved = None;
         self.end_snap(End::Cancel);
         self.previews.shutdown();
+        dj_win::tile::uninstall_move_hook();
+        self.destroy_tile_overlay();
+        for (id, _, _) in TILE_KEYS {
+            window::unregister_hotkey(self.hwnd, id);
+        }
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ALT);
         self.engine = None;
@@ -1674,6 +1945,18 @@ impl Handler for App {
                         self.island.open_timer(&tokens);
                     }
                     ClickOutcome::Open(i) if FEATURES[i].id == "snap" => self.request_snap(),
+                    // The panel is for the app in front (the island never takes focus).
+                    ClickOutcome::Open(i) if FEATURES[i].id == "tile" => {
+                        self.tiler.open_home();
+                        self.island.open_tile(&tokens);
+                        self.tile_panel = true;
+                    }
+                    // A cell places that window; anywhere else just closes the panel.
+                    ClickOutcome::Tile { x, y } => {
+                        self.tiler.panel_click(x, y, Instant::now());
+                        self.island.collapse(&tokens);
+                        self.tile_panel = false;
+                    }
                     ClickOutcome::Snap(action) => self.snap_action(action),
                     ClickOutcome::Timer(action) => self.timer_action(action),
                     ClickOutcome::Settings(action) => self.settings_action(action),
@@ -1691,6 +1974,12 @@ impl Handler for App {
                 let (lx, ly) = self.island_point(x, y);
                 if self.island.hover(lx, ly) {
                     self.dirty = true;
+                }
+                if self.island.tile_open() {
+                    let (px, py) = Self::tile_local(lx, ly);
+                    if self.tiler.home_hover(px, py) {
+                        self.dirty = true;
+                    }
                 }
             }
             Event::Drag { x, y } => {
@@ -1738,6 +2027,9 @@ impl Handler for App {
                 self.request_snap()
             }
             Event::Hotkey(HOTKEY_SNAP_ESC) => self.snap_escape(),
+            Event::Hotkey(id @ HOTKEY_ZONE_1..=HOTKEY_DOWN) => {
+                self.tiler.hotkey(id, Instant::now());
+            }
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
             Event::Previews(input) => self.previews.input(input, Instant::now()),
@@ -1748,6 +2040,7 @@ impl Handler for App {
                 // The monitors changed under the frozen frames: drop the snap.
                 self.end_snap(End::Cancel);
                 self.relayout();
+                self.tiler.refresh_monitors();
             }
             Event::ThemesChanged => self.reload_themes(),
             Event::Timer(TIMER_CLOCK) => {
@@ -1795,6 +2088,23 @@ impl Handler for App {
                 }
             }
             Event::Timer(TIMER_SNAP_STACK) => self.previews.timer(Instant::now()),
+            Event::Timer(TIMER_TILE_POLL) => {
+                let geo = self.tile_geo();
+                if self.tiler.poll(geo) {
+                    self.dirty = true;
+                }
+            }
+            Event::Timer(TIMER_TILE_RETRY) => {
+                window::kill_timer(self.hwnd, TIMER_TILE_RETRY);
+                self.tile_retry_at = None;
+                self.tiler.retry(Instant::now());
+            }
+            Event::Timer(TIMER_TILE_NOTICE) => {
+                window::kill_timer(self.hwnd, TIMER_TILE_NOTICE);
+                self.tile_notice_at = None;
+                self.tiler.notice_done(Instant::now());
+                self.dirty = true;
+            }
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => {
@@ -1818,7 +2128,12 @@ impl Handler for App {
                 self.sync_appbar(true);
             }
             Event::AppBarMoved => self.sync_appbar(true),
-            Event::TileMove(_) => {}
+            Event::TileMove(MoveEvent::Start(w)) => self.tiler.move_start(w),
+            Event::TileMove(MoveEvent::End(w)) => {
+                let geo = self.tile_geo();
+                self.tiler.move_end(w, geo, Instant::now());
+                self.dirty = true;
+            }
             Event::VitalsReady => self.drain_vitals(),
             Event::SweepReady => self.drain_sweep(),
         }
@@ -1827,6 +2142,7 @@ impl Handler for App {
         self.sync_sweep();
         self.sync_timer();
         self.sync_snap();
+        self.sync_tile();
     }
 
     fn wants_frame(&self) -> bool {
@@ -1899,6 +2215,27 @@ impl Handler for App {
         let estimate = self.estimate();
         let timer = self.timer.view(now);
         let settings = self.settings_view();
+        // The Tile panel's content, only while its layer shows.
+        let tile = (view.layers.tile > 0.0).then(|| self.tiler.panel(now));
+        let tile_thumbs: Vec<TileThumb> = tile.as_ref().map_or_else(Vec::new, |p| {
+            p.thumbs
+                .iter()
+                .map(|t| TileThumb {
+                    rect: t.rect,
+                    cells: &t.cells,
+                    active: t.layout == p.active,
+                    hover: p.hover.filter(|&(l, _)| l == t.layout).map(|(_, z)| z),
+                })
+                .collect()
+        });
+        let tile_panel = tile.as_ref().map(|p| TilePanel {
+            title: p.title,
+            monitor: &p.monitor,
+            thumbs: &tile_thumbs,
+            footer: Some(p.footer),
+            header: dj_core::tile::PANEL_HEADER,
+            footer_rect: dj_core::tile::PANEL_FOOTER,
+        });
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
             return;
@@ -1918,6 +2255,7 @@ impl Handler for App {
             timer: &timer,
             snap: self.snap_frame,
             settings: &settings,
+            tile: tile_panel,
             island_style: self.config.island.style(),
         };
         match renderer.render(&frame) {

@@ -9,6 +9,7 @@ mod previews;
 mod snap;
 mod storage;
 mod sweep;
+mod tile;
 mod timer;
 mod vitals;
 
