@@ -3,6 +3,7 @@
 use crate::snap_edit::{ColorChoice, Prefs, Rgba, Size, Tool, DEFAULT_CUSTOM};
 use crate::timer::{Settings, MAX_EVERY, MAX_MIN};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -18,6 +19,8 @@ pub struct Config {
     pub sweep: SweepConfig,
     pub timer: TimerConfig,
     pub snap: SnapConfig,
+    #[serde(deserialize_with = "lenient_tile")]
+    pub tile: TileConfig,
 }
 
 /// How the island sits at the top of the screen. Only the drawn shape differs: the pill
@@ -406,6 +409,132 @@ impl SnapConfig {
     }
 }
 
+/// The default `[tile] gap` (logical px) and the range it is clamped to.
+pub const TILE_GAP: f32 = 8.0;
+pub const TILE_GAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
+
+/// `[tile]` section. Every field falls back to its default on its own when its value has
+/// the wrong type, so a stray value never costs the rest of the file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TileConfig {
+    /// Logical px between zones and around the screen edge (× the monitor's scale).
+    /// Clamped to 0..=48; an integer or a float.
+    #[serde(deserialize_with = "lenient_gap", serialize_with = "short_f32")]
+    pub gap: f32,
+    /// A window dropped outside any zone gets back the size it had before the app put it
+    /// in one.
+    #[serde(deserialize_with = "lenient_true")]
+    pub restore_size: bool,
+    /// Ctrl+Alt+1..9 put the foreground window in that zone.
+    #[serde(deserialize_with = "lenient_true")]
+    pub number_keys: bool,
+    /// Ctrl+Alt+arrows move it to the neighbouring zone.
+    #[serde(deserialize_with = "lenient_true")]
+    pub arrow_keys: bool,
+    /// `[tile.monitors]`: a monitor's device name (`\\.\DISPLAY1`) to its active layout's
+    /// name. Written by the app when a zone is picked from another layout. Entries whose
+    /// value is not a string are dropped. Keep this last: TOML tables follow plain values.
+    #[serde(deserialize_with = "lenient_monitors")]
+    pub monitors: BTreeMap<String, String>,
+}
+
+impl Default for TileConfig {
+    fn default() -> Self {
+        Self {
+            gap: TILE_GAP,
+            restore_size: true,
+            number_keys: true,
+            arrow_keys: true,
+            monitors: BTreeMap::new(),
+        }
+    }
+}
+
+/// A whole `[tile]` value of the wrong type (`tile = 5`) reads as the defaults.
+fn lenient_tile<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TileConfig, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Tile(TileConfig),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Lenient::deserialize(d)? {
+        Lenient::Tile(t) => t,
+        Lenient::Other(_) => TileConfig::default(),
+    })
+}
+
+/// An integer or a float, clamped to `TILE_GAP_RANGE`; anything else (and NaN) is the
+/// default.
+fn lenient_gap<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Int(i64),
+        Float(f64),
+        Other(serde::de::IgnoredAny),
+    }
+    let v = match Lenient::deserialize(d)? {
+        Lenient::Int(v) => v as f64,
+        Lenient::Float(v) => v,
+        Lenient::Other(_) => return Ok(TILE_GAP),
+    };
+    Ok(if v.is_nan() {
+        TILE_GAP
+    } else {
+        (v as f32).clamp(*TILE_GAP_RANGE.start(), *TILE_GAP_RANGE.end())
+    })
+}
+
+/// A bool that reads as `true` when the value is of another type.
+fn lenient_true<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Bool(bool),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Lenient::deserialize(d)? {
+        Lenient::Bool(v) => v,
+        Lenient::Other(_) => true,
+    })
+}
+
+/// A string-to-string table; entries with other value types are dropped, and a value that
+/// is not a table at all is empty.
+fn lenient_monitors<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<String, String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Entry {
+        Name(String),
+        Other(serde::de::IgnoredAny),
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Table(BTreeMap<String, Entry>),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Lenient::deserialize(d)? {
+        Lenient::Table(t) => t
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                Entry::Name(n) => Some((k, n)),
+                Entry::Other(_) => None,
+            })
+            .collect(),
+        Lenient::Other(_) => BTreeMap::new(),
+    })
+}
+
+/// Writes an `f32` the way it reads (`12.1`, not `12.100000381469727`).
+fn short_f32<S: serde::Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64(v.to_string().parse().unwrap_or(*v as f64))
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -418,6 +547,7 @@ impl Default for Config {
             sweep: SweepConfig::default(),
             timer: TimerConfig::default(),
             snap: SnapConfig::default(),
+            tile: TileConfig::default(),
         }
     }
 }
@@ -484,6 +614,13 @@ mod tests {
                     custom: "#123ABC".into(),
                     size: "L".into(),
                 },
+            },
+            tile: TileConfig {
+                gap: 12.5,
+                restore_size: false,
+                number_keys: false,
+                arrow_keys: false,
+                monitors: BTreeMap::from([("\\\\.\\DISPLAY2".into(), "1+2".into())]),
             },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);
@@ -880,6 +1017,138 @@ mod tests {
         assert!(Config::parse("theme = \"x\"").vitals.health_lamp);
         let off = Config::parse("[vitals]\nhealth_lamp = false\n");
         assert!(!off.vitals.health_lamp);
+    }
+
+    #[test]
+    fn tile_defaults_and_reads_the_tile_table() {
+        let d = TileConfig::default();
+        assert_eq!(
+            (d.gap, d.restore_size, d.number_keys, d.arrow_keys),
+            (8.0, true, true, true)
+        );
+        assert!(d.monitors.is_empty());
+        // No `[tile]` table, or an older config: the defaults.
+        assert_eq!(Config::parse("theme = \"x\"").tile, d);
+        assert_eq!(Config::default().tile, d);
+        assert_eq!(Config::parse("[tile]\n").tile, d);
+        let c = Config::parse(
+            "theme = \"paper-zine\"\n[tile]\ngap = 12\nrestore_size = false\nnumber_keys = false\narrow_keys = false\n[tile.monitors]\n\"\\\\\\\\.\\\\DISPLAY1\" = \"2x2\"\n'\\\\.\\DISPLAY2' = \"1+2\"\n[timer]\nfocus_min = 50\n",
+        );
+        assert_eq!(c.tile.gap, 12.0);
+        assert!(!c.tile.restore_size && !c.tile.number_keys && !c.tile.arrow_keys);
+        assert_eq!(c.tile.monitors.len(), 2);
+        assert_eq!(c.tile.monitors["\\\\.\\DISPLAY1"], "2x2");
+        assert_eq!(c.tile.monitors["\\\\.\\DISPLAY2"], "1+2");
+        // The other sections still read.
+        assert_eq!(c.theme, "paper-zine");
+        assert_eq!(c.timer.focus_min, 50);
+        // Each key stands alone.
+        let c = Config::parse("[tile]\nnumber_keys = false\n");
+        assert_eq!(
+            (
+                c.tile.gap,
+                c.tile.restore_size,
+                c.tile.number_keys,
+                c.tile.arrow_keys
+            ),
+            (8.0, true, false, true)
+        );
+        // A float gap.
+        assert_eq!(Config::parse("[tile]\ngap = 6.5\n").tile.gap, 6.5);
+    }
+
+    #[test]
+    fn tile_gap_is_clamped_and_bad_values_fall_back_per_field() {
+        for (text, want) in [
+            ("0", 0.0),
+            ("48", 48.0),
+            ("49", 48.0),
+            ("1000", 48.0),
+            ("-3", 0.0),
+            ("-2.5", 0.0),
+            ("47.5", 47.5),
+            ("100.0", 48.0),
+            ("inf", 48.0),
+            ("-inf", 0.0),
+            ("nan", 8.0),
+            ("\"wide\"", 8.0),
+            ("true", 8.0),
+            ("[1]", 8.0),
+            ("{ a = 1 }", 8.0),
+        ] {
+            let c = Config::parse(&format!(
+                "theme = \"paper-zine\"\n[tile]\nrestore_size = false\ngap = {text}\n[timer]\nfocus_min = 50\n"
+            ));
+            assert_eq!(c.tile.gap, want, "{text}");
+            // The rest of the file, and the rest of the table, still read.
+            assert_eq!(c.theme, "paper-zine", "{text}");
+            assert!(!c.tile.restore_size, "{text}");
+            assert_eq!(c.timer.focus_min, 50, "{text}");
+        }
+        // A wrong-typed bool is its default (on) and leaves the others alone.
+        let c = Config::parse(
+            "theme = \"paper-zine\"\n[tile]\ngap = 20\nrestore_size = \"no\"\nnumber_keys = 0\narrow_keys = false\n",
+        );
+        assert_eq!(c.theme, "paper-zine");
+        assert_eq!(c.tile.gap, 20.0);
+        assert!(c.tile.restore_size && c.tile.number_keys && !c.tile.arrow_keys);
+        // Unknown keys are ignored.
+        assert_eq!(Config::parse("[tile]\nzoom = 3\ngap = 9\n").tile.gap, 9.0);
+        // The whole table of the wrong type: defaults, the file survives.
+        let c = Config::parse("theme = \"paper-zine\"\ntile = 5\n[timer]\nfocus_min = 50\n");
+        assert_eq!(c.tile, TileConfig::default());
+        assert_eq!(c.theme, "paper-zine");
+        assert_eq!(c.timer.focus_min, 50);
+    }
+
+    #[test]
+    fn tile_monitors_drop_bad_entries_and_round_trip_with_the_other_sections() {
+        let c = Config::parse(
+            "theme = \"paper-zine\"\n[tile]\ngap = 10\n[tile.monitors]\n\"a\" = \"2x2\"\n\"b\" = 5\n\"c\" = [1]\n\"d\" = \"1+2\"\n",
+        );
+        let keys: Vec<&str> = c.tile.monitors.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["a", "d"]);
+        assert_eq!(c.tile.gap, 10.0);
+        assert_eq!(c.theme, "paper-zine");
+        // `monitors` not a table at all.
+        let c = Config::parse("[tile]\ngap = 10\nmonitors = \"x\"\n");
+        assert!(c.tile.monitors.is_empty());
+        assert_eq!(c.tile.gap, 10.0);
+        // The writer (the app's `to_toml`) keeps the table and the other sections; device
+        // names with backslashes survive.
+        let mut c = Config::parse(
+            "theme = \"paper-zine\"\n[timer]\nfocus_min = 50\n[snap]\nsave_dir = \"D:/shots\"\n[tile]\ngap = 6\n",
+        );
+        c.tile
+            .monitors
+            .insert("\\\\.\\DISPLAY1".into(), "2x2".into());
+        c.tile
+            .monitors
+            .insert("\\\\.\\DISPLAY2".into(), "code + docs".into());
+        let text = c.to_toml();
+        assert!(text.contains("[tile.monitors]"), "{text}");
+        let back = Config::parse(&text);
+        assert_eq!(back, c);
+        assert_eq!(back.tile.monitors["\\\\.\\DISPLAY2"], "code + docs");
+        assert_eq!(back.tile.gap, 6.0);
+        assert_eq!(back.timer.focus_min, 50);
+        assert_eq!(back.snap.save_dir, "D:/shots");
+        assert_eq!(back.theme, "paper-zine");
+        // Changing one monitor's layout (what picking a zone does) and writing again.
+        c.tile
+            .monitors
+            .insert("\\\\.\\DISPLAY1".into(), "1+3".into());
+        let back = Config::parse(&c.to_toml());
+        assert_eq!(back, c);
+        assert_eq!(back.tile.monitors.len(), 2);
+        // A gap that is not a round float is written the way it was read.
+        c.tile.gap = 12.1;
+        let text = c.to_toml();
+        assert!(text.contains("gap = 12.1\n"), "{text}");
+        assert_eq!(Config::parse(&text).tile.gap, 12.1);
+        // The defaults round trip too, with no monitors table.
+        let d = Config::default();
+        assert_eq!(Config::parse(&d.to_toml()), d);
     }
 
     #[test]
