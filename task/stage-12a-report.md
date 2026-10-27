@@ -37,10 +37,20 @@ Worktree-local target (`CARGO_TARGET_DIR=…/stage-12a-tile/target`), env from `
 |---|---|
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-| `cargo test --workspace` | **658 passed, 0 failed** (daijobu 100, dj-core 381, dj-render 71, dj-win 37, dj-sweep 35, dj-vitals 26, dj-capture 8). Before 12a: 541. |
+| `cargo test --workspace` | **747 passed, 0 failed** (with the window picker). Before 12a: 541. |
 | `cargo build --release` | clean |
 
-New tests: core 49 (`tile`) + 3 config, island 13, win 16, render 17, controller 20.
+New tests: core 49 (`tile`) + 35 (`tile_assist`) + 3 config, island 13, win 16 + 24 (`assist`), render 17 + 22 (`assist`), controller 30.
+
+## Window picker (assist), added with the user
+
+Requested after the first live check ("klik kiri → muncul list window yang kebuka → pilih → masuk kiri, abis itu kanan"), with the Task View screenshot as the reference. Built the same way: plan [`stage-12a-assist-plan.md`](stage-12a-assist-plan.md), three parallel Sonnet workers (core `tile_assist`, native `dj_win::assist`, render `dj_render::assist`), wiring by the coordinator, one Sonnet review.
+
+- 🟡 Home → Tile → a cell: the layout becomes active and the picker covers that zone (exact zone rect, verified live: L 8, T 50, R 1716, B 1384 for `50/50` left on the 3440×1440 screen) with a card per open window: icon, title and a **live DWM thumbnail** (verified live: thumbnails compose over our DirectComposition surface), newest first, minimized ones icon-only, elevated ones with an "admin" chip.
+- 🟡 Click or arrows + Enter picks; the window fills the zone (minimized ones restored first) and the picker moves to the next zone in reading order, the clicked one first, without the windows already picked. After the last zone the picked windows come to the front, the last one active.
+- 🟡 Esc ends the run keeping what was filled (verified live: the picker closes, nothing moved). A click outside, a click on the island, hiding the island, a snap, or a display/DPI change also end it, raising the placed windows without taking the keyboard.
+- Review fixes: the picker takes the keyboard straight back after a pick that activated a restored window (instead of a sticky exception that could leave a picker without keyboard); a snap waits for the composition after closing the picker; island clicks and display changes cancel; a dismissal raises instead of activating; a window closed since the listing is dropped from the cards; tool windows are never listed (they can't be placed); old thumbnails go before the picker moves.
+- Not done: with more zones than windows the last zones can only be left with Esc (no skip key); a single retry slot for placements.
 
 ## Review of the wiring
 

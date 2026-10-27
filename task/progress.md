@@ -32,7 +32,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
 | 11 | dj CLI | 🔒 | — | |
-| 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | 🟡 built, live test pending | `xDaijobu/stage-12a-tile` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 658 tests · [`stage-12a-report.md`](stage-12a-report.md) |
+| 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | 🟡 built, live test pending | `xDaijobu/stage-12a-tile` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 747 tests · [`stage-12a-report.md`](stage-12a-report.md) |
 | 12b | Scenes: save / restore window arrangements, launch missing apps, theme + pomodoro | 🔒 | — | after 12a |
 | 12c | Boot Scene: a scene after login, with progress in the island | 🔒 | — | after 12b |
 | 12d | Admin apps in scenes: Task Scheduler + `dj-elevated` helper | 🔒 | — | after 12c; security review |
@@ -596,7 +596,7 @@ With no `[island]` in the config, the island starts as a notch flush with the to
 
 ## Stage 12a: Tile (window zones)
 
-**Status:** built and verified headless (fmt, clippy, 658 tests, release) on 2026-10-27; **live test pending**. Report: [`stage-12a-report.md`](stage-12a-report.md). Tile & Scenes is split: **12a Tile** (this), **12b Scenes**, **12c Boot Scene**, **12d admin apps** (Task Scheduler + `dj-elevated`).
+**Status:** built and verified headless (fmt, clippy, 747 tests, release) on 2026-10-27; hotkeys, the Home panel and the window picker checked live by the coordinator; **live test with the user pending**. Report: [`stage-12a-report.md`](stage-12a-report.md). Tile & Scenes is split: **12a Tile** (this), **12b Scenes**, **12c Boot Scene**, **12d admin apps** (Task Scheduler + `dj-elevated`).
 
 **Goal:** put any window into a zone without leaving the island's look. Drag a window up towards the island: the island opens a layout picker, drop on a zone and the window fills it. Shift while dragging shows the zones on any monitor; Ctrl+Alt+1‥9 and Ctrl+Alt+arrows do it from the keyboard.
 
@@ -618,7 +618,7 @@ With no `[island]` in the config, the island starts as a notch flush with the to
   - **Ctrl+Alt+←→↑↓**: to the neighbouring zone in that direction (nearest zone centre in the half-plane); a window not in a zone goes to the zone nearest its centre.
   - `[tile] number_keys = true`, `arrow_keys = true` turn each group off.
 - [x] **Home tile.** `tile` becomes `Available` (6 of 12). A click opens the Tile panel. An empty click collapses the panel, as with the other panels. No scenes row yet.
-- [ ] **Window picker (assist), added with the user on 2026-10-27.** Clicking a cell in the Home-opened panel no longer moves the app in front; it starts filling that layout (which becomes the monitor's active one), Snap Assist style:
+- [x] **Window picker (assist), added with the user on 2026-10-27.** Clicking a cell in the Home-opened panel no longer moves the app in front; it starts filling that layout (which becomes the monitor's active one), Snap Assist style:
   - The clicked zone is lit on the island's monitor and a picker window covers exactly that zone: a header ("pick a window · zone 1 of 2"), a grid of cards for the open windows (icon, title, a **live DWM thumbnail**), newest first like Alt-Tab, and a footer with the keys.
   - Click a card (or arrows + Enter) → that window fills the zone; the picker moves on to the next zone in reading order (the clicked zone first), without the windows already picked. After the last zone it closes and the picked windows come to the front.
   - Minimized windows are listed and restored when picked (icon + title only if Windows has no thumbnail for them). Elevated windows carry an "admin" badge; picking one leaves it alone and the footer says "can't move an admin window".
