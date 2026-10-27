@@ -91,6 +91,11 @@ section!(VisSec { style: String });
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ThemeFile {
+    /// The terminal panel's 16 ANSI colours, `"#rrggbb"` each (black, red, green, yellow,
+    /// blue, magenta, cyan, white, then the bright eight). Optional: without it the panel
+    /// uses a built-in set for the theme's mode. A top-level key, so it goes before the
+    /// first `[table]` in the file.
+    pub terminal_ansi: Option<Vec<String>>,
     pub meta: Meta,
     pub color: ColorSec,
     pub texture: TextureSec,
@@ -109,6 +114,10 @@ impl ThemeFile {
     /// `self` overrides `base`, field by field.
     fn over(&self, base: &Self) -> Self {
         Self {
+            terminal_ansi: self
+                .terminal_ansi
+                .clone()
+                .or_else(|| base.terminal_ansi.clone()),
             meta: self.meta.over(&base.meta),
             color: self.color.over(&base.color),
             texture: self.texture.over(&base.texture),
@@ -148,6 +157,9 @@ pub struct ResolvedTokens {
     pub expand: SpringSpec,
     pub collapse: SpringSpec,
     pub visualizer: String,
+    /// A theme's own ANSI palette for the terminal panel (`terminal_ansi` in the file);
+    /// `None` means the built-in set for `mode` (see `terminal::palette`).
+    pub terminal_ansi: Option<[Rgb; 16]>,
 }
 
 fn lf(a: f32, b: f32, t: f32) -> f32 {
@@ -184,6 +196,11 @@ impl ResolvedTokens {
             expand: self.expand.lerp(to.expand, t),
             collapse: self.collapse.lerp(to.collapse, t),
             visualizer: pick(&self.visualizer, &to.visualizer),
+            terminal_ansi: if t < 0.5 {
+                self.terminal_ansi
+            } else {
+                to.terminal_ansi
+            },
         }
     }
 }
@@ -205,6 +222,21 @@ fn spring(s: SpringToml, key: &str) -> Result<SpringSpec, String> {
         range(s.response, 0.1, 2.0, &format!("{key}.response"))?,
         range(s.damping, 0.2, 2.0, &format!("{key}.damping"))?,
     ))
+}
+
+/// The 16 colours of a `terminal_ansi` list: the count and every `#rrggbb` are checked.
+fn parse_ansi(list: &[String]) -> Result<[Rgb; 16], String> {
+    if list.len() != 16 {
+        return Err(format!(
+            "`terminal_ansi` needs 16 colours (black to bright white), found {}",
+            list.len()
+        ));
+    }
+    let mut out = [Rgb::new(0.0, 0.0, 0.0); 16];
+    for (i, hex) in list.iter().enumerate() {
+        out[i] = Rgb::from_hex(hex).map_err(|e| format!("`terminal_ansi[{i}]`: {e}"))?;
+    }
+    Ok(out)
 }
 
 /// Turns a fully merged file into validated tokens. Rejects low-contrast themes.
@@ -285,6 +317,7 @@ pub fn resolve_tokens(f: &ThemeFile) -> Result<ResolvedTokens, String> {
             "motion.collapse",
         )?,
         visualizer: req(f.visualizer.style.clone(), "visualizer.style")?,
+        terminal_ansi: f.terminal_ansi.as_deref().map(parse_ansi).transpose()?,
     };
     let ratio = t.text.contrast(t.pill);
     if ratio < MIN_TEXT_CONTRAST {
@@ -609,6 +642,128 @@ accent = "#A8C686"
         assert_eq!(r.next_id("tobacco-tape"), "midnight-cassette");
         assert_eq!(r.next_id("clean"), "tobacco-tape");
         assert_eq!(r.next_id("gone"), "tobacco-tape");
+    }
+
+    /// 16 distinct colours, in file order: black to bright white.
+    const ANSI_16: &str = r##"["#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#C0C0C0",
+ "#808080", "#FF0000", "#00FF00", "#FFFF00", "#0000FF", "#FF00FF", "#00FFFF", "#FFFFFF"]"##;
+
+    /// A user theme on top of Clean with the given `terminal_ansi` list (a TOML array).
+    fn ansi_theme(list: &str) -> (String, String) {
+        user(
+            "ansi",
+            &format!("terminal_ansi = {list}\n[meta]\nname=\"Ansi\"\nbase=\"clean\"\n"),
+        )
+    }
+
+    /// A TOML array of `n` copies of one colour.
+    fn same_colours(n: usize) -> String {
+        format!("[{}]", vec!["\"#123456\""; n].join(", "))
+    }
+
+    #[test]
+    fn terminal_ansi_is_absent_in_the_builtins() {
+        let r = ThemeRegistry::with_builtins();
+        for id in r.ids() {
+            assert_eq!(r.get(id).unwrap().terminal_ansi, None, "{id}");
+        }
+    }
+
+    #[test]
+    fn a_valid_terminal_ansi_is_read_in_order() {
+        let mut r = ThemeRegistry::with_builtins();
+        r.set_user_themes([ansi_theme(ANSI_16)]);
+        assert!(r.rejected().is_empty(), "{:?}", r.rejected());
+        let a = r.get("ansi").unwrap().terminal_ansi.unwrap();
+        assert_eq!(a[0].to_hex(), "#000000");
+        assert_eq!(a[1].to_hex(), "#800000");
+        assert_eq!(a[7].to_hex(), "#C0C0C0");
+        assert_eq!(a[9].to_hex(), "#FF0000");
+        assert_eq!(a[15].to_hex(), "#FFFFFF");
+        // The rest of the theme is untouched, and the file's base didn't have one.
+        assert_eq!(r.get("ansi").unwrap().pill, r.get("clean").unwrap().pill);
+        assert_eq!(r.get("clean").unwrap().terminal_ansi, None);
+    }
+
+    #[test]
+    fn terminal_ansi_is_inherited_through_base_and_can_be_overridden() {
+        let mut own = vec!["\"#111111\""; 16];
+        own[2] = "\"#22AA22\"";
+        let mut r = ThemeRegistry::with_builtins();
+        r.set_user_themes([
+            ansi_theme(ANSI_16),
+            user("child", "[meta]\nname=\"Child\"\nbase=\"ansi\"\n"),
+            user(
+                "own",
+                &format!(
+                    "terminal_ansi = [{}]\n[meta]\nname=\"Own\"\nbase=\"ansi\"\n",
+                    own.join(", ")
+                ),
+            ),
+        ]);
+        assert!(r.rejected().is_empty(), "{:?}", r.rejected());
+        assert_eq!(
+            r.get("child").unwrap().terminal_ansi,
+            r.get("ansi").unwrap().terminal_ansi
+        );
+        let own = r.get("own").unwrap().terminal_ansi.unwrap();
+        assert_eq!(own[0].to_hex(), "#111111");
+        assert_eq!(own[2].to_hex(), "#22AA22");
+    }
+
+    #[test]
+    fn a_terminal_ansi_with_the_wrong_count_rejects_the_theme_with_a_reason() {
+        for n in [0usize, 1, 8, 15, 17, 32] {
+            let mut r = ThemeRegistry::with_builtins();
+            r.set_user_themes([ansi_theme(&same_colours(n))]);
+            assert!(r.get("ansi").is_none(), "{n} colours");
+            let (_, why) = r.rejected().iter().find(|(id, _)| id == "ansi").unwrap();
+            assert!(why.contains("terminal_ansi") && why.contains("16"), "{why}");
+            assert!(why.contains(&format!("found {n}")), "{why}");
+            // The theme isn't offered in the cycle, and the built-ins are unaffected.
+            assert_eq!(r.ids().len(), 4);
+        }
+        // Sixteen is fine.
+        let mut r = ThemeRegistry::with_builtins();
+        r.set_user_themes([ansi_theme(&same_colours(16))]);
+        assert!(r.get("ansi").is_some());
+    }
+
+    #[test]
+    fn a_bad_colour_in_terminal_ansi_names_its_index() {
+        for (bad, index) in [("red", 3), ("#12345", 0), ("#GGGGGG", 15), ("", 8)] {
+            let mut l = vec!["\"#123456\"".to_string(); 16];
+            l[index] = format!("\"{bad}\"");
+            let mut r = ThemeRegistry::with_builtins();
+            r.set_user_themes([ansi_theme(&format!("[{}]", l.join(", ")))]);
+            assert!(r.get("ansi").is_none(), "{bad:?}");
+            let (_, why) = r.rejected().iter().find(|(id, _)| id == "ansi").unwrap();
+            assert!(why.contains(&format!("terminal_ansi[{index}]")), "{why}");
+            assert!(why.contains("#RRGGBB"), "{why}");
+        }
+        // Not a list of strings at all: the file doesn't parse, with the toml reason.
+        let mut r = ThemeRegistry::with_builtins();
+        r.set_user_themes([
+            ansi_theme("[1, 2, 3]"),
+            user("flat", "terminal_ansi = \"#000000\"\n"),
+        ]);
+        for id in ["ansi", "flat"] {
+            assert!(r.get(id).is_none(), "{id}");
+            assert!(r.rejected().iter().any(|(i, _)| i == id), "{id}");
+        }
+    }
+
+    #[test]
+    fn terminal_ansi_switches_sides_at_the_midpoint() {
+        let mut r = ThemeRegistry::with_builtins();
+        r.set_user_themes([ansi_theme(ANSI_16)]);
+        let plain = r.get("clean").unwrap().clone();
+        let own = r.get("ansi").unwrap().clone();
+        assert_eq!(plain.lerp(&own, 0.49).terminal_ansi, None);
+        assert_eq!(plain.lerp(&own, 0.5).terminal_ansi, own.terminal_ansi);
+        assert_eq!(own.lerp(&plain, 0.49).terminal_ansi, own.terminal_ansi);
+        assert_eq!(own.lerp(&plain, 0.5).terminal_ansi, None);
+        assert_eq!(own.lerp(&plain, 1.0), plain);
     }
 
     #[test]
