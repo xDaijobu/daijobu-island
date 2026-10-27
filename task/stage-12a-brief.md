@@ -1,6 +1,6 @@
 # Stage 12a brief: Tile (window zones)
 
-Status: built 2026-10-27 on `xDaijobu/stage-12a-tile` (see [`stage-12a-report.md`](stage-12a-report.md)); live acceptance pending.
+Status: done 2026-10-27 (live test passed with the user); see [`stage-12a-report.md`](stage-12a-report.md).
 
 ## Contract and scope
 

@@ -32,7 +32,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
 | 11 | dj CLI | 🔒 | — | |
-| 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | 🟡 built, live test pending | `xDaijobu/stage-12a-tile` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 747 tests · [`stage-12a-report.md`](stage-12a-report.md) |
+| 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | ✅ | `xDaijobu/stage-12a-tile` | coordinator (Opus 5.5) + parallel Sonnet 5.5 workers · 747 tests · live test with the user · [`stage-12a-report.md`](stage-12a-report.md) |
 | 12b | Scenes: save / restore window arrangements, launch missing apps, theme + pomodoro | 🔒 | — | after 12a |
 | 12c | Boot Scene: a scene after login, with progress in the island | 🔒 | — | after 12b |
 | 12d | Admin apps in scenes: Task Scheduler + `dj-elevated` helper | 🔒 | — | after 12c; security review |
@@ -596,7 +596,7 @@ With no `[island]` in the config, the island starts as a notch flush with the to
 
 ## Stage 12a: Tile (window zones)
 
-**Status:** built and verified headless (fmt, clippy, 747 tests, release) on 2026-10-27; hotkeys, the Home panel and the window picker checked live by the coordinator; **live test with the user pending**. Report: [`stage-12a-report.md`](stage-12a-report.md). Tile & Scenes is split: **12a Tile** (this), **12b Scenes**, **12c Boot Scene**, **12d admin apps** (Task Scheduler + `dj-elevated`).
+**Status:** built and verified headless (fmt, clippy, 747 tests, release) on 2026-10-27; hotkeys, the Home panel and the window picker checked live by the coordinator; **live test passed with the user**. Report: [`stage-12a-report.md`](stage-12a-report.md). Tile & Scenes is split: **12a Tile** (this), **12b Scenes**, **12c Boot Scene**, **12d admin apps** (Task Scheduler + `dj-elevated`).
 
 **Goal:** put any window into a zone without leaving the island's look. Drag a window up towards the island: the island opens a layout picker, drop on a zone and the window fills it. Shift while dragging shows the zones on any monitor; Ctrl+Alt+1‥9 and Ctrl+Alt+arrows do it from the keyboard.
 

@@ -1,6 +1,6 @@
 # Stage 12a report: Tile (window zones)
 
-Status: **built and verified headless** on `xDaijobu/stage-12a-tile`. **No live test yet.**
+Status: **done.** Built and verified headless on `xDaijobu/stage-12a-tile`, checked live by the coordinator (hotkeys, Home panel, window picker) and **live-tested by the user** on 2026-10-27 ("ok mantap ud sesuai").
 
 Built 2026-10-27 by the coordinator (Claude Opus 5.5) with four parallel Claude Sonnet 5.5 workers in separate worktrees, from the plan in [`stage-12a-plan.md`](stage-12a-plan.md).
 
