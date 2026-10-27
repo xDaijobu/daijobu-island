@@ -277,6 +277,13 @@ impl Renderer {
         self.painter.snap_shot.is_some()
     }
 
+    /// The terminal's cell size in whole device px for `font` at `size` logical px × `scale`
+    /// (the grid's cols and rows are fitted to it). `font` falls back to Geist Mono when
+    /// no installed font has the name.
+    pub fn terminal_cell(&mut self, font: &str, size: f32, scale: f32) -> (u16, u16) {
+        crate::terminal::cell_size(&mut self.painter.fonts, font, size, scale)
+    }
+
     /// Draws one frame and presents it (`Present(1)` paces animation to vsync).
     pub fn render(&mut self, frame: &Frame) -> Result<(), RenderError> {
         let canvas = self.chain.back_buffer().canvas();
