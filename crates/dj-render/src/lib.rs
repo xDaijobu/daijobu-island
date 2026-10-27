@@ -4,9 +4,12 @@
 //! feature: the island's Tile panel (`tile::paint_tile_panel`) and the zone overlay (its
 //! own transparent window, `tile::ZoneOverlay`) and the window picker that fills a zone
 //! (`assist::AssistSurface`, its own topmost window with the open windows as cards; the live
-//! thumbnails are composed on top by Windows).
+//! thumbnails are composed on top by Windows). The dj CLI's two compact pills, progress and
+//! notice, are drawn by `dj::paint_progress` and `dj::paint_notice` (hooked into the
+//! painter's layers); their content types are `DjProgressPill` and `DjNoticePill`.
 
 mod assist;
+mod dj;
 mod fonts;
 mod fx;
 mod gpu;
@@ -24,6 +27,7 @@ mod timer;
 mod vitals;
 
 pub use assist::{AssistCard, AssistScene, AssistSurface};
+pub use dj::{DjNoticePill, DjProgressPill};
 pub use gpu::{RenderError, Renderer};
 pub use markup::{render_output, TextMetrics};
 pub use paint::{Frame, MusicFrame};
