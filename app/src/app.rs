@@ -1818,6 +1818,7 @@ impl Handler for App {
                 self.sync_appbar(true);
             }
             Event::AppBarMoved => self.sync_appbar(true),
+            Event::TileMove(_) => {}
             Event::VitalsReady => self.drain_vitals(),
             Event::SweepReady => self.drain_sweep(),
         }
