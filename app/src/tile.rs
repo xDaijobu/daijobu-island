@@ -10,6 +10,7 @@
 use dj_core::config::TileConfig;
 use dj_core::snap::IRect;
 use dj_core::tile::{self, Dir, Drag, DragView, Geometry, Layout, Monitor, Placed, Target, Thumb};
+use dj_core::tile_assist::{Assist, AssistCmd, AssistKey};
 use dj_win::tile::{MonitorInfo, PlaceError, Raw, WinInfo};
 use std::time::{Duration, Instant};
 
@@ -40,7 +41,6 @@ const DRIFT: i32 = 4;
 const IN_ZONE: i32 = 8;
 const NOTICE: Duration = Duration::from_secs(2);
 pub const ADMIN_NOTICE: &str = "can't move an admin window";
-const NO_WINDOW: &str = "click a window first, then the tile";
 // ASCII digits and "-" only: the mono font has no "‥".
 const HINT: &str = "shift+drag · ctrl+alt+1-9";
 
@@ -60,6 +60,10 @@ pub trait WindowOps {
     fn is_resize(&self, w: Raw, at: (i32, i32)) -> bool;
     /// The window's thread is still in its move/size loop.
     fn still_moving(&self, w: Raw) -> bool;
+    /// The windows a user would switch to, newest first (the window picker's cards).
+    fn list_windows(&self) -> Vec<Listed>;
+    /// Brings a window to the front (best effort).
+    fn activate(&mut self, w: Raw);
 }
 
 pub struct SystemWindows;
@@ -74,7 +78,24 @@ impl WindowOps for SystemWindows {
     }
 
     fn restore(&mut self, w: Raw) {
-        dj_win::tile::restore(w);
+        // Un-minimizes too (a picked minimized window), and a maximized one underneath.
+        dj_win::assist::restore_any(w);
+    }
+
+    fn list_windows(&self) -> Vec<Listed> {
+        dj_win::assist::list_windows()
+            .into_iter()
+            .map(|e| Listed {
+                w: e.w,
+                title: e.title,
+                minimized: e.minimized,
+                elevated: e.elevated,
+            })
+            .collect()
+    }
+
+    fn activate(&mut self, w: Raw) {
+        dj_win::assist::activate(w);
     }
 
     fn button_down(&self) -> bool {
@@ -171,10 +192,31 @@ pub struct Tiler {
     view: DragView,
     retry: Option<Retry>,
     notice_until: Option<Instant>,
-    /// The Home tile opened the panel for this window (the foreground app at the click).
-    home: Option<Raw>,
+    /// The Home tile opened the panel (a cell click starts the window picker).
+    home: bool,
     home_hover: Option<(usize, usize)>,
+    /// The window picker, while it fills a layout.
+    assist: Option<AssistRun>,
     errors: Vec<String>,
+}
+
+/// A window the picker can offer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    pub w: Raw,
+    pub title: String,
+    pub minimized: bool,
+    /// Its process runs elevated: we can't move it (UIPI).
+    pub elevated: bool,
+}
+
+/// One run of the window picker.
+struct AssistRun {
+    assist: Assist,
+    /// The windows on offer, newest first (listed again after each pick).
+    windows: Vec<Listed>,
+    /// The last pick was an admin window.
+    notice: bool,
 }
 
 impl Tiler {
@@ -194,7 +236,8 @@ impl Tiler {
             view: DragView::default(),
             retry: None,
             notice_until: None,
-            home: None,
+            home: false,
+            assist: None,
             home_hover: None,
             errors: Vec::new(),
         };
@@ -265,7 +308,7 @@ impl Tiler {
         self.moving = None;
         self.view = DragView::default();
         // A drag supersedes the Home panel, and a window grabbed again isn't pulled back.
-        self.home = None;
+        self.home = false;
         self.home_hover = None;
         if self.retry.as_ref().is_some_and(|r| r.w == w) {
             self.retry = None;
@@ -521,16 +564,19 @@ impl Tiler {
 
     // ---- the Home tile's panel ----
 
-    /// The Home tile was clicked: the panel is for the app that was in front.
+    /// The Home tile was clicked: the panel opens to pick a layout and a zone to fill.
     pub fn open_home(&mut self) {
-        self.home = Some(self.ops.foreground());
+        self.home = true;
         self.home_hover = None;
         self.refresh_monitors();
     }
 
     /// The pointer over the panel (panel-local logical px). True if what is lit changed.
     pub fn home_hover(&mut self, x: f32, y: f32) -> bool {
-        let hover = self.home.and_then(|_| tile::panel_hit(&self.thumbs, x, y));
+        let hover = self
+            .home
+            .then(|| tile::panel_hit(&self.thumbs, x, y))
+            .flatten();
         let changed = hover != self.home_hover;
         self.home_hover = hover;
         changed
@@ -541,31 +587,180 @@ impl Tiler {
         self.home_hover.take().is_some()
     }
 
-    /// A click in the panel (panel-local logical px): a cell places the Home window there.
-    /// The app collapses the panel either way.
-    pub fn panel_click(&mut self, x: f32, y: f32, now: Instant) {
+    /// A click in the panel (panel-local logical px): a cell starts filling that layout,
+    /// that zone first (the window picker). The app collapses the panel either way.
+    pub fn panel_click(&mut self, x: f32, y: f32) {
         self.notice_until = None;
         self.home_hover = None;
-        let Some(w) = self.home.take() else {
+        if !std::mem::take(&mut self.home) {
             return;
-        };
+        }
         if let Some((layout, zone)) = tile::panel_hit(&self.thumbs, x, y) {
-            let t = Target {
-                monitor: self.island_monitor(),
-                layout,
-                zone,
-                from_panel: true,
-            };
-            self.place_target(w, t, now);
+            self.start_assist(layout, zone);
         }
     }
 
-    /// The island closed the panel by itself (another view took over): the Home window
-    /// and the notice go with it, so the panel doesn't come back on its own.
+    /// The island closed the panel by itself (another view took over): the Home flag and
+    /// the notice go with it, so the panel doesn't come back on its own.
     pub fn panel_closed(&mut self) {
-        self.home = None;
+        self.home = false;
         self.home_hover = None;
         self.notice_until = None;
+    }
+
+    // ---- the window picker: fill a layout zone by zone ----
+
+    /// Starts filling `layout` on the island's monitor, `zone` first. The layout becomes
+    /// the monitor's active one.
+    pub fn start_assist(&mut self, layout: usize, zone: usize) {
+        self.refresh_monitors();
+        let m = self.island_monitor();
+        let zones = self.zones_on(m, layout);
+        if zones.is_empty() {
+            return;
+        }
+        if self.active().get(m).copied() != Some(layout) {
+            if let (Some(mon), Some(l)) = (self.monitors.get(m), self.layouts.get(layout)) {
+                self.config.monitors.insert(mon.id.clone(), l.name.clone());
+                self.config_dirty = true;
+            }
+        }
+        self.assist = Some(AssistRun {
+            assist: Assist::new(zones, zone),
+            windows: self.ops.list_windows(),
+            notice: false,
+        });
+    }
+
+    /// The picker is up.
+    pub fn assisting(&self) -> bool {
+        self.assist.is_some()
+    }
+
+    /// The zone being filled (physical desktop px) and the monitor's scale.
+    pub fn assist_zone(&self) -> Option<(IRect, f32)> {
+        let run = self.assist.as_ref()?;
+        let (_, zone) = run.assist.zone()?;
+        let scale = self.monitors.get(self.island_monitor())?.scale;
+        Some((zone, scale))
+    }
+
+    /// The windows offered for the current zone, newest first.
+    pub fn assist_windows(&self) -> Vec<&Listed> {
+        let Some(run) = self.assist.as_ref() else {
+            return Vec::new();
+        };
+        let ids: Vec<u64> = run.windows.iter().map(|l| l.w as u64).collect();
+        run.assist
+            .candidates(&ids)
+            .into_iter()
+            .filter_map(|id| run.windows.iter().find(|l| l.w as u64 == id))
+            .collect()
+    }
+
+    /// (step, number of zones) for "1 / 2".
+    pub fn assist_progress(&self) -> (usize, usize) {
+        self.assist.as_ref().map_or((0, 0), |r| r.assist.progress())
+    }
+
+    /// The zone being filled, 1-based within the layout (for the picker's title).
+    pub fn assist_zone_number(&self) -> usize {
+        self.assist
+            .as_ref()
+            .and_then(|r| r.assist.zone())
+            .map_or(0, |(i, _)| i + 1)
+    }
+
+    pub fn assist_selected(&self) -> usize {
+        self.assist.as_ref().map_or(0, |r| r.assist.selected())
+    }
+
+    pub fn assist_select(&mut self, i: usize) {
+        if let Some(r) = self.assist.as_mut() {
+            r.assist.set_selected(i);
+        }
+    }
+
+    /// The last pick was an admin window, which stays where it is.
+    pub fn assist_notice(&self) -> bool {
+        self.assist.as_ref().is_some_and(|r| r.notice)
+    }
+
+    /// Card `i` was picked: that window fills the zone and the picker moves on (or ends).
+    pub fn assist_pick(&mut self, i: usize, now: Instant) {
+        let Some(l) = self.assist_windows().get(i).map(|l| (*l).clone()) else {
+            return;
+        };
+        let Some((zone, _)) = self.assist_zone() else {
+            return;
+        };
+        if l.elevated {
+            if let Some(r) = self.assist.as_mut() {
+                r.notice = true;
+            }
+            return;
+        }
+        if l.minimized {
+            self.ops.restore(l.w);
+        }
+        let notice_before = self.notice_until;
+        let moved = self.place_in(l.w, zone, now);
+        // An admin window found only now: the picker's own footer says so, not the panel.
+        let denied = self.notice_until != notice_before;
+        self.notice_until = notice_before;
+        let Some(r) = self.assist.as_mut() else {
+            return;
+        };
+        r.notice = denied;
+        if !moved {
+            return;
+        }
+        r.assist.chose(l.w as u64);
+        if r.assist.done() {
+            self.finish_assist();
+        } else {
+            // Windows may have opened or closed meanwhile.
+            let windows = self.ops.list_windows();
+            if let Some(r) = self.assist.as_mut() {
+                r.windows = windows;
+            }
+        }
+    }
+
+    /// A key on the picker; `cols` and `count` describe the cards on screen. True if the
+    /// picker changed (redraw).
+    pub fn assist_key(&mut self, key: AssistKey, cols: usize, count: usize, now: Instant) -> bool {
+        let Some(r) = self.assist.as_mut() else {
+            return false;
+        };
+        match r.assist.key(key, cols, count) {
+            AssistCmd::None => false,
+            AssistCmd::Redraw => true,
+            AssistCmd::Pick(i) => {
+                self.assist_pick(i, now);
+                true
+            }
+            AssistCmd::Cancel => {
+                self.finish_assist();
+                true
+            }
+        }
+    }
+
+    /// Esc, a click elsewhere, a hidden island or a snap: the zones filled so far stay.
+    pub fn assist_cancel(&mut self) {
+        self.finish_assist();
+    }
+
+    /// The picker goes; the windows it placed come to the front, the first picked first, so
+    /// the last one ends up active.
+    fn finish_assist(&mut self) {
+        let Some(r) = self.assist.take() else {
+            return;
+        };
+        for &w in r.assist.chosen() {
+            self.ops.activate(w as Raw);
+        }
     }
 
     // ---- what the app shows ----
@@ -577,13 +772,13 @@ impl Tiler {
     /// The island should show the Tile panel: a move is over the summon area, the Home
     /// tile opened it, or the admin notice is up.
     pub fn panel_wanted(&self, now: Instant) -> bool {
-        self.view.panel_open || self.home.is_some() || self.notice_up(now)
+        self.view.panel_open || self.home || self.notice_up(now)
     }
 
     pub fn panel(&self, now: Instant) -> Panel<'_> {
         let m = self.island_monitor();
         Panel {
-            title: if self.home.is_some() {
+            title: if self.home {
                 "tile · pick a zone"
             } else {
                 "tile · drop on a zone"
@@ -598,12 +793,6 @@ impl Tiler {
                 .unwrap_or_default(),
             footer: if self.notice_up(now) {
                 (ADMIN_NOTICE, true)
-            } else if self
-                .home
-                .is_some_and(|w| !self.ops.info(w).is_some_and(|i| i.eligible))
-            {
-                // The app in front is the desktop, the taskbar or one of ours.
-                (NO_WINDOW, true)
             } else {
                 (HINT, false)
             },
@@ -695,6 +884,9 @@ mod tests {
         resize: bool,
         /// The window's thread left its move loop (the watchdog's view).
         ended: bool,
+        /// What the window picker lists, and the windows it brought to the front.
+        listed: Vec<Listed>,
+        activated: Vec<Raw>,
     }
 
     struct Fake(Rc<RefCell<State>>);
@@ -729,8 +921,9 @@ mod tests {
         fn restore(&mut self, w: Raw) {
             let mut s = self.0.borrow_mut();
             let normal = s.normal.get(&w).copied();
+            // Maximized or minimized (a minimized window can't be placed: not eligible).
             if let (Some(frame), Some(info)) = (normal, s.windows.get_mut(&w)) {
-                if info.maximized {
+                if info.maximized || !info.eligible {
                     *info = win(frame);
                 }
             }
@@ -746,6 +939,14 @@ mod tests {
 
         fn still_moving(&self, _w: Raw) -> bool {
             !self.0.borrow().ended
+        }
+
+        fn list_windows(&self) -> Vec<Listed> {
+            self.0.borrow().listed.clone()
+        }
+
+        fn activate(&mut self, w: Raw) {
+            self.0.borrow_mut().activated.push(w);
         }
 
         fn foreground(&self) -> Raw {
@@ -1064,21 +1265,41 @@ mod tests {
     }
 
     #[test]
-    fn the_home_panel_says_when_there_is_no_window_to_place() {
-        let (mut t, s) = rig();
+    fn a_lit_cell_goes_when_the_pointer_leaves_the_island() {
+        let (mut t, _) = rig();
         let now = Instant::now();
-        let mut info = win(IRect::new(0, 0, 1920, 1080));
-        info.eligible = false;
-        s.borrow_mut().windows.insert(5, info);
-        s.borrow_mut().foreground = 5;
         t.open_home();
-        assert_eq!(t.panel(now).footer, (NO_WINDOW, true));
-        // A lit cell goes when the pointer leaves the island.
         let c = t.thumbs[0].cells[0];
-        t.home_hover(c.x + 1.0, c.y + 1.0);
+        assert!(t.home_hover(c.x + 1.0, c.y + 1.0));
         assert!(t.clear_hover());
         assert_eq!(t.panel(now).hover, None);
         assert!(!t.clear_hover());
+    }
+
+    /// Three open windows, newest first; the picker lists them in this order.
+    fn three_windows(s: &Rc<RefCell<State>>) {
+        let mut st = s.borrow_mut();
+        for (w, x) in [(1, 100), (2, 300), (3, 500)] {
+            st.windows.insert(w, win(IRect::new(x, 100, 700, 500)));
+            st.listed.push(Listed {
+                w,
+                title: format!("window {w}"),
+                minimized: false,
+                elevated: false,
+            });
+        }
+    }
+
+    fn ids(t: &Tiler) -> Vec<Raw> {
+        t.assist_windows().iter().map(|l| l.w).collect()
+    }
+
+    /// Clicks `layout`'s `zone` cell in the Home-opened panel.
+    fn click_cell(t: &mut Tiler, layout: &str, zone: usize) {
+        let l = tile::find(&t.layouts, layout).unwrap();
+        let c = t.thumbs[l].cells[zone];
+        t.open_home();
+        t.panel_click(c.x + c.w / 2.0, c.y + c.h / 2.0);
     }
 
     #[test]
@@ -1230,30 +1451,143 @@ mod tests {
     }
 
     #[test]
-    fn the_home_panel_places_the_app_that_was_in_front() {
+    fn a_home_cell_starts_the_picker_and_fills_every_zone_in_turn() {
         let (mut t, s) = rig();
         let now = Instant::now();
-        s.borrow_mut()
-            .windows
-            .insert(7, win(IRect::new(100, 100, 800, 600)));
-        s.borrow_mut().foreground = 7;
+        three_windows(&s);
         t.open_home();
         assert!(t.panel_wanted(now));
         assert_eq!(t.panel(now).title, "tile · pick a zone");
-        let l = tile::find(&t.layouts, "3 columns").unwrap();
-        let c = t.thumbs[l].cells[2];
-        let (x, y) = (c.x + c.w / 2.0, c.y + c.h / 2.0);
-        assert!(t.home_hover(x, y));
-        assert_eq!(t.panel(now).hover, Some((l, 2)));
-        t.panel_click(x, y, now);
-        assert!(!t.panel_wanted(now));
-        assert_eq!(frame_of(&s, 7), zones1(&t, "3 columns")[2]);
-        // A click on nothing just closes it.
+        click_cell(&mut t, "50/50", 0);
+        assert!(!t.panel_wanted(now), "the panel gives way to the picker");
+        assert!(t.assisting());
+        let z = zones1(&t, "50/50");
+        assert_eq!(t.assist_zone(), Some((z[0], 1.0)));
+        assert_eq!(t.assist_progress(), (1, 2));
+        assert_eq!(t.assist_zone_number(), 1);
+        assert_eq!(ids(&t), vec![1, 2, 3]);
+        // The second card goes left, and the picker moves right without it.
+        t.assist_pick(1, now);
+        assert_eq!(frame_of(&s, 2), z[0]);
+        assert_eq!(t.assist_zone(), Some((z[1], 1.0)));
+        assert_eq!(t.assist_progress(), (2, 2));
+        assert_eq!(ids(&t), vec![1, 3]);
+        t.assist_pick(0, now);
+        assert_eq!(frame_of(&s, 1), z[1]);
+        assert!(!t.assisting());
+        assert_eq!(
+            s.borrow().activated,
+            vec![2, 1],
+            "picked ones to the front, in order"
+        );
+        assert!(t.take_config().is_none(), "50/50 was already active");
+    }
+
+    #[test]
+    fn the_clicked_zone_comes_first_and_its_layout_becomes_active() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        three_windows(&s);
+        click_cell(&mut t, "3 columns", 2);
+        let z = zones1(&t, "3 columns");
+        assert_eq!(t.assist_zone().unwrap().0, z[2]);
+        assert_eq!(t.assist_zone_number(), 3);
+        t.assist_pick(0, now);
+        assert_eq!(t.assist_zone().unwrap().0, z[0]);
+        let config = t.take_config().unwrap();
+        assert_eq!(
+            config.monitors.get(DISPLAY1).map(String::as_str),
+            Some("3 columns")
+        );
+    }
+
+    #[test]
+    fn a_click_on_nothing_in_the_panel_starts_nothing() {
+        let (mut t, s) = rig();
+        three_windows(&s);
         t.open_home();
-        let count = s.borrow().places.len();
-        t.panel_click(1.0, 1.0, now);
+        t.panel_click(1.0, 1.0);
+        assert!(!t.assisting());
+        assert!(s.borrow().places.is_empty());
+    }
+
+    #[test]
+    fn a_minimized_window_is_restored_and_placed() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        {
+            let mut st = s.borrow_mut();
+            let mut info = win(IRect::new(0, 0, 160, 28));
+            info.eligible = false;
+            st.windows.insert(4, info);
+            st.normal.insert(4, IRect::new(200, 200, 800, 500));
+            st.listed.push(Listed {
+                w: 4,
+                title: "minimized".into(),
+                minimized: true,
+                elevated: false,
+            });
+        }
+        click_cell(&mut t, "50/50", 1);
+        t.assist_pick(0, now);
+        assert_eq!(frame_of(&s, 4), zones1(&t, "50/50")[1]);
+    }
+
+    #[test]
+    fn an_admin_window_is_refused_in_the_picker_and_the_zone_stays_open() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        three_windows(&s);
+        s.borrow_mut().listed[0].elevated = true;
+        click_cell(&mut t, "50/50", 0);
+        t.assist_pick(0, now);
+        assert!(t.assist_notice());
+        assert!(s.borrow().places.is_empty());
+        assert_eq!(t.assist_progress(), (1, 2), "still the first zone");
+        // Found only when moving it (not flagged): the same, and the island panel stays shut.
+        s.borrow_mut().deny = true;
+        t.assist_pick(1, now);
+        assert!(t.assist_notice());
         assert!(!t.panel_wanted(now));
-        assert_eq!(s.borrow().places.len(), count);
+        s.borrow_mut().deny = false;
+        t.assist_pick(1, now);
+        assert!(!t.assist_notice());
+        assert_eq!(t.assist_progress(), (2, 2));
+    }
+
+    #[test]
+    fn keys_pick_and_esc_keeps_what_was_filled() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        three_windows(&s);
+        click_cell(&mut t, "3 columns", 0);
+        assert!(t.assist_key(AssistKey::Right, 3, 3, now));
+        assert_eq!(t.assist_selected(), 1);
+        assert!(t.assist_key(AssistKey::Enter, 3, 3, now));
+        assert_eq!(frame_of(&s, 2), zones1(&t, "3 columns")[0]);
+        assert_eq!(
+            t.assist_selected(),
+            0,
+            "a new zone starts at the first card"
+        );
+        assert!(t.assist_key(AssistKey::Escape, 3, 2, now));
+        assert!(!t.assisting());
+        assert_eq!(s.borrow().places.len(), 1);
+        assert_eq!(s.borrow().activated, vec![2]);
+    }
+
+    #[test]
+    fn cancelling_brings_the_placed_windows_forward_and_ends() {
+        let (mut t, s) = rig();
+        let now = Instant::now();
+        three_windows(&s);
+        click_cell(&mut t, "2x2", 0);
+        t.assist_pick(2, now);
+        t.assist_cancel();
+        assert!(!t.assisting());
+        assert_eq!(s.borrow().activated, vec![3]);
+        t.assist_cancel();
+        assert_eq!(s.borrow().activated, vec![3], "only once");
     }
 
     #[test]

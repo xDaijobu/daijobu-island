@@ -1972,7 +1972,7 @@ impl Handler for App {
                     }
                     // A cell places that window; anywhere else just closes the panel.
                     ClickOutcome::Tile { x, y } => {
-                        self.tiler.panel_click(x, y, Instant::now());
+                        self.tiler.panel_click(x, y);
                         self.island.collapse(&tokens);
                         self.tile_panel = false;
                     }
