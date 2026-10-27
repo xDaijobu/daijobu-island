@@ -21,6 +21,8 @@ pub struct Config {
     pub snap: SnapConfig,
     #[serde(deserialize_with = "lenient_tile")]
     pub tile: TileConfig,
+    #[serde(deserialize_with = "lenient_terminal")]
+    pub terminal: TerminalConfig,
 }
 
 /// How the island sits at the top of the screen. Only the drawn shape differs: the pill
@@ -530,6 +532,157 @@ fn lenient_monitors<'de, D: serde::Deserializer<'de>>(
     })
 }
 
+/// The default `[terminal] font`, and the font size and scrollback with the ranges they
+/// are clamped to.
+pub const TERMINAL_FONT: &str = "Cascadia Mono";
+pub const TERMINAL_FONT_SIZE: f32 = 12.0;
+pub const TERMINAL_FONT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 8.0..=24.0;
+pub const TERMINAL_SCROLLBACK: u32 = 5000;
+pub const TERMINAL_SCROLLBACK_RANGE: std::ops::RangeInclusive<u32> = 0..=50_000;
+
+/// `[terminal]` section. Every field falls back to its default on its own when its value
+/// has the wrong type, so a stray value never costs the rest of the file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalConfig {
+    /// `""` picks `pwsh.exe` if it is on PATH, else Windows PowerShell. `"cmd"`, `"wsl"`,
+    /// or a path or program name also work. Any other type reads as `""`.
+    #[serde(deserialize_with = "lenient_string")]
+    pub shell: String,
+    /// Arguments for `shell`. Entries that are not strings are dropped, and a value that
+    /// is not a list is empty.
+    #[serde(deserialize_with = "lenient_strings")]
+    pub args: Vec<String>,
+    /// The shell's working directory; `""` is the user's home.
+    #[serde(deserialize_with = "lenient_string")]
+    pub cwd: String,
+    /// Font family for the cells. A blank or non-string value reads as the default.
+    #[serde(deserialize_with = "lenient_font")]
+    pub font: String,
+    /// Logical px, an integer or a float, clamped to 8..=24.
+    #[serde(deserialize_with = "lenient_font_size", serialize_with = "short_f32")]
+    pub font_size: f32,
+    /// Hide the panel when another window is clicked (the session keeps running).
+    #[serde(deserialize_with = "lenient_true")]
+    pub hide_on_blur: bool,
+    /// Lines of history, clamped to 0..=50000; an integer or a float.
+    #[serde(deserialize_with = "lenient_scrollback")]
+    pub scrollback: u32,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            shell: String::new(),
+            args: Vec::new(),
+            cwd: String::new(),
+            font: TERMINAL_FONT.to_string(),
+            font_size: TERMINAL_FONT_SIZE,
+            hide_on_blur: true,
+            scrollback: TERMINAL_SCROLLBACK,
+        }
+    }
+}
+
+/// A whole `[terminal]` value of the wrong type (`terminal = 5`) reads as the defaults.
+fn lenient_terminal<'de, D: serde::Deserializer<'de>>(d: D) -> Result<TerminalConfig, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Terminal(TerminalConfig),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Lenient::deserialize(d)? {
+        Lenient::Terminal(t) => t,
+        Lenient::Other(_) => TerminalConfig::default(),
+    })
+}
+
+/// A string; any other type is empty.
+fn lenient_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Text(String),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Lenient::deserialize(d)? {
+        Lenient::Text(s) => s,
+        Lenient::Other(_) => String::new(),
+    })
+}
+
+/// A list of strings; entries of another type are dropped, and a value that is not a
+/// list is empty.
+fn lenient_strings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Entry {
+        Text(String),
+        Other(serde::de::IgnoredAny),
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        List(Vec<Entry>),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Lenient::deserialize(d)? {
+        Lenient::List(l) => l
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::Text(s) => Some(s),
+                Entry::Other(_) => None,
+            })
+            .collect(),
+        Lenient::Other(_) => Vec::new(),
+    })
+}
+
+/// The font family: a string that is not blank (trimmed), else the default.
+fn lenient_font<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let s = lenient_string(d)?;
+    let s = s.trim();
+    Ok(if s.is_empty() { TERMINAL_FONT } else { s }.to_string())
+}
+
+/// An integer or a float; anything else (and NaN) is `None`.
+fn lenient_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Int(i64),
+        Float(f64),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Lenient::deserialize(d)? {
+        Lenient::Int(v) => Some(v as f64),
+        Lenient::Float(v) if !v.is_nan() => Some(v),
+        _ => None,
+    })
+}
+
+/// An integer or a float, clamped to `TERMINAL_FONT_SIZE_RANGE`; anything else is 12.
+fn lenient_font_size<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(lenient_number(d)?.map_or(TERMINAL_FONT_SIZE, |v| {
+        (v as f32).clamp(
+            *TERMINAL_FONT_SIZE_RANGE.start(),
+            *TERMINAL_FONT_SIZE_RANGE.end(),
+        )
+    }))
+}
+
+/// An integer or a float, clamped to `TERMINAL_SCROLLBACK_RANGE` (a float is cut to a
+/// whole number of lines); anything else is 5000.
+fn lenient_scrollback<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    Ok(lenient_number(d)?.map_or(TERMINAL_SCROLLBACK, |v| {
+        v.clamp(
+            f64::from(*TERMINAL_SCROLLBACK_RANGE.start()),
+            f64::from(*TERMINAL_SCROLLBACK_RANGE.end()),
+        ) as u32
+    }))
+}
+
 /// Writes an `f32` the way it reads (`12.1`, not `12.100000381469727`).
 fn short_f32<S: serde::Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_f64(v.to_string().parse().unwrap_or(*v as f64))
@@ -548,6 +701,7 @@ impl Default for Config {
             timer: TimerConfig::default(),
             snap: SnapConfig::default(),
             tile: TileConfig::default(),
+            terminal: TerminalConfig::default(),
         }
     }
 }
@@ -621,6 +775,15 @@ mod tests {
                 number_keys: false,
                 arrow_keys: false,
                 monitors: BTreeMap::from([("\\\\.\\DISPLAY2".into(), "1+2".into())]),
+            },
+            terminal: TerminalConfig {
+                shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe".into(),
+                args: vec!["-NoLogo".into(), "-NoProfile".into()],
+                cwd: "D:\\work".into(),
+                font: "JetBrains Mono".into(),
+                font_size: 13.5,
+                hide_on_blur: false,
+                scrollback: 20_000,
             },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);
@@ -1149,6 +1312,182 @@ mod tests {
         // The defaults round trip too, with no monitors table.
         let d = Config::default();
         assert_eq!(Config::parse(&d.to_toml()), d);
+    }
+
+    #[test]
+    fn terminal_defaults_and_reads_the_terminal_table() {
+        let d = TerminalConfig::default();
+        assert_eq!(d.shell, "");
+        assert!(d.args.is_empty());
+        assert_eq!(d.cwd, "");
+        assert_eq!(d.font, "Cascadia Mono");
+        assert_eq!(d.font_size, 12.0);
+        assert!(d.hide_on_blur);
+        assert_eq!(d.scrollback, 5000);
+        // No `[terminal]` table, an older config, or an empty one: the defaults.
+        assert_eq!(Config::parse("theme = \"x\"").terminal, d);
+        assert_eq!(Config::default().terminal, d);
+        assert_eq!(Config::parse("[terminal]\n").terminal, d);
+        let c = Config::parse(
+            "theme = \"paper-zine\"\n[tile]\ngap = 4\n[terminal]\nshell = \"cmd\"\nargs = [\"/k\", \"echo hi\"]\ncwd = \"D:/src\"\nfont = \"Consolas\"\nfont_size = 14\nhide_on_blur = false\nscrollback = 100\n[timer]\nfocus_min = 50\n",
+        );
+        let t = &c.terminal;
+        assert_eq!(t.shell, "cmd");
+        assert_eq!(t.args, ["/k", "echo hi"]);
+        assert_eq!(t.cwd, "D:/src");
+        assert_eq!(t.font, "Consolas");
+        assert_eq!(t.font_size, 14.0);
+        assert!(!t.hide_on_blur);
+        assert_eq!(t.scrollback, 100);
+        // The sections around it are read as before.
+        assert_eq!(c.tile.gap, 4.0);
+        assert_eq!(c.timer.focus_min, 50);
+        // One key set: the others keep their defaults.
+        let c = Config::parse("[terminal]\nhide_on_blur = false\n");
+        assert_eq!(
+            c.terminal,
+            TerminalConfig {
+                hide_on_blur: false,
+                ..d
+            }
+        );
+        // A float font size is read as it is, and an integer one too.
+        assert_eq!(
+            Config::parse("[terminal]\nfont_size = 10.5\n")
+                .terminal
+                .font_size,
+            10.5
+        );
+    }
+
+    #[test]
+    fn terminal_font_size_and_scrollback_are_clamped() {
+        for (text, want) in [
+            ("8", 8.0),
+            ("24", 24.0),
+            ("7", 8.0),
+            ("0", 8.0),
+            ("-3", 8.0),
+            ("25", 24.0),
+            ("1000", 24.0),
+            ("7.9", 8.0),
+            ("24.5", 24.0),
+            ("inf", 24.0),
+            ("-inf", 8.0),
+            ("nan", 12.0),
+            ("\"big\"", 12.0),
+            ("true", 12.0),
+            ("[14]", 12.0),
+        ] {
+            let c = Config::parse(&format!(
+                "theme = \"paper-zine\"\n[terminal]\nshell = \"cmd\"\nfont_size = {text}\n[timer]\nfocus_min = 50\n"
+            ));
+            assert_eq!(c.terminal.font_size, want, "{text}");
+            // The bad value never costs the rest of the file.
+            assert_eq!(c.terminal.shell, "cmd", "{text}");
+            assert_eq!(c.timer.focus_min, 50, "{text}");
+            assert_eq!(c.theme, "paper-zine", "{text}");
+        }
+        for (text, want) in [
+            ("0", 0),
+            ("1", 1),
+            ("5000", 5000),
+            ("50000", 50_000),
+            ("50001", 50_000),
+            ("99999999999", 50_000),
+            ("-1", 0),
+            ("-99999999999", 0),
+            ("2500.9", 2500),
+            ("1e9", 50_000),
+            ("-2.5", 0),
+            ("nan", 5000),
+            ("\"lots\"", 5000),
+            ("false", 5000),
+            ("{ a = 1 }", 5000),
+        ] {
+            let c = Config::parse(&format!(
+                "theme = \"paper-zine\"\n[terminal]\nscrollback = {text}\ncwd = \"D:/x\"\n[timer]\nfocus_min = 50\n"
+            ));
+            assert_eq!(c.terminal.scrollback, want, "{text}");
+            assert_eq!(c.terminal.cwd, "D:/x", "{text}");
+            assert_eq!(c.timer.focus_min, 50, "{text}");
+        }
+    }
+
+    #[test]
+    fn terminal_bad_types_fall_back_per_field() {
+        let c = Config::parse(
+            "theme = \"paper-zine\"\n[terminal]\nshell = 5\nargs = \"-NoLogo\"\ncwd = [1]\nfont = false\nfont_size = \"x\"\nhide_on_blur = \"no\"\nscrollback = \"x\"\n[timer]\nfocus_min = 50\n",
+        );
+        assert_eq!(c.terminal, TerminalConfig::default());
+        assert_eq!(c.timer.focus_min, 50);
+        assert_eq!(c.theme, "paper-zine");
+        // Each field on its own: the good ones are kept.
+        let c = Config::parse(
+            "[terminal]\nshell = \"wsl\"\nargs = 7\ncwd = \"D:/a\"\nfont = 3\nfont_size = 9\nhide_on_blur = 0\nscrollback = 10\n",
+        );
+        let t = c.terminal;
+        assert_eq!((t.shell.as_str(), t.cwd.as_str()), ("wsl", "D:/a"));
+        assert!(t.args.is_empty());
+        assert_eq!(t.font, "Cascadia Mono");
+        assert_eq!((t.font_size, t.scrollback), (9.0, 10));
+        assert!(t.hide_on_blur);
+        // A list keeps its strings and drops the rest, in order.
+        let c = Config::parse("[terminal]\nargs = [\"a\", 1, \"b\", [2], true, \"c\"]\n");
+        assert_eq!(c.terminal.args, ["a", "b", "c"]);
+        // A blank font is the default (a blank shell or cwd is meaningful: auto, home).
+        let c = Config::parse("[terminal]\nfont = \"  \"\nshell = \"\"\ncwd = \"\"\n");
+        assert_eq!(c.terminal, TerminalConfig::default());
+        let c = Config::parse("[terminal]\nfont = \"  Fira Code \"\n");
+        assert_eq!(c.terminal.font, "Fira Code");
+        // Unknown keys are ignored.
+        let c = Config::parse("[terminal]\ntabs = 3\nscrollback = 70\n");
+        assert_eq!(c.terminal.scrollback, 70);
+        // The whole value of the wrong type reads as the defaults, and the rest survives.
+        let c = Config::parse("theme = \"paper-zine\"\nterminal = 5\n[timer]\nfocus_min = 50\n");
+        assert_eq!(c.terminal, TerminalConfig::default());
+        assert_eq!(c.timer.focus_min, 50);
+        assert_eq!(c.theme, "paper-zine");
+        let c = Config::parse("theme = \"paper-zine\"\nterminal = \"cmd\"\n");
+        assert_eq!(c.terminal, TerminalConfig::default());
+        assert_eq!(c.theme, "paper-zine");
+    }
+
+    #[test]
+    fn terminal_round_trips_with_the_other_sections() {
+        // Defaults write and read back the same.
+        let d = Config::default();
+        assert_eq!(Config::parse(&d.to_toml()), d);
+        let mut c = Config::parse(
+            "theme = \"paper-zine\"\n[timer]\nfocus_min = 50\n[tile]\ngap = 6\n[tile.monitors]\n\"a\" = \"2x2\"\n",
+        );
+        c.terminal = TerminalConfig {
+            shell: "pwsh".into(),
+            args: vec!["-NoLogo".into(), "-Command".into(), "echo \"hi\"".into()],
+            cwd: "C:\\Users\\me\\src".into(),
+            font: "Cascadia Code".into(),
+            font_size: 12.1,
+            hide_on_blur: false,
+            scrollback: 0,
+        };
+        let text = c.to_toml();
+        assert!(text.contains("[terminal]"), "{text}");
+        // A font size that is not a round float is written the way it was read.
+        assert!(text.contains("font_size = 12.1\n"), "{text}");
+        let back = Config::parse(&text);
+        assert_eq!(back, c);
+        assert_eq!(back.terminal.args.len(), 3);
+        assert_eq!(back.terminal.cwd, "C:\\Users\\me\\src");
+        assert_eq!(back.timer.focus_min, 50);
+        assert_eq!(back.tile.monitors["a"], "2x2");
+        // Clamped values are what gets written, so the file stays in range.
+        let c = Config::parse("[terminal]\nfont_size = 99\nscrollback = 999999\n");
+        let back = Config::parse(&c.to_toml());
+        assert_eq!(
+            (back.terminal.font_size, back.terminal.scrollback),
+            (24.0, 50_000)
+        );
+        assert_eq!(back, c);
     }
 
     #[test]

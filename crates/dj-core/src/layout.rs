@@ -254,12 +254,13 @@ pub const HEADER: Rect = Rect::new(PAD_X, 16.0, HOME_W - 2.0 * PAD_X, 28.0);
 pub const FOOTER: Rect = Rect::new(PAD_X, 304.0, HOME_W - 2.0 * PAD_X, 20.0);
 
 /// Window size (logical) that holds the largest state; the swap chain is this size.
-/// It is a notch shoulder wider than Home on each side, so Home's notch is not clipped.
-/// The pill is centred in it, so the extra width doesn't move anything on screen.
+/// It is a notch shoulder wider than the widest panel on each side (now the Terminal), so
+/// that panel's notch is not clipped, and it is as tall as the tallest one. The pill is
+/// centred in it, so the extra room doesn't move anything on screen.
 pub fn window_size() -> (f32, f32) {
     (
-        HOME_W + 2.0 * NOTCH_SHOULDER,
-        TOP_MARGIN + HOME_H + BOTTOM_SLACK,
+        HOME_W.max(TERM_W) + 2.0 * NOTCH_SHOULDER,
+        TOP_MARGIN + HOME_H.max(TERM_H) + BOTTOM_SLACK,
     )
 }
 
@@ -367,6 +368,49 @@ mod tests {
     }
 
     #[test]
+    fn the_window_is_sized_for_the_terminal_panel() {
+        // The Terminal is the largest state in both directions, so it sets the window.
+        const { assert!(TERM_W > HOME_W && TERM_H > HOME_H) };
+        let (w, h) = window_size();
+        assert_eq!(
+            (w, h),
+            (
+                TERM_W + 2.0 * NOTCH_SHOULDER,
+                TOP_MARGIN + TERM_H + BOTTOM_SLACK
+            )
+        );
+        assert_eq!((w, h), (776.0, 428.0));
+        assert!(TERM_W <= w && TOP_MARGIN + TERM_H <= h);
+        // Its notch (a shoulder each side, from the top edge) fits too.
+        let n = notch_bounds(centred_pill(TERM_W, TERM_H));
+        assert_eq!((n.x, n.x + n.w), (0.0, w));
+        assert!(n.y + n.h <= h);
+        // Home is centred in the wider window; its content is anchored to the pill, so
+        // nothing moves, but it no longer touches the window's sides.
+        let home = notch_bounds(centred_pill(HOME_W, HOME_H));
+        assert!(home.x > 0.0 && home.x + home.w < w);
+    }
+
+    #[test]
+    fn terminal_parts_sit_inside_the_panel_and_do_not_overlap() {
+        assert_eq!((TERM_W, TERM_H, TERM_R), (760.0, 420.0, 22.0));
+        for r in [TERM_CLOSE, TERM_TEXT] {
+            assert!(inside(&r, TERM_W, TERM_H), "{r:?}");
+        }
+        // The close button is in the header; the text starts under it.
+        const {
+            assert!(TERM_CLOSE.y + TERM_CLOSE.h <= TERM_HEADER_H);
+            assert!(TERM_TEXT.y >= TERM_HEADER_H);
+        }
+        assert!(apart(&TERM_CLOSE, &TERM_TEXT));
+        // The button is 24 px square, 14 px in from the right edge.
+        assert_eq!((TERM_CLOSE.w, TERM_CLOSE.h), (24.0, 24.0));
+        assert_eq!(TERM_W - (TERM_CLOSE.x + TERM_CLOSE.w), 14.0);
+        // The text area has the same margin left and right.
+        assert_eq!(TERM_TEXT.x, TERM_W - (TERM_TEXT.x + TERM_TEXT.w));
+    }
+
+    #[test]
     fn window_holds_vitals_and_sweep() {
         let (w, h) = window_size();
         for (pw, ph) in [(VITALS_W, VITALS_H), (SWEEP_W, SWEEP_H)] {
@@ -416,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn window_holds_the_timer_views_and_home_is_still_the_largest() {
+    fn window_holds_the_timer_views_and_the_terminal_is_the_largest() {
         let (w, h) = window_size();
         for (pw, ph) in [
             (TIMER_W, TIMER_H),
@@ -429,8 +473,8 @@ mod tests {
         assert_eq!(
             window_size(),
             (
-                HOME_W + 2.0 * NOTCH_SHOULDER,
-                TOP_MARGIN + HOME_H + BOTTOM_SLACK
+                TERM_W + 2.0 * NOTCH_SHOULDER,
+                TOP_MARGIN + TERM_H + BOTTOM_SLACK
             )
         );
     }
@@ -547,7 +591,7 @@ mod tests {
     }
 
     /// Every view size the island morphs between, as `(w, h, corner radius)`.
-    const VIEWS: [(f32, f32, f32); 13] = [
+    const VIEWS: [(f32, f32, f32); 14] = [
         (IDLE_W, IDLE_H, IDLE_R),
         (HOME_W, HOME_H, HOME_R),
         (VITALS_W, VITALS_H, VITALS_R),
@@ -560,6 +604,7 @@ mod tests {
         (SNAP_W, SNAP_H, SNAP_R),
         (SETTINGS_W, SETTINGS_H, SETTINGS_R),
         (TILE_PANEL_W, TILE_PANEL_H, TILE_PANEL_R),
+        (TERM_W, TERM_H, TERM_R),
         (OSD_W, OSD_H, OSD_R),
     ];
 
@@ -610,9 +655,9 @@ mod tests {
             // The shoulder curve ends above where the bottom corners start.
             assert!(NOTCH_SHOULDER <= pill.y + pill.h - r, "{w}x{h}");
         }
-        // Home touches both sides: nothing wider would fit.
-        let home = notch_bounds(centred_pill(HOME_W, HOME_H));
-        assert_eq!((home.x, home.x + home.w), (0.0, ww));
+        // The Terminal touches both sides: nothing wider would fit.
+        let term = notch_bounds(centred_pill(TERM_W, TERM_H));
+        assert_eq!((term.x, term.x + term.w), (0.0, ww));
         // The OSD's own rect is a centred pill too.
         assert_eq!(osd_rect(), centred_pill(OSD_W, OSD_H));
     }
@@ -658,13 +703,8 @@ mod tests {
         }
         // The shot is the plan's 76 x 48, and the window still fits Home (and its notch).
         assert_eq!((SN_SHOT.w, SN_SHOT.h), (76.0, 48.0));
-        assert_eq!(
-            window_size(),
-            (
-                HOME_W + 2.0 * NOTCH_SHOULDER,
-                TOP_MARGIN + HOME_H + BOTTOM_SLACK
-            )
-        );
+        let (w, h) = window_size();
+        assert!(HOME_W + 2.0 * NOTCH_SHOULDER <= w && TOP_MARGIN + HOME_H + BOTTOM_SLACK <= h);
     }
 
     #[test]

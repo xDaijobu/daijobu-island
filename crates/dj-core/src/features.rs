@@ -61,7 +61,8 @@ pub const FEATURES: [Feature; 12] = [
     locked("clipboard", "Clipboard", Icon::Clipboard),
     locked("notifications", "Notifications", Icon::Notifications),
     locked("lyrics", "Lyrics", Icon::Lyrics),
-    locked("cli", "dj CLI", Icon::Cli),
+    // Stage T: a shell in the island. This was the locked "dj CLI" tile; it keeps the icon.
+    available("terminal", "Terminal", Icon::Cli),
     // Stage 12a: window zones. Scenes (12b) and the Boot Scene (12c) come later under the
     // same tile.
     available("tile", "Tile & Scenes", Icon::Tile),
@@ -75,7 +76,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ids_unique_and_only_music_osd_vitals_timer_snap_and_tile_are_available() {
+    fn ids_unique_and_only_music_osd_vitals_timer_snap_terminal_and_tile_are_available() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
         assert_eq!(FEATURES.len(), 12);
@@ -84,12 +85,26 @@ mod tests {
             .filter(|f| f.availability == Availability::Available)
             .map(|f| f.id)
             .collect();
-        assert_eq!(open, ["music", "osd", "vitals", "timer", "snap", "tile"]);
-        // Six of twelve are ready; the Home footer counts them.
-        assert_eq!(open.len(), 6);
+        assert_eq!(
+            open,
+            ["music", "osd", "vitals", "timer", "snap", "terminal", "tile"]
+        );
+        // Seven of twelve are ready; the Home footer counts them.
+        assert_eq!(open.len(), 7);
         assert_eq!(FEATURES[0].name, "Music");
         let tile = FEATURES.iter().find(|f| f.id == "tile").unwrap();
         assert_eq!((tile.name, tile.icon), ("Tile & Scenes", Icon::Tile));
+    }
+
+    #[test]
+    fn the_terminal_tile_replaces_the_locked_cli_tile_in_place() {
+        // The old "dj CLI" tile is gone (Stage 11 was dropped), and Terminal sits in its slot.
+        assert!(FEATURES.iter().all(|f| f.id != "cli" && f.name != "dj CLI"));
+        let i = FEATURES.iter().position(|f| f.id == "terminal").unwrap();
+        assert_eq!(i, 8);
+        let f = FEATURES[i];
+        assert_eq!((f.name, f.icon), ("Terminal", Icon::Cli));
+        assert_eq!(f.availability, Availability::Available);
     }
 
     #[test]
