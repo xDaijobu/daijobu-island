@@ -62,7 +62,9 @@ pub const FEATURES: [Feature; 12] = [
     locked("notifications", "Notifications", Icon::Notifications),
     locked("lyrics", "Lyrics", Icon::Lyrics),
     locked("cli", "dj CLI", Icon::Cli),
-    locked("tile", "Tile & Scenes", Icon::Tile),
+    // Stage 12a: window zones. Scenes (12b) and the Boot Scene (12c) come later under the
+    // same tile.
+    available("tile", "Tile & Scenes", Icon::Tile),
     locked("shelf", "Shelf", Icon::Shelf),
     locked("ambient", "Ambient", Icon::Ambient),
 ];
@@ -73,7 +75,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ids_unique_and_only_music_osd_vitals_timer_and_snap_are_available() {
+    fn ids_unique_and_only_music_osd_vitals_timer_snap_and_tile_are_available() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
         assert_eq!(FEATURES.len(), 12);
@@ -82,8 +84,12 @@ mod tests {
             .filter(|f| f.availability == Availability::Available)
             .map(|f| f.id)
             .collect();
-        assert_eq!(open, ["music", "osd", "vitals", "timer", "snap"]);
+        assert_eq!(open, ["music", "osd", "vitals", "timer", "snap", "tile"]);
+        // Six of twelve are ready; the Home footer counts them.
+        assert_eq!(open.len(), 6);
         assert_eq!(FEATURES[0].name, "Music");
+        let tile = FEATURES.iter().find(|f| f.id == "tile").unwrap();
+        assert_eq!((tile.name, tile.icon), ("Tile & Scenes", Icon::Tile));
     }
 
     #[test]

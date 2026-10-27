@@ -1,6 +1,6 @@
 //! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel with
-//! its Sweep view, the Timer views, Settings, the snap thumb and the OSD overlay, driven by
-//! springs.
+//! its Sweep view, the Timer views, Settings, the Tile panel, the snap thumb and the OSD
+//! overlay, driven by springs.
 //! Time only enters through `step(dt)`, so everything here is deterministic. The timer
 //! itself (`timer::Pomodoro`) lives in the app; the island only hears whether it is active
 //! or done. Likewise the snap thumb's countdown and its shot live in the app; the island
@@ -45,10 +45,14 @@ pub enum IslandState {
     /// The Settings panel, opened from the gear in the Home header. Back, or an empty
     /// click, returns to Home.
     Settings,
+    /// The Tile panel (window zones): the layout picker, opened while a window is dragged
+    /// towards the island or from the Home tile. Every click inside it is the app's to
+    /// read (`ClickOutcome::Tile`); the app collapses it on an empty spot.
+    TilePanel,
 }
 
 /// Number of content layers (one per `IslandState`).
-const LAYERS: usize = 11;
+const LAYERS: usize = 12;
 
 impl IslandState {
     /// Index into the per-content opacity springs.
@@ -65,6 +69,7 @@ impl IslandState {
             IslandState::TimerAlert => 8,
             IslandState::SnapThumb => 9,
             IslandState::Settings => 10,
+            IslandState::TilePanel => 11,
         }
     }
 
@@ -165,6 +170,13 @@ pub enum ClickOutcome {
     /// A click on the snap thumb. `Dismiss` has already sent the island to its rest
     /// state; the app drops the shot and stops the countdown.
     Snap(SnapAction),
+    /// Any click inside the Tile panel, in panel-local px (the panel's top-left is the
+    /// origin; stable while the pill is still morphing). The app hit-tests it with
+    /// `tile::panel_hit`: a cell places the window, an empty spot collapses the panel.
+    Tile {
+        x: f32,
+        y: f32,
+    },
 }
 
 /// What a click on the snap thumb asks for.
@@ -192,6 +204,7 @@ pub struct Layers {
     pub alert: f32,
     pub snap: f32,
     pub settings: f32,
+    pub tile: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -298,6 +311,11 @@ impl Island {
             IslandState::TimerAlert => (layout::ALERT_W, layout::ALERT_H, layout::ALERT_R),
             IslandState::SnapThumb => (layout::SNAP_W, layout::SNAP_H, layout::SNAP_R),
             IslandState::Settings => (layout::SETTINGS_W, layout::SETTINGS_H, layout::SETTINGS_R),
+            IslandState::TilePanel => (
+                layout::TILE_PANEL_W,
+                layout::TILE_PANEL_H,
+                layout::TILE_PANEL_R,
+            ),
         }
     }
 
@@ -332,7 +350,7 @@ impl Island {
     }
 
     /// Pushes new timer facts. A finished session shows the alert over the rest states;
-    /// over an open panel (Home, Music, Vitals, Sweep, Timer) it waits for the collapse.
+    /// over an open panel (Home, Music, Vitals, Sweep, Timer, Tile) it waits for the collapse.
     pub fn set_timer(&mut self, ui: TimerUi, tokens: &ResolvedTokens) {
         if ui == self.timer {
             return;
@@ -381,6 +399,20 @@ impl Island {
         if self.state != IslandState::Settings {
             self.set_state(IslandState::Settings, tokens);
         }
+    }
+
+    /// Opens the Tile panel: from any rest state (the picker while a window is dragged) or
+    /// from the Home tile. Like the other panels it is not a rest state, so `collapse`
+    /// returns to the rest state below it, and a snap thumb that arrives takes it over.
+    pub fn open_tile(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::TilePanel {
+            self.set_state(IslandState::TilePanel, tokens);
+        }
+    }
+
+    /// The Tile panel is the island's state (it may still be growing, or covered by the OSD).
+    pub fn tile_open(&self) -> bool {
+        self.state == IslandState::TilePanel
     }
 
     /// The pill's resting size: the OSD size while it is up, else the state's size.
@@ -623,6 +655,11 @@ impl Island {
                     }
                 }
             }
+            // Every click inside the panel is the app's to read; it collapses on an empty spot.
+            IslandState::TilePanel => {
+                let (lx, ly) = Self::view_local(x, y, layout::TILE_PANEL_W);
+                ClickOutcome::Tile { x: lx, y: ly }
+            }
             IslandState::Settings => {
                 let (lx, ly) = Self::view_local(x, y, layout::SETTINGS_W);
                 match settings::hit(lx, ly) {
@@ -820,6 +857,7 @@ impl Island {
                 alert: v(8),
                 snap: v(9),
                 settings: v(10),
+                tile: v(11),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -1590,12 +1628,13 @@ mod tests {
     fn done_over_an_open_panel_waits_for_the_collapse() {
         let t = tokens();
         type Open = fn(&mut Island, &ResolvedTokens);
-        let panels: [(IslandState, Open); 5] = [
+        let panels: [(IslandState, Open); 6] = [
             (IslandState::Home, Island::expand),
             (IslandState::MusicExpanded, Island::open_music),
             (IslandState::Vitals, Island::open_vitals),
             (IslandState::Sweep, Island::open_sweep),
             (IslandState::TimerPanel, Island::open_timer),
+            (IslandState::TilePanel, Island::open_tile),
         ];
         for (state, open) in panels {
             let mut i = Island::new(&t);
@@ -1904,5 +1943,315 @@ mod tests {
         let p = i.pill_rect();
         assert_eq!(i.click(p.x + 2.0, p.y + 2.0, &t), ClickOutcome::Collapsed);
         assert_eq!(i.state(), IslandState::TimerAlert);
+    }
+
+    // ---- Tile ----
+
+    fn tile_index() -> usize {
+        FEATURES.iter().position(|f| f.id == "tile").unwrap()
+    }
+
+    /// Window-logical point for panel-local `(x, y)`: the panel hangs centre-top.
+    fn panel_pt(x: f32, y: f32) -> (f32, f32) {
+        let (win_w, _) = layout::window_size();
+        (
+            (win_w - layout::TILE_PANEL_W) / 2.0 + x,
+            layout::TOP_MARGIN + y,
+        )
+    }
+
+    fn open_settled_tile(t: &ResolvedTokens) -> Island {
+        let mut i = Island::new(t);
+        i.open_tile(t);
+        settle(&mut i, t);
+        i
+    }
+
+    #[test]
+    fn the_tile_panel_opens_from_idle_at_its_size_and_cross_fades() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        assert!(!i.tile_open());
+        i.open_tile(&t);
+        assert_eq!(i.state(), IslandState::TilePanel);
+        assert!(i.tile_open());
+        assert!(i.is_animating());
+        // Mid-flight both contents are partly visible: the cross-fade.
+        for _ in 0..6 {
+            i.step(1.0 / 144.0, &t);
+        }
+        let l = i.view().layers;
+        assert!(l.tile > 0.0 && l.tile < 1.0, "tile {}", l.tile);
+        assert!(l.idle > 0.0 && l.idle < 1.0, "idle {}", l.idle);
+        settle(&mut i, &t);
+        assert_eq!((layout::TILE_PANEL_W, layout::TILE_PANEL_H), (400.0, 168.0));
+        assert_eq!(size(&i), (400.0, 168.0));
+        let v = i.view();
+        assert_eq!(v.radius, 32.0 * t.radius_scale);
+        assert_eq!((v.layers.idle, v.layers.tile), (0.0, 1.0));
+    }
+
+    #[test]
+    fn the_tile_panel_opens_from_home_and_collapse_goes_to_the_rest_state() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        i.open_tile(&t);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::TILE_PANEL_W, layout::TILE_PANEL_H));
+        let l = i.view().layers;
+        assert_eq!((l.home, l.tile), (0.0, 1.0));
+        // Not back to Home: the panel is not a step down from it.
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::Idle);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::IDLE_W, layout::IDLE_H));
+        let l = i.view().layers;
+        assert_eq!((l.idle, l.tile), (1.0, 0.0));
+    }
+
+    #[test]
+    fn the_tile_panel_opens_from_every_rest_state_and_collapse_returns_to_it() {
+        let t = tokens();
+        type Setup = fn(&mut Island, &ResolvedTokens);
+        let cases: [(Setup, IslandState); 5] = [
+            (|_, _| {}, IslandState::Idle),
+            (
+                |i, t| i.set_music(with_track(), t),
+                IslandState::MusicCompact,
+            ),
+            (|i, t| i.set_timer(RUNNING, t), IslandState::TimerCompact),
+            (|i, t| i.set_timer(DONE, t), IslandState::TimerAlert),
+            (
+                |i, t| {
+                    i.set_timer(RUNNING, t);
+                    i.set_music(with_track(), t);
+                },
+                IslandState::MusicCompact,
+            ),
+        ];
+        for (setup, rest) in cases {
+            let mut i = Island::new(&t);
+            setup(&mut i, &t);
+            assert_eq!(i.state(), rest);
+            i.open_tile(&t);
+            settle(&mut i, &t);
+            assert_eq!(i.state(), IslandState::TilePanel, "from {rest:?}");
+            assert_eq!(size(&i), (layout::TILE_PANEL_W, layout::TILE_PANEL_H));
+            assert_eq!(i.view().layers.tile, 1.0);
+            i.collapse(&t);
+            assert_eq!(i.state(), rest, "back to {rest:?}");
+            settle(&mut i, &t);
+            let (w, h, _) = Island::base_size(rest);
+            assert_eq!(size(&i), (w, h), "{rest:?}");
+            assert_eq!(i.view().layers.tile, 0.0);
+            assert!(!i.tile_open());
+        }
+    }
+
+    #[test]
+    fn opening_the_tile_panel_again_changes_nothing() {
+        let t = tokens();
+        let mut i = open_settled_tile(&t);
+        i.open_tile(&t);
+        assert!(!i.is_animating());
+        assert_eq!(i.state(), IslandState::TilePanel);
+    }
+
+    #[test]
+    fn facts_arriving_under_the_tile_panel_wait_for_the_collapse() {
+        let t = tokens();
+        let mut i = open_settled_tile(&t);
+        i.set_music(with_track(), &t);
+        i.set_timer(RUNNING, &t);
+        assert_eq!(i.state(), IslandState::TilePanel);
+        i.set_timer(DONE, &t);
+        assert!(i.tile_open());
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        assert!(!i.tile_open());
+    }
+
+    #[test]
+    fn each_state_lights_exactly_its_own_layer() {
+        let t = tokens();
+        type Setup = fn(&mut Island, &ResolvedTokens);
+        let states: [(IslandState, Setup); 12] = [
+            (IslandState::Idle, |_, _| {}),
+            (IslandState::Home, Island::expand),
+            (IslandState::MusicCompact, |i, t| {
+                i.set_music(with_track(), t)
+            }),
+            (IslandState::MusicExpanded, Island::open_music),
+            (IslandState::Vitals, Island::open_vitals),
+            (IslandState::Sweep, Island::open_sweep),
+            (IslandState::TimerPanel, Island::open_timer),
+            (IslandState::TimerCompact, |i, t| i.set_timer(RUNNING, t)),
+            (IslandState::TimerAlert, |i, t| i.set_timer(DONE, t)),
+            (IslandState::SnapThumb, Island::show_snap),
+            (IslandState::Settings, Island::open_settings),
+            (IslandState::TilePanel, Island::open_tile),
+        ];
+        assert_eq!(states.len(), LAYERS);
+        for (state, setup) in states {
+            let mut i = Island::new(&t);
+            setup(&mut i, &t);
+            assert_eq!(i.state(), state);
+            settle(&mut i, &t);
+            let l = i.view().layers;
+            let got = [
+                l.idle,
+                l.home,
+                l.compact,
+                l.expanded,
+                l.vitals,
+                l.sweep,
+                l.timer,
+                l.timer_compact,
+                l.alert,
+                l.snap,
+                l.settings,
+                l.tile,
+            ];
+            let want: [f32; LAYERS] =
+                std::array::from_fn(|n| if n == state.layer() { 1.0 } else { 0.0 });
+            assert_eq!(got, want, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn tile_clicks_report_panel_local_coordinates_and_leave_the_panel_open() {
+        let t = tokens();
+        let mut i = open_settled_tile(&t);
+        let (w, h) = (layout::TILE_PANEL_W, layout::TILE_PANEL_H);
+        for (lx, ly) in [
+            (0.0, 0.0),
+            (w - 1.0, 0.0),
+            (0.0, h - 1.0),
+            (w - 1.0, h - 1.0),
+            (w / 2.0, h / 2.0),
+        ] {
+            let (x, y) = panel_pt(lx, ly);
+            assert_eq!(
+                i.click(x, y, &t),
+                ClickOutcome::Tile { x: lx, y: ly },
+                "{lx},{ly}"
+            );
+            // An empty spot does not collapse by itself: that is the app's call.
+            assert_eq!(i.state(), IslandState::TilePanel);
+        }
+        // Just outside the pill is not the panel's.
+        for (lx, ly) in [(-1.0, 10.0), (w, 10.0), (10.0, -1.0), (10.0, h)] {
+            let (x, y) = panel_pt(lx, ly);
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored, "{lx},{ly}");
+        }
+        assert_eq!(i.state(), IslandState::TilePanel);
+    }
+
+    #[test]
+    fn tile_clicks_are_panel_local_even_mid_morph() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        i.open_tile(&t);
+        // Not settled: the pill is still shrinking from Home, but the content is anchored
+        // centre-top.
+        i.step(1.0 / 144.0, &t);
+        assert!(i.is_animating());
+        assert!(i.pill_rect().w > layout::TILE_PANEL_W);
+        let (x, y) = panel_pt(120.0, 60.0);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Tile { x: 120.0, y: 60.0 });
+    }
+
+    #[test]
+    fn the_osd_outranks_the_tile_panel_and_the_panel_returns() {
+        let t = tokens();
+        let mut i = open_settled_tile(&t);
+        i.show_osd(vol(0.5), &t);
+        settle_pinned(&mut i, &t);
+        // The OSD covers the pill; the state stays put.
+        assert_eq!(i.state(), IslandState::TilePanel);
+        assert_eq!(size(&i), (layout::OSD_W, layout::OSD_H));
+        // Where the panel's content would be, and on the OSD off its bar: not a Tile click.
+        let (x, y) = panel_pt(200.0, 100.0);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+        let r = layout::osd_rect();
+        assert_eq!(i.click(r.x + 2.0, r.y + 2.0, &t), ClickOutcome::Ignored);
+        let bar = layout::OSD_BAR;
+        let out = i.click(r.x + bar.x + bar.w / 2.0, r.y + bar.y + bar.h / 2.0, &t);
+        assert_eq!(out, ClickOutcome::SetVolume(0.5));
+        i.release();
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::TilePanel);
+        assert_eq!(size(&i), (layout::TILE_PANEL_W, layout::TILE_PANEL_H));
+        assert_eq!(i.view().layers.tile, 1.0);
+        assert_eq!(i.view().osd.alpha, 0.0);
+        let (x, y) = panel_pt(200.0, 100.0);
+        assert!(matches!(i.click(x, y, &t), ClickOutcome::Tile { .. }));
+    }
+
+    #[test]
+    fn the_snap_thumb_takes_over_the_tile_panel_and_hands_back_to_rest() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_tile(&t);
+        settle(&mut i, &t);
+        i.show_snap(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        assert!(!i.tile_open());
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::SNAP_W, layout::SNAP_H));
+        let l = i.view().layers;
+        assert_eq!((l.tile, l.snap), (0.0, 1.0));
+        // A click is the thumb's, never the panel's; the panel's old area is outside it.
+        let (x, y) = view_at(layout::SNAP_W, layout::SN_COPY);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Copy));
+        let (x, y) = panel_pt(200.0, 100.0);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+        let (x, y) = view_at(layout::SNAP_W, layout::SN_SHOT);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Dismiss));
+        assert_eq!(i.state(), IslandState::MusicCompact);
+    }
+
+    #[test]
+    fn a_panel_opened_over_the_thumb_gives_it_back_on_collapse() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_snap(&t);
+        settle(&mut i, &t);
+        i.open_tile(&t);
+        settle(&mut i, &t);
+        assert!(i.tile_open());
+        assert_eq!(size(&i), (layout::TILE_PANEL_W, layout::TILE_PANEL_H));
+        // The thumb's countdown is the app's and keeps running under the panel.
+        assert!(i.snap_shown());
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        // If the countdown ends while the panel is open there is nothing to give back.
+        i.open_tile(&t);
+        i.hide_snap(&t);
+        assert!(i.tile_open());
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn the_home_tile_is_available_and_reports_open_without_shaking() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        let tile = layout::home_tiles()[tile_index()];
+        let p = i.pill_rect();
+        let (x, y) = (p.x + tile.x + 5.0, p.y + tile.y + 5.0);
+        assert!(i.hover(x, y));
+        assert_eq!(i.view().hover, Some(tile_index()));
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Open(tile_index()));
+        // The app decides what opening means; the island only reports the click.
+        assert_eq!(i.state(), IslandState::Home);
+        assert!(i.view().shake.is_none() && i.view().hint.is_none());
+        i.open_tile(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.view().layers.tile, 1.0);
     }
 }
