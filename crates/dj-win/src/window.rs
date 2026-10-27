@@ -448,6 +448,12 @@ pub fn take_keyboard(hwnd: HWND) -> isize {
     }
 }
 
+/// `hwnd` is the foreground window (it has the keyboard).
+pub fn is_foreground(hwnd: HWND) -> bool {
+    // SAFETY: no arguments; the returned handle is only compared.
+    unsafe { GetForegroundWindow() == hwnd }
+}
+
 /// Activates `prev` (from [`take_keyboard`]) if it is still a window and visible; a stale
 /// or zero handle does nothing. Best effort: the system may refuse (the foreground lock).
 pub fn give_back_keyboard(prev: isize) {

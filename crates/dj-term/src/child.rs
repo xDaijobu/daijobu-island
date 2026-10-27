@@ -9,6 +9,7 @@ use std::os::windows::io::{AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 use alacritty_terminal::tty::Pty;
 
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Console::SetConsoleCtrlHandler;
 use windows::Win32::System::Threading::TerminateProcess;
 
 pub(crate) struct Child {
@@ -64,4 +65,14 @@ pub(crate) fn process_ended(pid: u32, timeout_ms: u32) -> bool {
             }
         }
     }
+}
+
+/// Lets the shell started next get Ctrl+C. A process inherits "ignore Ctrl+C" from the one
+/// that starts it, and the island may have been started with it (from a script or a
+/// launcher that runs its children in their own process group); the shell, and the `ping`
+/// it runs, would then ignore every Ctrl+C typed in the panel.
+pub(crate) fn allow_ctrl_c() {
+    // SAFETY: a null handler only clears this process's "ignore Ctrl+C" flag (the island has
+    // no console of its own, so no handler runs); no pointers are passed.
+    let _ = unsafe { SetConsoleCtrlHandler(None, false) };
 }

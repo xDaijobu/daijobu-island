@@ -1438,17 +1438,26 @@ impl App {
         self.island.open_terminal(&tokens);
         if !self.term_keyboard {
             window::set_keyboard(self.hwnd, true);
-            self.term_prev = window::take_keyboard(self.hwnd);
+            let prev = window::take_keyboard(self.hwnd);
+            self.term_prev = if prev == self.hwnd.0 as isize {
+                0
+            } else {
+                prev
+            };
             self.term_keyboard = true;
         } else {
             window::take_keyboard(self.hwnd);
         }
-        self.terminal.set_focused(true);
+        // The system can refuse the foreground: then the cursor says so (hollow) rather
+        // than pretend the keys go here.
+        self.terminal.set_focused(window::is_foreground(self.hwnd));
         self.dirty = true;
     }
 
     /// Collapses the panel; the shell keeps running. `give_back`: the keyboard returns to
-    /// the window that had it (the hotkey or ✕), not when the user clicked elsewhere.
+    /// the window that had it (the hotkey or ✕), not when the user clicked elsewhere; and
+    /// only while the island still holds it (with `hide_on_blur` off the user may be
+    /// typing in another window by now).
     fn close_terminal(&mut self, give_back: bool) {
         if self.island.terminal_open() {
             let tokens = self.anim.current().clone();
@@ -1463,20 +1472,23 @@ impl App {
             return;
         }
         self.term_keyboard = false;
+        let held = window::is_foreground(self.hwnd);
         window::set_keyboard(self.hwnd, false);
         self.terminal.set_focused(false);
         self.terminal.release();
         let prev = std::mem::take(&mut self.term_prev);
-        if give_back {
+        if give_back && held {
             window::give_back_keyboard(prev);
         }
     }
 
     /// The keyboard follows the panel: when something else collapsed it (a snap, another
-    /// panel, a theme switch through Home), the island stops taking keys.
+    /// panel, a theme switch through Home), the island stops taking keys, and if it still
+    /// has them they go back to where they were (never stuck on a window that won't take
+    /// them).
     fn sync_terminal(&mut self) {
         if self.term_keyboard && !self.island.terminal_open() {
-            self.release_keyboard(false);
+            self.release_keyboard(true);
         }
     }
 
@@ -1498,6 +1510,13 @@ impl App {
     /// The panel is open and has (or had, with `hide_on_blur` off) the keyboard.
     fn terminal_input(&self) -> bool {
         self.term_keyboard && self.island.terminal_open()
+    }
+
+    /// A window device-px point is on the panel itself: not the notch's shoulders around
+    /// it, and not while the volume OSD covers the island.
+    fn over_panel(&self, x: i32, y: i32) -> bool {
+        let (lx, ly) = self.island_point(x, y);
+        self.island.view().osd.alpha <= 0.0 && self.island.pill_rect().contains(lx, ly)
     }
 
     // ---- Tile ----
@@ -2486,18 +2505,18 @@ impl Handler for App {
                     }
                 }
             }
-            Event::Drag { x, y } if self.island.terminal_open() => {
-                let (lx, ly) = self.island_point(x, y);
-                let (px, py) = Self::terminal_local(lx, ly);
-                let outcome = self.terminal.drag(px, py);
-                self.term_outcome(outcome);
-            }
             Event::Drag { x, y } => {
                 let (lx, ly) = self.island_point(x, y);
                 match self.island.drag(lx) {
+                    // The OSD's bar, even over the terminal panel.
                     Some(level) => {
                         self.set_level(level);
                         self.dirty = true;
+                    }
+                    None if self.island.terminal_open() => {
+                        let (px, py) = Self::terminal_local(lx, ly);
+                        let outcome = self.terminal.drag(px, py);
+                        self.term_outcome(outcome);
                     }
                     None => {
                         if self.island.hover(lx, ly) {
@@ -2542,7 +2561,7 @@ impl Handler for App {
             Event::Hotkey(HOTKEY_TERMINAL) => {
                 if self.island.terminal_open() {
                     self.close_terminal(true);
-                } else if self.overlay.is_none() {
+                } else if self.overlay.is_none() && !self.snap_pending {
                     if !self.visible {
                         self.set_visible(true);
                     }
@@ -2695,11 +2714,11 @@ impl Handler for App {
                 let outcome = self.terminal.char(ch, mods);
                 self.term_outcome(outcome);
             }
-            Event::Wheel { delta, .. } if self.terminal_input() => {
+            Event::Wheel { delta, x, y } if self.terminal_input() && self.over_panel(x, y) => {
                 let outcome = self.terminal.wheel(delta);
                 self.term_outcome(outcome);
             }
-            Event::RightClick { .. } if self.terminal_input() => {
+            Event::RightClick { x, y } if self.terminal_input() && self.over_panel(x, y) => {
                 let outcome = self.terminal.right_click();
                 self.term_outcome(outcome);
             }

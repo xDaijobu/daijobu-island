@@ -28,7 +28,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
 | N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
 | N2 | **Reserve top space**: the notch registers a top AppBar so maximized windows (Chrome tabs) start below it (Settings switch, default on) | ✅ | `xDaijobu/stage-n2-appbar` | user-requested · built by the coordinator · live-checked by the coordinator |
-| T | **Terminal**: a real shell (PowerShell) inside the island, like VS Code's integrated terminal; drops from the notch on Ctrl+Alt+`, keeps running when closed | 🟡 contract | `xDaijobu/stage-t-terminal` | user-requested · [`stage-t-plan.md`](stage-t-plan.md) |
+| T | **Terminal**: a real shell (PowerShell) inside the island, like VS Code's integrated terminal; drops from the notch on Ctrl+Alt+`, keeps running when closed | 🟡 built, live test pending | `xDaijobu/stage-t-terminal` | user-requested · coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 932 tests · [`stage-t-plan.md`](stage-t-plan.md) · [`stage-t-report.md`](stage-t-report.md) |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -668,43 +668,43 @@ Headless, as before: fmt, clippy, test and release only; no exe, no real windows
 **Goal:** a real shell (PowerShell by default) that drops down from the notch on `Ctrl+Alt+``, styled like the island. The session keeps running while the panel is closed.
 
 ### Scope
-- [ ] **Open and close**:
+- [x] **Open and close**:
   - Openers: `Ctrl+Alt+`` (`VK_OEM_3`; `Ctrl+`` stays VS Code's), the **Terminal** tile on Home (the old locked "dj CLI" tile, renamed and unlocked), or the hotkey again / ✕ in the header to close.
   - The island morphs from the notch into the panel, 760 × 420 r 22, with the theme's spring. Esc goes to the shell, never closes.
-- [ ] **Keyboard focus**:
+- [x] **Keyboard focus**:
   - While the panel is open the island window takes the keyboard (it is `NOACTIVATE` otherwise).
   - Clicking another window hides the panel (`[terminal] hide_on_blur = true`, default). The session keeps running.
   - Closing gives the keyboard back to the window that had it.
   - Alt+F4 and F10 go to the shell, never to the island.
-- [ ] **Session**:
+- [x] **Session**:
   - One shell, started on first open and kept while hidden.
   - When it exits, the panel shows "process exited, press Enter to restart".
   - Quitting the island ends it.
-- [ ] **Shell**:
+- [x] **Shell**:
   - `[terminal] shell = ""` (auto): `pwsh.exe` if on PATH, else Windows PowerShell. `"cmd"`, `"wsl"`, or a full path also work, with `args`.
   - `cwd = ""`: the user's home.
   - Run through ConPTY with the `alacritty_terminal` emulator (Apache-2.0). No admin, no tokio.
-- [ ] **Panel**:
+- [x] **Panel**:
   - The header has the theme's lamp, the shell's title (OSC title, or the shell name) and ✕.
   - The grid is as many whole cells as fit `TERM_TEXT`.
   - Font: `[terminal] font = "Cascadia Mono"`, falling back to Geist Mono; `font_size = 12` (8–24).
   - The cursor is a steady block, or a hollow block when unfocused; no blink, to keep idle CPU ≈ 0.
   - Bold, italic, underline, strike and wide characters are drawn.
   - The scroll indicator shows while scrolled back.
-- [ ] **Colours**:
+- [x] **Colours**:
   - Background = the theme's pill colour, text = its text colour, cursor = accent, selection = accent at 35 %.
   - 16 ANSI colours tuned for dark and for light themes. A theme may set `terminal_ansi = [16 colours]`.
   - Truecolor and 256 colours are passed through.
-- [ ] **Mouse and clipboard (Windows Terminal style)**:
+- [x] **Mouse and clipboard (Windows Terminal style)**:
   - Drag to select, double-click for a word.
   - **Ctrl+C** copies when something is selected, otherwise it goes to the shell (interrupt). **Ctrl+V** and Ctrl+Shift+V paste, and Ctrl+Shift+C copies.
   - Right-click copies a selection, or pastes when there is none.
   - The wheel scrolls 3 lines; typing scrolls back to the bottom.
   - Scrollback is `[terminal] scrollback = 5000` lines.
   - A paste goes in as one block (bracketed when the shell asks), and a multi-line paste is not split into separate Enters.
-- [ ] **Idle**: the PTY thread blocks. The island redraws only on output (coalesced wake) and while a spring moves. Nothing polls.
-- [ ] **Docs**: README (shortcut, `[terminal]` keys), AGENTS.md layout line for `crates/dj-term`, NOTICE (alacritty_terminal, Apache-2.0).
-- [ ] **Tests** (headless):
+- [x] **Idle**: the PTY thread blocks. The island redraws only on output (coalesced wake) and while a spring moves. Nothing polls.
+- [x] **Docs**: README (shortcut, `[terminal]` keys), AGENTS.md layout line for `crates/dj-term`, NOTICE (alacritty_terminal, Apache-2.0).
+- [x] **Tests** (headless):
   - Key and char mapping (arrows, Home/End, PgUp/PgDn, Ins/Del, F1–F12 with modifiers, app-cursor mode, Alt prefix, Ctrl letters).
   - Copy/paste decisions and paste encoding (bracketed, CRLF → CR, ESC stripped inside a bracketed paste).
   - Palette per theme mode and the `terminal_ansi` override; config parsing; the grid fit.
@@ -729,6 +729,7 @@ Tabs, splits and several sessions; clickable links; images (sixel/kitty); mouse 
 
 ### Log
 - 2026-10-27: defined with the user. Answers: the panel drops from the notch (not full width, not resizable); the session keeps running when closed; PowerShell by default, configurable; the dj CLI is discarded. The coordinator proposed hide-on-blur (configurable), Ctrl+Alt+` (Ctrl+` belongs to VS Code), and alacritty_terminal plus our own Skia renderer.
+- 2026-10-27: built on `xDaijobu/stage-t-terminal`: four Sonnet 5.5 workers (core, dj-term, render, win) from [`stage-t-plan.md`](stage-t-plan.md), paused once by a usage limit and resumed; wiring by the coordinator. Live check found and fixed: Ctrl+C ignored when the island inherits "ignore Ctrl+C" from its launcher, and Nerd-font prompt icons drawn as boxes. A Sonnet review of the wiring led to six small fixes. fmt, clippy, 932 tests and release pass; acceptance 1, 2, 4 (Ctrl+C), 5, 6, 7 checked live. **User live test pending** (real keyboard, clipboard, hide on blur). See [`stage-t-report.md`](stage-t-report.md).
 
 ---
 

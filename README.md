@@ -25,7 +25,7 @@
 
 ## Status
 
-Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals with Sweep, and the Timer are in. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
+Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals with Sweep, the Timer, Snap, window tiling and a terminal are in. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
 
 | Stage | | |
 |---|---|---|
@@ -36,10 +36,12 @@ Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals 
 | 4 | Vitals: health score, CPU/RAM/disk/net rings | ✅ merged, testing |
 | 5 | Vitals + Sweep: disk I/O, top processes, safe disk cleanup | ✅ done |
 | 6 | Timer / pomodoro | ✅ done |
-| 7a–7c | Screenshots: capture, annotate, floating preview stack | 🟡 7a in progress |
+| 7a–7c | Screenshots: capture, annotate, floating preview stack | ✅ done |
+| T | Terminal: a real shell (PowerShell) inside the island | 🟡 testing |
 | 8 | Clipboard history | locked |
-| 9–11 | Notifications, lyrics, `dj` CLI | locked |
-| 12 | Window tiling, scenes, restore-after-reboot | locked |
+| 9–10 | Notifications, lyrics | locked |
+| 12a | Window tiling: zones, a layout picker in the island, a window picker | ✅ done |
+| 12b–12d | Scenes, restore-after-reboot, admin apps | locked |
 | 13 | File shelf, ambient sounds | locked |
 
 ## Where it's going
@@ -87,12 +89,30 @@ target\release\daijobu.exe
 | Click the island | Expand / collapse |
 | `Ctrl+Alt+H` | Hide / show |
 | `Ctrl+Alt+T` | Next theme |
+| ``Ctrl+Alt+` `` | Open / close the terminal |
 
 The tray icon has the same controls, plus *Start with Windows*. Settings live in `~/.daijobu/config.toml`.
 
 By default the island is a notch attached to the top edge of the screen. To get the floating pill back, flip *Island style* in the Settings panel or set `[island] style = "pill"` in the config.
 
 The notch also reserves a strip as tall as itself along the top of the screen, so maximized windows (and browser tabs) start below it instead of under it. Turn it off with *Reserve top space* in Settings, or `[island] reserve_top = false`.
+
+### Terminal
+
+``Ctrl+Alt+` `` (or the Terminal tile on Home) drops a real shell out of the notch, like VS Code's built-in terminal. It keeps running when you close the panel, so a long build carries on while you work. Clicking another window hides it. Copy and paste work as in Windows Terminal: select and press Ctrl+C (without a selection Ctrl+C stops the command), Ctrl+V to paste, right-click to copy or paste.
+
+```toml
+[terminal]
+shell = ""              # "" = PowerShell 7 if installed, else Windows PowerShell; or "cmd", "wsl", a path
+args = []
+cwd = ""                # "" = your home folder
+font = "Cascadia Mono"  # a Nerd Font (e.g. "MesloLGL Nerd Font") shows prompt icons natively
+font_size = 12
+hide_on_blur = true     # false keeps the panel open while you work in another window
+scrollback = 5000
+```
+
+Prompt icons from oh-my-posh or starship come from "Symbols Nerd Font" when it is installed, whatever `font` is.
 
 ## How it's built
 
@@ -110,6 +130,8 @@ crates/dj-win     window, tray, hotkeys, autostart, sound
 crates/dj-music   YouTube Music engine (hidden WebView2)
 crates/dj-vitals  CPU, RAM, disk, net, disk I/O, battery, top processes
 crates/dj-sweep   disk cleanup: scanners, protected-path guard, recycle, operations log
+crates/dj-capture screen capture for Snap
+crates/dj-term    the terminal: alacritty_terminal's emulator over a Windows pseudo console
 ```
 
 More crates (capture, clipboard, tiling, …) are added as their stages start. [`AGENTS.md`](AGENTS.md) describes the conventions and the stage-by-stage workflow.

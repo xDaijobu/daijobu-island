@@ -156,6 +156,8 @@ impl Session {
             escape_args: true,
         };
 
+        // The shell inherits our Ctrl+C setting: make sure it gets Ctrl+C.
+        crate::child::allow_ctrl_c();
         // `tty::new` asserts on a failed `CreatePseudoConsole`; turn that into an error too.
         let pty = catch_unwind(AssertUnwindSafe(|| tty::new(&options, size, 0)))
             .map_err(|_| "the pseudo console could not be created".to_string())?

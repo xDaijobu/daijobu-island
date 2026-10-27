@@ -23,6 +23,15 @@ pub enum Weight {
 /// draws); the table is emptied when it fills up.
 const FALLBACK_CACHE_MAX: usize = 2048;
 
+/// The faces that carry the Nerd Font icons on their own, asked by name for a Private Use
+/// Area character the terminal's family lacks (most prompt themes need one installed).
+const NERD_SYMBOLS: [&str; 2] = ["Symbols Nerd Font Mono", "Symbols Nerd Font"];
+
+/// The BMP Private Use Area and the two supplementary private planes.
+fn is_private_use(ch: char) -> bool {
+    matches!(ch as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+}
+
 /// A face for terminal cells in one style, and what of that style the face doesn't have and
 /// the painter must fake (an embolden for bold, a skew for italic).
 #[derive(Clone)]
@@ -181,10 +190,30 @@ impl Fonts {
         } else {
             family
         };
-        let found = self
-            .mgr
-            .match_family_style_character(family, Self::style_of(bold, italic), &[], ch as i32)
-            .filter(|tf| tf.unichar_to_glyph(ch as i32) != 0)
+        let has = |tf: &Typeface| tf.unichar_to_glyph(ch as i32) != 0;
+        // Prompt icons (oh-my-posh, starship, Powerline) live in the Private Use Area, where
+        // the system's fallback never looks and Windows' own icon fonts would draw other
+        // icons: the Nerd Font symbol faces are asked by name first.
+        let symbols = if is_private_use(ch) {
+            NERD_SYMBOLS.iter().find_map(|name| {
+                self.mgr
+                    .match_family_style(name, FontStyle::normal())
+                    .filter(has)
+            })
+        } else {
+            None
+        };
+        let found = symbols
+            .or_else(|| {
+                self.mgr
+                    .match_family_style_character(
+                        family,
+                        Self::style_of(bold, italic),
+                        &[],
+                        ch as i32,
+                    )
+                    .filter(has)
+            })
             .map(|tf| Self::real_style(tf, bold, italic));
         self.fallbacks.insert(key, found.clone());
         found
@@ -259,5 +288,42 @@ mod tests {
         for c in "0123456789".chars() {
             assert_ne!(digits.unichar_to_glyph(c as i32), 0, "Doto lacks {c}");
         }
+    }
+
+    #[test]
+    fn private_use_ranges() {
+        for c in [
+            '\u{E000}',
+            '\u{E0B0}',
+            '\u{F8FF}',
+            '\u{F0001}',
+            '\u{10FFFD}',
+        ] {
+            assert!(is_private_use(c), "{:X}", c as u32);
+        }
+        for c in ['a', '\u{D7FF}', '\u{F900}', '漢', '🙂'] {
+            assert!(!is_private_use(c), "{:X}", c as u32);
+        }
+    }
+
+    /// A Powerline separator comes from the Nerd Font symbols when one is installed (skipped
+    /// otherwise), never from a system icon font that happens to use the same code point.
+    #[test]
+    fn prompt_icons_come_from_the_nerd_symbols() {
+        let mut fonts = Fonts::new().expect("embedded fonts load");
+        let installed = NERD_SYMBOLS.iter().any(|n| {
+            fonts
+                .mgr
+                .match_family_style(n, FontStyle::normal())
+                .is_some()
+        });
+        if !installed {
+            return;
+        }
+        let face = fonts
+            .fallback_face("Cascadia Mono", '\u{E0B0}', false, false)
+            .expect("a face for U+E0B0");
+        let family = face.typeface.family_name();
+        assert!(family.contains("Nerd"), "{family}");
     }
 }

@@ -362,6 +362,8 @@ impl Terminal {
         if !self.selecting {
             return Outcome::None;
         }
+        // Dragging up into the header (or off the screen's top) keeps selecting the top row.
+        let y = y.max(dj_core::layout::TERM_TEXT.y);
         let Some((col, row, right)) = self.cell_at(x, y) else {
             return Outcome::None;
         };
@@ -791,6 +793,19 @@ mod tests {
         // A double click starts a word selection.
         r.term.double_click(t.x + 2.0, t.y + 2.0);
         assert_eq!(r.shell().borrow().selection, Some((0, 0, true)));
+    }
+
+    #[test]
+    fn a_selection_dragged_into_the_header_keeps_the_top_row() {
+        let mut r = Rig::new();
+        r.open();
+        let t = dj_core::layout::TERM_TEXT;
+        r.term.press(t.x + 30.0, t.y + 60.0);
+        assert_eq!(r.term.drag(t.x + 10.0, 5.0), Outcome::Redraw);
+        assert_eq!(r.term.drag(t.x + 10.0, -40.0), Outcome::Redraw);
+        let updates = r.shell().borrow().updates.clone();
+        assert_eq!(updates.len(), 2);
+        assert!(updates.iter().all(|&(_, row)| row == 0), "{updates:?}");
     }
 
     #[test]
