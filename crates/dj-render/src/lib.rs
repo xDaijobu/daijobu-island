@@ -2,8 +2,11 @@
 //! painter that draws the island from `dj-core` view state, the Snap overlay, the Snap
 //! preview stack (its own transparent window, `previews::PreviewSurface`), and the Tile
 //! feature: the island's Tile panel (`tile::paint_tile_panel`) and the zone overlay (its
-//! own transparent window, `tile::ZoneOverlay`).
+//! own transparent window, `tile::ZoneOverlay`) and the window picker that fills a zone
+//! (`assist::AssistSurface`, its own topmost window with the open windows as cards; the live
+//! thumbnails are composed on top by Windows).
 
+mod assist;
 mod fonts;
 mod fx;
 mod gpu;
@@ -20,6 +23,7 @@ mod tile;
 mod timer;
 mod vitals;
 
+pub use assist::{AssistCard, AssistScene, AssistSurface};
 pub use gpu::{RenderError, Renderer};
 pub use markup::{render_output, TextMetrics};
 pub use paint::{Frame, MusicFrame};
