@@ -3,13 +3,16 @@
 //! default-device volume, the volume-key hook, in-memory sound playback, the Snap
 //! overlay window, the Snap preview stack's companion window, the top AppBar strip and
 //! Tile's window-move hook, placement calls and zone overlay window, and the Tile window
-//! picker's window list, icons, DWM thumbnails and input window.
+//! picker's window list, icons, DWM thumbnails and input window. The island window can
+//! also take the keyboard (the terminal panel), and the text clipboard lives in
+//! [`clipboard`].
 
 #[cfg(not(windows))]
 compile_error!("dj-win only supports Windows");
 
 pub mod appbar;
 pub mod assist;
+pub mod clipboard;
 pub mod hook;
 pub mod overlay;
 pub mod previews;
