@@ -1,0 +1,28 @@
+[package]
+name = "dj-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Daijobu Island's per-user named pipe API and the dj command line client"
+
+[lib]
+name = "dj_ipc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dj"
+path = "src/bin/dj.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+] }

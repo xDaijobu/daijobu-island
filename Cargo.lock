@@ -164,6 +164,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dj-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "dj-music"
 version = "0.1.0"
 dependencies = [
