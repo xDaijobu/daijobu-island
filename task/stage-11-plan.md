@@ -26,12 +26,12 @@
 
 ---
 
-## Part A — `dj_core::ipc` + `dj_core::dj` (worktree `11-core`)
+## Part A — `dj_core::dj` (worktree `11-core`)
 
-**Files:** create `crates/dj-core/src/ipc.rs` and `crates/dj-core/src/dj.rs`; `crates/dj-core/src/lib.rs` (two `pub mod` lines + doc). Nothing else.
+**Files:** create `crates/dj-core/src/dj.rs`; `crates/dj-core/src/lib.rs` (one `pub mod` line + doc). Nothing else. (The wire format and the command line live in part C's `dj_ipc::proto`, so A and C don't depend on each other.)
 
 ```rust
-// ipc.rs — the wire format and the command line
+// (part C) dj_ipc::proto — the wire format and the command line; shown here for reference
 pub const VERSION: u32 = 1;
 pub const MAX_FRAME: usize = 4096;
 pub const MAX_LABEL: usize = 48;
@@ -88,7 +88,7 @@ impl Dj {
     pub fn view(&self) -> DjView;
 }
 ```
-Tests: round trips for every request and reply; every rejection; clean_text (spaces, controls, emoji at the cut, max); every parse case incl. `40%`, open-ended, multi-word labels, bounds, missing args, unknown command; Dj: update, replace, done with and without progress, done timeout, notice timeout and replace, dismiss, stale expiry, next_change ordering.
+Tests (part A, `dj.rs`): update, replace, done with and without progress, done timeout, notice timeout and replace, dismiss, stale expiry, next_change ordering. Tests (part C, `proto`): round trips for every request and reply; every rejection; clean_text (spaces, controls, emoji at the cut, max); every parse case incl. `40%`, open-ended, multi-word labels, bounds, missing args, unknown command.
 
 ## Part B — island states (worktree `11-island`)
 
@@ -108,10 +108,11 @@ Rest-state order: snap thumb > **dj notice** > timer alert > **dj progress** > m
 
 ## Part C — crate `dj-ipc` + the `dj` binary (worktree `11-ipc`)
 
-**Files:** create `crates/dj-ipc/` (`Cargo.toml`, `src/lib.rs`, `src/pipe.rs` or similar, `src/bin/dj.rs`); add `"crates/dj-ipc"` to the workspace `members` in the root `Cargo.toml`. Dependencies: `dj-core` (path), `windows` (workspace) with the features you need (pipes, file I/O, security, threading, remote desktop for the session id). Nothing in `app/`.
+**Files:** create `crates/dj-ipc/` (`Cargo.toml`, `src/lib.rs`, `src/proto.rs` (the wire format + CLI parsing from the part A section, pure and fully tested), `src/pipe.rs` or similar, `src/bin/dj.rs`); add `"crates/dj-ipc"` to the workspace `members` in the root `Cargo.toml`. Dependencies: `serde`, `serde_json` (workspace), `windows` (workspace) with the features you need (pipes, file I/O, security, threading, remote desktop for the session id); no `dj-core` dependency is needed. Nothing in `app/`.
 
 ```rust
-pub use dj_core::ipc::{Reply, Request};
+pub mod proto;   // the wire format and the command line above (Request, Reply, Cli, parse_args, USAGE, …)
+pub use proto::{Reply, Request};
 /// `\\.\pipe\daijobu-island-<current user SID string>-<current session id>`.
 pub fn pipe_name() -> String;
 
