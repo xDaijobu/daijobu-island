@@ -715,8 +715,24 @@ Headless, as before: fmt, clippy, test and release only; no exe, no real windows
   - dj-win message translation. The clipboard is only checked live, never in tests (it is the user's).
   - `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release`.
 
+### Tabs (T2, asked for on 2026-10-27 before the merge; same PR)
+- [ ] **Tab bar** in the header (in place of the title):
+  - Pinned tabs sit left and are compact, regular ones shrink to fit; at most 12, and "+" is hidden at the limit.
+  - The active tab is highlighted. A dot marks new output in a background tab; an exited shell is shown as such.
+- [ ] **Actions:**
+  - Click switches; "+" opens a new tab (default shell, home).
+  - ✕ on the active or hovered regular tab, or a middle click, closes it and ends its shell.
+  - The last tab closed closes the panel, and the next open starts a new tab.
+- [ ] **Menu (island-styled), on right-click:** Pin / Unpin, Close, Close others, Close to the right. The last two never close pinned tabs.
+- [ ] **Drag and drop:** a press that moves 4 px drags the tab; others make room and the drop reorders. Pinned and regular tabs never mix, and a drag never counts as a click.
+- [ ] **Keys (never sent to the shell):** Ctrl+Shift+T new, Ctrl+Shift+W close, Ctrl+Tab / Ctrl+Shift+Tab next / previous, Ctrl+Shift+1…9 jump. Ctrl+Alt+1…9 stay Tile's.
+- [ ] **Pinned tabs survive an island restart** (`~/.daijobu/terminal-tabs.toml`: name, shell, arguments, folder).
+  - They come back when the terminal is opened, and their shells start then.
+  - The folder is the one the tab started in, since PowerShell doesn't report a later `cd`.
+- [ ] **Tests:** the tab model (every operation, the active-tab rules, layout, hit testing, drag across the group boundary, the menu, shortcuts, the pinned file) and the drawing on CPU raster.
+
 ### Out of scope
-Tabs, splits and several sessions; clickable links; images (sixel/kitty); mouse reporting to programs (vim, htop) beyond the wheel; IME composition; ligatures; an elevated shell; a resizable panel; cursor blink; a Settings row.
+Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim, htop) beyond the wheel; IME composition; ligatures; an elevated shell; a resizable panel; cursor blink; a Settings row.
 
 ### Acceptance
 1. `Ctrl+Alt+`` from any app opens the panel with a PowerShell prompt. Typing `dir`, `git status` and `cargo --version` works, in colour.

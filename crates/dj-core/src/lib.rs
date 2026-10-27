@@ -21,6 +21,7 @@ pub mod snap_edit;
 pub mod snap_stack;
 pub mod spring;
 pub mod sweep;
+pub mod term_tabs;
 pub mod terminal;
 pub mod theme;
 pub mod tile;
