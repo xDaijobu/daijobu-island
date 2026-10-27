@@ -2851,6 +2851,8 @@ impl Handler for App {
         let term_palette = termcore::palette(self.anim.current());
         let term_view = (view.layers.terminal > 0.0).then(|| self.terminal.view(&term_palette));
         let term_config = self.terminal.config();
+        // No tab bar until the controller keeps tabs: the header shows the title.
+        let no_tabs = dj_core::term_tabs::TabBarView::default();
         let terminal = term_view.as_ref().map(|v| TerminalPanel {
             title: &v.title,
             screen: &v.screen,
@@ -2859,6 +2861,7 @@ impl Handler for App {
             font_size: term_config.font_size,
             notice: v.notice.as_deref(),
             close_hover: v.close_hover,
+            tabs: &no_tabs,
         });
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
