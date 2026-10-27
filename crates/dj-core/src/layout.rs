@@ -145,6 +145,18 @@ pub const TILE_PANEL_W: f32 = 400.0;
 pub const TILE_PANEL_H: f32 = 168.0;
 pub const TILE_PANEL_R: f32 = 32.0;
 
+/// Terminal panel: a shell inside the island. The largest state, so the window (and its
+/// swap chain) is sized for it. Everything below is panel-local px.
+pub const TERM_W: f32 = 760.0;
+pub const TERM_H: f32 = 420.0;
+pub const TERM_R: f32 = 22.0;
+/// The header row: a lamp, the shell's title and the close button.
+pub const TERM_HEADER_H: f32 = 36.0;
+pub const TERM_CLOSE: Rect = Rect::new(TERM_W - 14.0 - 24.0, 6.0, 24.0, 24.0);
+/// Where the grid's cells are drawn and hit-tested. The grid is as many whole cells as
+/// fit; what's left over stays empty on the right and at the bottom.
+pub const TERM_TEXT: Rect = Rect::new(14.0, 40.0, TERM_W - 28.0, TERM_H - 40.0 - 12.0);
+
 /// The gear in the Home header, left of the clock (pill-local on the Home grid).
 pub const HOME_GEAR: Rect = Rect::new(384.0, 16.0, 28.0, 28.0);
 

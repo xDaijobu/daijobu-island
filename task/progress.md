@@ -28,10 +28,11 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
 | N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
 | N2 | **Reserve top space**: the notch registers a top AppBar so maximized windows (Chrome tabs) start below it (Settings switch, default on) | ✅ | `xDaijobu/stage-n2-appbar` | user-requested · built by the coordinator · live-checked by the coordinator |
+| T | **Terminal**: a real shell (PowerShell) inside the island, like VS Code's integrated terminal; drops from the notch on Ctrl+Alt+`, keeps running when closed | 🟡 contract | `xDaijobu/stage-t-terminal` | user-requested · [`stage-t-plan.md`](stage-t-plan.md) |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
-| 11 | dj CLI | 🔒 | — | |
+| 11 | dj CLI | dropped | — | built 2026-10-27 and dropped by the user (PR #19 closed): their "CLI" meant a terminal in the island. Its Home tile is now Terminal (Stage T) |
 | 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | ✅ | `xDaijobu/stage-12a-tile` | coordinator (Opus 5.5) + parallel Sonnet 5.5 workers · 747 tests · live test with the user · [`stage-12a-report.md`](stage-12a-report.md) |
 | 12b | Scenes: save / restore window arrangements, launch missing apps, theme + pomodoro | 🔒 | — | after 12a |
 | 12c | Boot Scene: a scene after login, with progress in the island | 🔒 | — | after 12b |
@@ -657,6 +658,77 @@ Headless, as before: fmt, clippy, test and release only; no exe, no real windows
 ### Log
 - 2026-10-27: defined with the user after Stage 7c. Tile & Scenes split into 12a–12d; 12a first. Decisions: the picker opens early (summon area under the island) rather than turning Windows' snap bar off; Shift+drag zones, Ctrl+Alt+1‥9, Ctrl+Alt+arrows and the Home tile are all in; presets plus custom layouts in TOML, no visual editor; the picker targets the island's monitor; restore size on drag-out is on by default; admin windows get a notice until 12d.
 - 2026-10-27: built on `xDaijobu/stage-12a-tile`: four Sonnet 5.5 workers in parallel worktrees (core, island panel, native, render) from [`stage-12a-plan.md`](stage-12a-plan.md), wiring by the coordinator. A Sonnet review of the wiring found that dragging a maximized/snapped window counted as a resize and that the zone overlay was rebuilt on every gap; both fixed with the other findings (Esc cancel, panel reopening after a hide, maximized placement, retry vs a new drag, picker only over a resting island, top-edge overshoot, lost end event). fmt, clippy `-D warnings`, 658 workspace tests and the release build pass. **Live test pending.**
+
+---
+
+## Stage T: Terminal
+
+**Status:** contract agreed with the user on 2026-10-27. Their "CLI" meant a terminal inside the island, like VS Code's integrated terminal, not the `dj` command (Stage 11 was built for that and dropped, PR #19 closed).
+
+**Goal:** a real shell (PowerShell by default) that drops down from the notch on `Ctrl+Alt+``, styled like the island. The session keeps running while the panel is closed.
+
+### Scope
+- [ ] **Open and close**:
+  - Openers: `Ctrl+Alt+`` (`VK_OEM_3`; `Ctrl+`` stays VS Code's), the **Terminal** tile on Home (the old locked "dj CLI" tile, renamed and unlocked), or the hotkey again / ✕ in the header to close.
+  - The island morphs from the notch into the panel, 760 × 420 r 22, with the theme's spring. Esc goes to the shell, never closes.
+- [ ] **Keyboard focus**:
+  - While the panel is open the island window takes the keyboard (it is `NOACTIVATE` otherwise).
+  - Clicking another window hides the panel (`[terminal] hide_on_blur = true`, default). The session keeps running.
+  - Closing gives the keyboard back to the window that had it.
+  - Alt+F4 and F10 go to the shell, never to the island.
+- [ ] **Session**:
+  - One shell, started on first open and kept while hidden.
+  - When it exits, the panel shows "process exited, press Enter to restart".
+  - Quitting the island ends it.
+- [ ] **Shell**:
+  - `[terminal] shell = ""` (auto): `pwsh.exe` if on PATH, else Windows PowerShell. `"cmd"`, `"wsl"`, or a full path also work, with `args`.
+  - `cwd = ""`: the user's home.
+  - Run through ConPTY with the `alacritty_terminal` emulator (Apache-2.0). No admin, no tokio.
+- [ ] **Panel**:
+  - The header has the theme's lamp, the shell's title (OSC title, or the shell name) and ✕.
+  - The grid is as many whole cells as fit `TERM_TEXT`.
+  - Font: `[terminal] font = "Cascadia Mono"`, falling back to Geist Mono; `font_size = 12` (8–24).
+  - The cursor is a steady block, or a hollow block when unfocused; no blink, to keep idle CPU ≈ 0.
+  - Bold, italic, underline, strike and wide characters are drawn.
+  - The scroll indicator shows while scrolled back.
+- [ ] **Colours**:
+  - Background = the theme's pill colour, text = its text colour, cursor = accent, selection = accent at 35 %.
+  - 16 ANSI colours tuned for dark and for light themes. A theme may set `terminal_ansi = [16 colours]`.
+  - Truecolor and 256 colours are passed through.
+- [ ] **Mouse and clipboard (Windows Terminal style)**:
+  - Drag to select, double-click for a word.
+  - **Ctrl+C** copies when something is selected, otherwise it goes to the shell (interrupt). **Ctrl+V** and Ctrl+Shift+V paste, and Ctrl+Shift+C copies.
+  - Right-click copies a selection, or pastes when there is none.
+  - The wheel scrolls 3 lines; typing scrolls back to the bottom.
+  - Scrollback is `[terminal] scrollback = 5000` lines.
+  - A paste goes in as one block (bracketed when the shell asks), and a multi-line paste is not split into separate Enters.
+- [ ] **Idle**: the PTY thread blocks. The island redraws only on output (coalesced wake) and while a spring moves. Nothing polls.
+- [ ] **Docs**: README (shortcut, `[terminal]` keys), AGENTS.md layout line for `crates/dj-term`, NOTICE (alacritty_terminal, Apache-2.0).
+- [ ] **Tests** (headless):
+  - Key and char mapping (arrows, Home/End, PgUp/PgDn, Ins/Del, F1–F12 with modifiers, app-cursor mode, Alt prefix, Ctrl letters).
+  - Copy/paste decisions and paste encoding (bracketed, CRLF → CR, ESC stripped inside a bracketed paste).
+  - Palette per theme mode and the `terminal_ansi` override; config parsing; the grid fit.
+  - Island state, size, layer, click routing and the window size.
+  - The emulator fed bytes (no PTY): colours, inverse, wide chars, cursor, scrollback offset, selection spans.
+  - One ConPTY round trip with `cmd.exe /c echo`.
+  - The painter on CPU raster: cells, backgrounds, cursor shapes, selection, header, clipping.
+  - dj-win message translation. The clipboard is only checked live, never in tests (it is the user's).
+  - `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release`.
+
+### Out of scope
+Tabs, splits and several sessions; clickable links; images (sixel/kitty); mouse reporting to programs (vim, htop) beyond the wheel; IME composition; ligatures; an elevated shell; a resizable panel; cursor blink; a Settings row.
+
+### Acceptance
+1. `Ctrl+Alt+`` from any app opens the panel with a PowerShell prompt. Typing `dir`, `git status` and `cargo --version` works, in colour.
+2. The hotkey or ✕ closes it. Reopening shows the same session, with a long `ping -n 20 localhost` still running.
+3. Clicking another window hides it. With `hide_on_blur = false` it stays.
+4. Selecting and Ctrl+C copies; Ctrl+C without a selection stops `ping`. Ctrl+V pastes. The wheel scrolls back, and typing returns to the bottom.
+5. `exit` shows the restart line; Enter starts a new shell.
+6. Each of the four themes reads well, and `vim` or `less` (if installed) draws correctly.
+7. Idle CPU ≈ 0 with the panel open and nothing printing, and with it closed.
+
+### Log
+- 2026-10-27: defined with the user. Answers: the panel drops from the notch (not full width, not resizable); the session keeps running when closed; PowerShell by default, configurable; the dj CLI is discarded. The coordinator proposed hide-on-blur (configurable), Ctrl+Alt+` (Ctrl+` belongs to VS Code), and alacritty_terminal plus our own Skia renderer.
 
 ---
 
