@@ -1,6 +1,7 @@
 //! Embedded OFL fonts (Geist, Geist Mono, Doto) with a system-font fallback.
 
 use skia_safe::font::Edging;
+use skia_safe::font_style::{Slant, Weight as SkWeight, Width};
 use skia_safe::{Data, Font, FontHinting, FontMgr, FontStyle, Typeface};
 use std::collections::HashMap;
 
@@ -18,10 +19,41 @@ pub enum Weight {
     SemiBold,
 }
 
+/// The most per-character fallback answers kept (the terminal asks for every glyph it
+/// draws); the table is emptied when it fills up.
+const FALLBACK_CACHE_MAX: usize = 2048;
+
+/// A face for terminal cells in one style, and what of that style the face doesn't have and
+/// the painter must fake (an embolden for bold, a skew for italic).
+#[derive(Clone)]
+pub(crate) struct CellFace {
+    pub typeface: Typeface,
+    pub fake_bold: bool,
+    pub fake_italic: bool,
+}
+
+impl CellFace {
+    /// The face at `size` device px: unhinted-metrics like `Fonts::font`, with the fake
+    /// bold and italic applied.
+    pub fn font(&self, size: f32) -> Font {
+        let mut f = Font::from_typeface(self.typeface.clone(), size);
+        f.set_subpixel(false);
+        f.set_hinting(FontHinting::None);
+        f.set_edging(Edging::AntiAlias);
+        f.set_embolden(self.fake_bold);
+        if self.fake_italic {
+            f.set_skew_x(-0.25);
+        }
+        f
+    }
+}
+
 pub struct Fonts {
     mgr: FontMgr,
     embedded: HashMap<(&'static str, Weight), Typeface>,
     resolved: HashMap<(String, Weight), Typeface>,
+    cell_faces: HashMap<(String, bool, bool), CellFace>,
+    fallbacks: HashMap<(char, bool, bool), Option<CellFace>>,
 }
 
 impl Fonts {
@@ -57,6 +89,8 @@ impl Fonts {
             mgr,
             embedded,
             resolved: HashMap::new(),
+            cell_faces: HashMap::new(),
+            fallbacks: HashMap::new(),
         })
     }
 
@@ -98,6 +132,104 @@ impl Fonts {
             .expect("embedded fallback font");
         self.resolved.insert(key, face.clone());
         face
+    }
+
+    /// `family` in the requested style for terminal cells: the system family if there is one
+    /// by that name (its bold or italic face when it has one), else embedded Geist Mono.
+    /// A style the face lacks is faked: Geist Mono has no italic, and its bold is the
+    /// Medium face emboldened.
+    pub(crate) fn cell_face(&mut self, family: &str, bold: bool, italic: bool) -> CellFace {
+        let key = (family.to_string(), bold, italic);
+        if let Some(f) = self.cell_faces.get(&key) {
+            return f.clone();
+        }
+        let face = if self.embedded_face(family, Weight::Regular).is_some() {
+            self.embedded_cell_face(family, bold, italic)
+        } else {
+            match self
+                .mgr
+                .match_family_style(family, Self::style_of(bold, italic))
+            {
+                Some(tf) => Self::real_style(tf, bold, italic),
+                None => self.embedded_cell_face("Geist Mono", bold, italic),
+            }
+        };
+        self.cell_faces.insert(key, face.clone());
+        face
+    }
+
+    /// A face with a glyph for `ch` from some installed font, in the requested style, for a
+    /// character the terminal's own family lacks (CJK, emoji, symbols, Nerd-font icons).
+    /// `family` steers the choice toward that family's fallback chain. `None` when no
+    /// installed font has it.
+    pub(crate) fn fallback_face(
+        &mut self,
+        family: &str,
+        ch: char,
+        bold: bool,
+        italic: bool,
+    ) -> Option<CellFace> {
+        let key = (ch, bold, italic);
+        if let Some(found) = self.fallbacks.get(&key) {
+            return found.clone();
+        }
+        if self.fallbacks.len() >= FALLBACK_CACHE_MAX {
+            self.fallbacks.clear();
+        }
+        let family = if self.embedded_face(family, Weight::Regular).is_some() {
+            ""
+        } else {
+            family
+        };
+        let found = self
+            .mgr
+            .match_family_style_character(family, Self::style_of(bold, italic), &[], ch as i32)
+            .filter(|tf| tf.unichar_to_glyph(ch as i32) != 0)
+            .map(|tf| Self::real_style(tf, bold, italic));
+        self.fallbacks.insert(key, found.clone());
+        found
+    }
+
+    fn style_of(bold: bool, italic: bool) -> FontStyle {
+        FontStyle::new(
+            if bold {
+                SkWeight::BOLD
+            } else {
+                SkWeight::NORMAL
+            },
+            Width::NORMAL,
+            if italic {
+                Slant::Italic
+            } else {
+                Slant::Upright
+            },
+        )
+    }
+
+    /// `tf` as the font manager gave it: what it lacks of the asked style is faked.
+    fn real_style(tf: Typeface, bold: bool, italic: bool) -> CellFace {
+        let (fake_bold, fake_italic) = (bold && !tf.is_bold(), italic && !tf.is_italic());
+        CellFace {
+            typeface: tf,
+            fake_bold,
+            fake_italic,
+        }
+    }
+
+    /// An embedded family has no italic, and its bold is the Medium face emboldened.
+    fn embedded_cell_face(&self, family: &str, bold: bool, italic: bool) -> CellFace {
+        let weight = if bold {
+            Weight::Medium
+        } else {
+            Weight::Regular
+        };
+        CellFace {
+            typeface: self
+                .embedded_face(family, weight)
+                .expect("embedded terminal font"),
+            fake_bold: bold,
+            fake_italic: italic,
+        }
     }
 
     /// A crisp, unhinted-metrics font at `size` device pixels.
