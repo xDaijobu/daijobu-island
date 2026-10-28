@@ -56,6 +56,8 @@ pub struct Frame<'a> {
     pub tile: Option<crate::tile::TilePanel<'a>>,
     /// The terminal panel's content, drawn while `view.layers.terminal` is up.
     pub terminal: Option<crate::terminal::TerminalPanel<'a>>,
+    /// Clipboard content retained while its layer fades out.
+    pub clipboard: Option<crate::clipboard::ClipboardPanel<'a>>,
     /// Running tabs beside the idle clock, without keeping the terminal panel open.
     pub terminal_shortcuts: &'a [Shortcut],
     /// Pill or notch (config `[island] style`): the shape of the island's body.
@@ -220,6 +222,7 @@ impl Painter {
         let settings_op = smoothstep(0.35, 1.0, lay.settings) * not_osd;
         let tile_op = smoothstep(0.35, 1.0, lay.tile) * not_osd;
         let terminal_op = smoothstep(0.35, 1.0, lay.terminal) * not_osd;
+        let clipboard_op = smoothstep(0.35, 1.0, lay.clipboard) * not_osd;
         let center = (rect.center_x(), rect.center_y());
         if idle_op > 0.01 {
             begin_layer(canvas, &rect, idle_op, center, s);
@@ -297,6 +300,15 @@ impl Painter {
                 layout::TERM_H,
             );
             crate::terminal::paint_terminal(canvas, &mut self.fonts, t, at, s, panel);
+            canvas.restore();
+        }
+        if let Some(panel) = f.clipboard.as_ref().filter(|_| clipboard_op > 0.01) {
+            begin_layer(canvas, &rect, clipboard_op, center, s);
+            let at = (
+                rect.center_x() / s - layout::CLIPBOARD_W / 2.0,
+                rect.top / s,
+            );
+            crate::clipboard::paint_clipboard(canvas, &mut self.fonts, t, at, s, *panel);
             canvas.restore();
         }
         if osd_a > 0.01 {

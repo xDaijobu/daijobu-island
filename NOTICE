@@ -18,3 +18,9 @@ Third-party code linked into the binary:
 
 - alacritty_terminal (terminal emulation for the Terminal panel), Copyright the Alacritty
   contributors. Apache License, Version 2.0. https://github.com/alacritty/alacritty
+- rusqlite and libsqlite3-sys (encrypted local Clipboard history storage), MIT.
+  https://github.com/rusqlite/rusqlite
+- SQLite (bundled through libsqlite3-sys), public domain.
+  https://sqlite.org/copyright.html
+- png (Clipboard image decoding and encoding), MIT OR Apache-2.0.
+  https://github.com/image-rs/image-png

@@ -23,7 +23,18 @@ pub struct Config {
     pub tile: TileConfig,
     #[serde(deserialize_with = "lenient_terminal")]
     pub terminal: TerminalConfig,
+    pub clipboard: ClipboardConfig,
     pub spotlight: SpotlightConfig,
+}
+
+/// `[clipboard]` section. History begins only after explicit opt-in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClipboardConfig {
+    pub enabled: bool,
+    pub paused: bool,
+    /// Source executable names excluded from future captures.
+    pub excluded_sources: Vec<String>,
 }
 
 /// How the island sits at the top of the screen. Only the drawn shape differs: the pill
@@ -803,6 +814,7 @@ impl Default for Config {
             snap: SnapConfig::default(),
             tile: TileConfig::default(),
             terminal: TerminalConfig::default(),
+            clipboard: ClipboardConfig::default(),
             spotlight: SpotlightConfig::default(),
         }
     }
@@ -836,6 +848,33 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_config_does_not_enable_clipboard_history() {
+        let c = Config::parse("theme = 'paper-zine'\n[music]\nsigned_in = true\n");
+        assert_eq!(c.theme, "paper-zine");
+        assert!(c.music.signed_in);
+        assert_eq!(c.clipboard, ClipboardConfig::default());
+        assert!(!c.clipboard.enabled && !c.clipboard.paused);
+        assert!(c.clipboard.excluded_sources.is_empty());
+        assert_eq!(Config::parse(&c.to_toml()), c);
+    }
+
+    #[test]
+    fn partial_clipboard_config_defaults_missing_fields_without_losing_other_sections() {
+        let c = Config::parse("theme = 'paper-zine'\n[clipboard]\npaused = true\n");
+        assert_eq!(c.theme, "paper-zine");
+        assert!(!c.clipboard.enabled);
+        assert!(c.clipboard.paused);
+        assert!(c.clipboard.excluded_sources.is_empty());
+        assert_eq!(Config::parse(&c.to_toml()), c);
+        let c = Config::parse(
+            "[clipboard]\nenabled = true\nexcluded_sources = ['秘密.exe', 'private.exe']\n",
+        );
+        assert!(c.clipboard.enabled && !c.clipboard.paused);
+        assert_eq!(c.clipboard.excluded_sources, ["秘密.exe", "private.exe"]);
+        assert_eq!(Config::parse(&c.to_toml()), c);
+    }
 
     #[test]
     fn roundtrip_and_defaults() {
@@ -894,6 +933,11 @@ mod tests {
                 enabled: false,
                 hotkey: "ctrl_alt_space".into(),
                 files: false,
+            },
+            clipboard: ClipboardConfig {
+                enabled: true,
+                paused: true,
+                excluded_sources: vec!["private.exe".into()],
             },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);

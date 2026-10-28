@@ -150,12 +150,18 @@ pub const TILE_PANEL_R: f32 = 32.0;
 pub const TERM_W: f32 = 760.0;
 pub const TERM_H: f32 = 420.0;
 pub const TERM_R: f32 = 22.0;
+
 /// The header row: a lamp, the shell's title and the close button.
 pub const TERM_HEADER_H: f32 = 36.0;
 pub const TERM_CLOSE: Rect = Rect::new(TERM_W - 14.0 - 24.0, 6.0, 24.0, 24.0);
 /// Where the grid's cells are drawn and hit-tested. The grid is as many whole cells as
 /// fit; what's left over stays empty on the right and at the bottom.
 pub const TERM_TEXT: Rect = Rect::new(14.0, 40.0, TERM_W - 28.0, TERM_H - 40.0 - 12.0);
+
+/// Clipboard history, anchored at the island's top centre.
+pub const CLIPBOARD_W: f32 = 400.0;
+pub const CLIPBOARD_H: f32 = 360.0;
+pub const CLIPBOARD_R: f32 = 22.0;
 
 /// The gear in the Home header, left of the clock (pill-local on the Home grid).
 pub const HOME_GEAR: Rect = Rect::new(384.0, 16.0, 28.0, 28.0);
@@ -266,8 +272,8 @@ pub const FOOTER: Rect = Rect::new(PAD_X, 304.0, HOME_W - 2.0 * PAD_X, 20.0);
 /// centred in it, so the extra room doesn't move anything on screen.
 pub fn window_size() -> (f32, f32) {
     (
-        HOME_W.max(TERM_W) + 2.0 * NOTCH_SHOULDER,
-        TOP_MARGIN + HOME_H.max(TERM_H) + BOTTOM_SLACK,
+        HOME_W.max(TERM_W).max(CLIPBOARD_W) + 2.0 * NOTCH_SHOULDER,
+        TOP_MARGIN + HOME_H.max(TERM_H).max(CLIPBOARD_H) + BOTTOM_SLACK,
     )
 }
 
@@ -372,6 +378,16 @@ mod tests {
     fn window_holds_home() {
         let (w, h) = window_size();
         assert!(w >= HOME_W && h >= TOP_MARGIN + HOME_H);
+    }
+
+    #[test]
+    fn fixed_window_contains_clipboard_and_its_notch() {
+        assert_eq!((CLIPBOARD_W, CLIPBOARD_H), (400.0, 360.0));
+        let (w, h) = window_size();
+        let bounds = notch_bounds(centred_pill(CLIPBOARD_W, CLIPBOARD_H));
+        assert!(bounds.x >= 0.0 && bounds.x + bounds.w <= w);
+        assert!(bounds.y >= 0.0 && bounds.y + bounds.h <= h);
+        assert_eq!((w, h), (776.0, 428.0));
     }
 
     #[test]

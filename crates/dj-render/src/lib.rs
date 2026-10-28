@@ -8,6 +8,7 @@
 
 mod agent_icons;
 mod assist;
+mod clipboard;
 mod fonts;
 mod fx;
 mod gpu;
@@ -31,6 +32,7 @@ mod timer;
 mod vitals;
 
 pub use assist::{AssistCard, AssistScene, AssistSurface};
+pub use clipboard::ClipboardPanel;
 pub use gpu::{RenderError, Renderer};
 pub use markup::{render_output, TextMetrics};
 pub use paint::{Frame, MusicFrame};
