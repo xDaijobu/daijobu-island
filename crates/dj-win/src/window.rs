@@ -202,6 +202,7 @@ pub struct Monitor {
     pub left: i32,
     pub top: i32,
     pub width: i32,
+    pub height: i32,
     pub dpi: u32,
 }
 
@@ -229,6 +230,7 @@ pub fn primary_monitor() -> Monitor {
             left: rc.left,
             top: rc.top,
             width: rc.right - rc.left,
+            height: rc.bottom - rc.top,
             dpi: dx.max(96),
         }
     }
@@ -878,6 +880,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     }
     // SAFETY: forwards the unhandled message with the original arguments.
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+
+/// The foreground window's raw handle (0 when there is none), to give the keyboard back
+/// to later with [`give_back_keyboard`].
+pub fn foreground() -> isize {
+    // SAFETY: no arguments; the handle is only stored, never dereferenced here.
+    unsafe { GetForegroundWindow().0 as isize }
 }
 
 #[cfg(test)]

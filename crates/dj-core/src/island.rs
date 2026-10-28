@@ -148,6 +148,8 @@ pub enum ClickOutcome {
     Collapsed,
     /// Back to the Home grid from a Music view.
     Home,
+    /// The gear on Home: the island collapsed, and the app opens the Settings window.
+    OpenSettings,
     /// A locked tile was clicked (index into `FEATURES`): shake + "coming soon".
     Locked(usize),
     /// An available tile was clicked (index into `FEATURES`). The app opens its view;
@@ -750,8 +752,8 @@ impl Island {
                 }
             }
             IslandState::Home if self.gear_at(x, y) => {
-                self.open_settings(tokens);
-                ClickOutcome::Expanded
+                self.collapse(tokens);
+                ClickOutcome::OpenSettings
             }
             IslandState::Home => match self.tile_at(x, y) {
                 Some(i) if FEATURES[i].availability == Availability::Locked => {
@@ -1941,8 +1943,11 @@ mod tests {
         let mut i = Island::new(&t);
         open_home(&mut i, &t);
         let (x, y) = view_at(layout::HOME_W, layout::HOME_GEAR);
-        assert_eq!(i.click(x, y, &t), ClickOutcome::Expanded);
-        assert_eq!(i.state(), IslandState::Settings);
+        // The gear opens the Settings window: the island collapses.
+        assert_eq!(i.click(x, y, &t), ClickOutcome::OpenSettings);
+        assert_eq!(i.state(), IslandState::Idle);
+        // The in-island panel is still reachable directly (kept for now).
+        i.open_settings(&t);
         settle(&mut i, &t);
         assert_eq!(size(&i), (layout::SETTINGS_W, layout::SETTINGS_H));
         let l = i.view().layers;

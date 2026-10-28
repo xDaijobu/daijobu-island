@@ -437,6 +437,15 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
+/// Hides the popup (it keeps its window and renderer for the next time).
+pub fn hide(hwnd: HWND) {
+    // SAFETY: our own window, on the thread that owns it.
+    unsafe {
+        let _ = ReleaseCapture();
+        let _ = ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

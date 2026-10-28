@@ -3,6 +3,7 @@
 
 use crate::chime::SystemChime;
 use crate::notch::{self, Edges};
+use crate::popups::{self, IconLoader, PopupWin, SpotIndex};
 use crate::preview_store::Store;
 use crate::previews::{self, Model, Previews, TIMER_SNAP_STACK};
 use crate::snap::{
@@ -22,16 +23,18 @@ use crate::tile::{
 use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
 use dj_core::color::Rgb;
-use dj_core::config::{AnnotateConfig, Config, IslandStyle, SnapHotkey};
+use dj_core::config::{AnnotateConfig, Config, IslandStyle, SnapHotkey, SpotlightHotkey};
 use dj_core::features::FEATURES;
 use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, SnapAction, TimerAction};
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
 use dj_core::osd::Volume;
 use dj_core::settings::{self, SettingsAction, SettingsView};
+use dj_core::settings_ui::{self as sui, SettingsDoc, Taken};
 use dj_core::snap::{loupe_label, pixel_at, size_label, IRect, Loupe, Stamp};
 use dj_core::snap_edit::{CursorKind, EditInput, Key, KeyCode, Outcome, Rgba, TextMeasure};
 use dj_core::snap_stack::Stack;
+use dj_core::spotlight::{self as spot, Action as SpotAction, Spotlight};
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::terminal::{self as termcore, Mods};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
@@ -40,14 +43,16 @@ use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{
-    AssistCard, AssistScene, AssistSurface, EditScene, Frame, MusicFrame, RenderError, Renderer,
-    SnapFrame, SnapOverlay, SnapScene, TerminalPanel, TextMetrics, TilePanel, TileThumb,
+    AssistCard, AssistScene, AssistSurface, EditScene, Frame, IconCache, MusicFrame, RenderError,
+    Renderer, SnapFrame, SnapOverlay, SnapScene, TerminalPanel, TextMetrics, TilePanel, TileThumb,
     ZoneOverlay, ZoneScene,
 };
 use dj_win::assist::{AssistInput, Thumbnail};
 use dj_win::overlay::{self, SnapInput};
+use dj_win::popup::{self, PopupInput, PopupKind};
 use dj_win::tile::MoveEvent;
 use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
+use dj_win::window::Layer;
 use dj_win::{appbar, hook, system, volume, window, Event, Handler, HICON, HWND};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -55,6 +60,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOTKEY_TOGGLE: i32 = 1;
 const HOTKEY_THEME: i32 = 2;
+/// Spotlight (Alt+Space by default); ids 6-19 belong to Snap, Tile and the terminal.
+const HOTKEY_SPOTLIGHT: i32 = 20;
+const VK_SPACE: u32 = 0x20;
 const TIMER_CLOCK: usize = 1;
 const TIMER_VU: usize = 2;
 /// One-shot: the Sweep result has been on screen long enough, back to Vitals.
@@ -185,6 +193,22 @@ pub struct App {
     terminal: Terminal,
     term_keyboard: bool,
     term_prev: isize,
+    /// Where the island sits in the z-order (`[island] stay_behind` keeps it on the
+    /// desktop layer while it rests).
+    layer: Layer,
+    /// The Settings window and its model, while open.
+    settings_win: Option<(PopupWin, SettingsDoc)>,
+    /// The Settings window's left button is down (motion drags a slider).
+    settings_pressed: bool,
+    /// Spotlight: its window (kept hidden between uses), model, index and icons, the
+    /// window that had the keyboard before it opened, and whether its hotkey is taken.
+    spot_win: Option<PopupWin>,
+    spotlight: Spotlight,
+    spot_index: SpotIndex,
+    spot_icons: IconLoader,
+    icon_cache: IconCache,
+    spot_prev: isize,
+    spot_taken: bool,
 }
 
 /// The window picker on the zone it fills: its window, surface, live thumbnails and input.
@@ -362,8 +386,24 @@ impl App {
             terminal,
             term_keyboard: false,
             term_prev: 0,
+            layer: Layer::Top,
+            settings_win: None,
+            settings_pressed: false,
+            spot_win: None,
+            spotlight: Spotlight::new(),
+            spot_index: SpotIndex::new(),
+            spot_icons: IconLoader::new(raw),
+            icon_cache: IconCache::new(),
+            spot_prev: 0,
+            spot_taken: false,
         };
+        let (nw, nh) = app.config.island.notch_size();
+        app.island.set_idle_size(nw, nh);
         app.relayout();
+        app.sync_layer(true);
+        app.register_spotlight_hotkey();
+        app.spot_index
+            .rebuild(app.config.spotlight.files, true, raw);
         app.install_shell_integration();
         if app.config.music.signed_in {
             // Signed in before: the engine runs hidden from the start.
@@ -822,7 +862,13 @@ impl App {
     fn sync_appbar(&mut self, force: bool) {
         let want = (self.visible && self.config.island.reserves_top()).then(|| {
             let mon = window::primary_monitor();
-            notch::reserve_strip(mon.left, mon.top, mon.width, mon.dpi as f32 / 96.0)
+            notch::reserve_strip(
+                mon.left,
+                mon.top,
+                mon.width,
+                mon.dpi as f32 / 96.0,
+                self.config.island.notch_size().1,
+            )
         });
         if want == self.reserved && !force {
             return;
@@ -836,6 +882,447 @@ impl App {
             None => appbar::release(self.hwnd),
         }
         self.reserved = want;
+    }
+
+    // ---- Stay behind windows ----
+
+    /// Puts the island on top while it shows something (a panel, the OSD, a collapse on
+    /// its way), and on the desktop layer while it rests with `[island] stay_behind`.
+    /// `force` applies it even if it seems unchanged (startup, a new setting).
+    fn sync_layer(&mut self, force: bool) {
+        let want = if self.config.island.stay_behind && !self.island.wants_front() {
+            Layer::Desktop
+        } else {
+            Layer::Top
+        };
+        if want == self.layer && !force {
+            return;
+        }
+        self.layer = want;
+        system::set_island_on_top(want == Layer::Top);
+        window::set_layer(self.hwnd, want);
+    }
+
+    // ---- Spotlight ----
+
+    /// Registers the Spotlight hotkey from `[spotlight]`, dropping the previous one.
+    fn register_spotlight_hotkey(&mut self) {
+        window::unregister_hotkey(self.hwnd, HOTKEY_SPOTLIGHT);
+        self.spot_taken = false;
+        let mods = match self.config.spotlight.hotkey() {
+            SpotlightHotkey::AltSpace => window::MOD_ALT_ONLY,
+            SpotlightHotkey::CtrlAltSpace => window::MOD_CTRL_ALT,
+            SpotlightHotkey::Off => return,
+        };
+        if let Err(e) = window::try_register_hotkey(self.hwnd, HOTKEY_SPOTLIGHT, mods, VK_SPACE) {
+            storage::log(&format!(
+                "spotlight: {} is not available: {}",
+                self.config.spotlight.hotkey().label(),
+                e.trim()
+            ));
+            self.spot_taken = true;
+        }
+    }
+
+    fn spotlight_open(&self) -> bool {
+        self.spot_win.as_ref().is_some_and(|w| w.shown)
+    }
+
+    fn toggle_spotlight(&mut self) {
+        if self.spotlight_open() {
+            self.close_spotlight(true);
+        } else {
+            self.open_spotlight();
+        }
+    }
+
+    /// Shows Spotlight under the notch with an empty query. Only right after the hotkey,
+    /// which lets it take the foreground.
+    fn open_spotlight(&mut self) {
+        let mon = window::primary_monitor();
+        let scale = mon.dpi as f32 / 96.0;
+        let w = (spot::WIN_W * scale).ceil() as i32;
+        let (_, nh) = self.config.island.notch_size();
+        let below = layout::TOP_MARGIN + nh + spot::GAP_BELOW_NOTCH - spot::MARGIN;
+        let x = mon.left + (mon.width - w) / 2;
+        let y = mon.top + (below * scale).round() as i32;
+        let stale = self.spot_win.as_ref().is_some_and(|win| win.scale != scale);
+        if stale {
+            if let Some(old) = self.spot_win.take() {
+                old.destroy();
+            }
+        }
+        if self.spot_win.is_none() {
+            self.spot_win =
+                PopupWin::create(PopupKind::Spotlight, x, y, spot::WIN_W, spot::WIN_H, scale);
+        }
+        let Some(win) = self.spot_win.as_mut() else {
+            return;
+        };
+        popup::move_to(win.hwnd, x, y);
+        self.spot_prev = window::foreground();
+        self.spotlight.reset();
+        let raw = self.hwnd.0 as isize;
+        self.spot_index
+            .rebuild(self.config.spotlight.files, false, raw);
+        self.spot_index.take();
+        self.spotlight.set_indexing(self.spot_index.building());
+        self.spotlight
+            .refresh(&self.spot_index.entries, self.config.spotlight.files);
+        win.dirty = true;
+        self.render_spotlight();
+        if let Some(win) = self.spot_win.as_mut() {
+            popup::show(win.hwnd);
+            win.shown = true;
+        }
+    }
+
+    /// Hides Spotlight. `give_back`: the keyboard returns to the window that had it (Esc,
+    /// the hotkey), not after a launch or a click elsewhere.
+    fn close_spotlight(&mut self, give_back: bool) {
+        let Some(win) = self.spot_win.as_mut() else {
+            return;
+        };
+        if !win.shown {
+            return;
+        }
+        win.shown = false;
+        popup::hide(win.hwnd);
+        let prev = std::mem::take(&mut self.spot_prev);
+        if give_back {
+            window::give_back_keyboard(prev);
+        }
+    }
+
+    fn spotlight_action(&mut self, action: SpotAction) {
+        match action {
+            SpotAction::None => {}
+            SpotAction::Redraw => {
+                if let Some(w) = self.spot_win.as_mut() {
+                    w.dirty = true;
+                }
+            }
+            SpotAction::Close => self.close_spotlight(true),
+            SpotAction::Launch(entry) => {
+                self.close_spotlight(false);
+                if !popups::launch(&entry) {
+                    storage::log(&format!("spotlight: cannot open {}", entry.target));
+                }
+            }
+            SpotAction::Reveal(entry) => {
+                self.close_spotlight(false);
+                dj_win::launcher::reveal(std::path::Path::new(&entry.target));
+            }
+        }
+    }
+
+    fn spotlight_input(&mut self, input: PopupInput) {
+        let Some(win) = self.spot_win.as_ref() else {
+            return;
+        };
+        if !win.shown {
+            return;
+        }
+        let entries = &self.spot_index.entries;
+        let action = match input {
+            PopupInput::Press { x, y } | PopupInput::DoubleClick { x, y } => {
+                let (lx, ly) = win.local(x, y);
+                self.spotlight.press(lx, ly, entries)
+            }
+            PopupInput::Motion { x, y } => {
+                let (lx, ly) = win.local(x, y);
+                self.spotlight.hover(lx, ly)
+            }
+            PopupInput::Leave => self.spotlight.leave(),
+            PopupInput::Wheel { lines } => self.spotlight.wheel(-lines),
+            PopupInput::Key {
+                vk: 0x56,
+                ctrl: true,
+                ..
+            } => match popup::clipboard_text() {
+                Some(text) => self.spotlight.paste(&text, entries),
+                None => SpotAction::None,
+            },
+            PopupInput::Key {
+                vk, ctrl, shift, ..
+            } => self.spotlight.key(vk, ctrl, shift, entries),
+            PopupInput::Char(c) => self.spotlight.char(c, entries),
+            PopupInput::Close => SpotAction::Close,
+            // Clicking another window dismisses it; the keyboard stays where it went.
+            PopupInput::FocusLost => {
+                self.close_spotlight(false);
+                SpotAction::None
+            }
+            PopupInput::Dpi { .. } | PopupInput::Release { .. } => SpotAction::None,
+        };
+        self.spotlight_action(action);
+    }
+
+    fn render_spotlight(&mut self) {
+        let tokens = self.anim.current().clone();
+        let Some(win) = self.spot_win.as_mut() else {
+            return;
+        };
+        if !win.dirty {
+            return;
+        }
+        win.dirty = false;
+        let view = self.spotlight.view(&self.spot_index.entries);
+        for row in &view.rows {
+            if !self.icon_cache.contains(&row.icon_key) {
+                self.spot_icons.want(row.kind, &row.icon_key);
+            }
+        }
+        if let Some(r) = win.renderer.as_mut() {
+            if let Err(e) = r.render_spotlight(&view, &tokens, win.scale, &self.icon_cache) {
+                storage::log(&format!("spotlight render: {e}"));
+            }
+        }
+    }
+
+    /// News from the index and icon workers.
+    fn drain_spotlight(&mut self) {
+        let mut redraw = false;
+        if self.spot_index.take() {
+            self.spotlight
+                .refresh(&self.spot_index.entries, self.config.spotlight.files);
+            redraw = true;
+        }
+        redraw |= self.spotlight.set_indexing(self.spot_index.building());
+        redraw |= self.spot_icons.drain(&mut self.icon_cache);
+        if redraw {
+            if let Some(w) = self.spot_win.as_mut() {
+                w.dirty = true;
+            }
+        }
+    }
+
+    // ---- The Settings window ----
+
+    fn theme_choices(&self) -> Vec<(String, String)> {
+        self.registry
+            .ids()
+            .iter()
+            .map(|id| {
+                (
+                    id.to_string(),
+                    self.registry.name_of(id).unwrap_or(id).to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn taken(&self) -> Taken {
+        Taken {
+            snap: self.snap_taken.0,
+            snap_alt: self.snap_taken.1,
+            spotlight: self.spot_taken,
+        }
+    }
+
+    /// Opens the Settings window centred on the primary monitor, or brings it forward.
+    fn open_settings_window(&mut self) {
+        if let Some((win, _)) = self.settings_win.as_ref() {
+            popup::show(win.hwnd);
+            return;
+        }
+        let mon = window::primary_monitor();
+        let scale = mon.dpi as f32 / 96.0;
+        let (w, h) = (
+            (sui::WIN_W * scale).ceil() as i32,
+            (sui::WIN_H * scale).ceil() as i32,
+        );
+        let x = mon.left + (mon.width - w) / 2;
+        let y = mon.top + ((mon.height - h) / 2).max(0);
+        let Some(win) = PopupWin::create(PopupKind::Settings, x, y, sui::WIN_W, sui::WIN_H, scale)
+        else {
+            return;
+        };
+        let doc = SettingsDoc::new(&self.config, self.theme_choices(), self.taken());
+        self.settings_win = Some((win, doc));
+        self.sync_settings_drag();
+        self.render_settings();
+        if let Some((win, _)) = self.settings_win.as_mut() {
+            popup::show(win.hwnd);
+            win.shown = true;
+        }
+    }
+
+    /// The title bar drags the window, except its ✕.
+    fn sync_settings_drag(&self) {
+        let Some((win, doc)) = self.settings_win.as_ref() else {
+            return;
+        };
+        let t = doc.title_bar();
+        let s = win.scale;
+        let rect = dj_win::RECT {
+            left: (t.x * s) as i32,
+            top: (t.y * s) as i32,
+            right: ((t.x + t.w - 56.0) * s) as i32,
+            bottom: ((t.y + t.h) * s) as i32,
+        };
+        popup::set_drag_rect(win.hwnd, Some(rect));
+    }
+
+    fn close_settings_window(&mut self) {
+        self.settings_pressed = false;
+        if let Some((win, _)) = self.settings_win.take() {
+            win.destroy();
+        }
+    }
+
+    fn settings_input(&mut self, input: PopupInput) {
+        let Some((win, doc)) = self.settings_win.as_mut() else {
+            return;
+        };
+        let outcome = match input {
+            PopupInput::Press { x, y } | PopupInput::DoubleClick { x, y } => {
+                self.settings_pressed = true;
+                let (lx, ly) = win.local(x, y);
+                doc.press(lx, ly)
+            }
+            PopupInput::Motion { x, y } => {
+                let (lx, ly) = win.local(x, y);
+                if self.settings_pressed {
+                    doc.drag(lx, ly)
+                } else {
+                    doc.hover(lx, ly)
+                }
+            }
+            PopupInput::Release { x, y } => {
+                self.settings_pressed = false;
+                let (lx, ly) = win.local(x, y);
+                doc.release(lx, ly)
+            }
+            PopupInput::Leave => doc.leave(),
+            PopupInput::Wheel { lines } => doc.wheel(-lines),
+            PopupInput::Key {
+                vk: 0x56,
+                ctrl: true,
+                ..
+            } => {
+                let mut out = sui::Outcome::default();
+                for c in popup::clipboard_text().unwrap_or_default().chars() {
+                    let o = doc.char(c);
+                    out.redraw |= o.redraw;
+                }
+                out
+            }
+            PopupInput::Key {
+                vk, ctrl, shift, ..
+            } => doc.key(vk, ctrl, shift),
+            PopupInput::Char(c) => doc.char(c),
+            // Alt+F4: closes and drops unsaved edits.
+            PopupInput::Close => sui::Outcome {
+                close: true,
+                ..Default::default()
+            },
+            PopupInput::FocusLost => {
+                self.settings_pressed = false;
+                sui::Outcome::default()
+            }
+            PopupInput::Dpi { dpi } => {
+                win.set_dpi(dpi, sui::WIN_W, sui::WIN_H);
+                sui::Outcome {
+                    redraw: true,
+                    ..Default::default()
+                }
+            }
+        };
+        if outcome.redraw {
+            win.dirty = true;
+        }
+        if matches!(input, PopupInput::Dpi { .. }) {
+            self.sync_settings_drag();
+        }
+        if let Some(config) = outcome.apply {
+            self.apply_config(config);
+        }
+        if outcome.close {
+            self.close_settings_window();
+        }
+    }
+
+    fn render_settings(&mut self) {
+        let tokens = self.anim.current().clone();
+        let Some((win, doc)) = self.settings_win.as_mut() else {
+            return;
+        };
+        if !win.dirty {
+            return;
+        }
+        win.dirty = false;
+        let view = doc.view();
+        if let Some(r) = win.renderer.as_mut() {
+            if let Err(e) = r.render_settings(&view, &tokens, win.scale) {
+                storage::log(&format!("settings render: {e}"));
+            }
+        }
+    }
+
+    /// The Settings window's Apply / Save: takes `new` as the config, saves it, and
+    /// applies what changed.
+    fn apply_config(&mut self, mut new: Config) {
+        let old = self.config.clone();
+        if new.start_with_windows != old.start_with_windows
+            && !system::set_autostart(new.start_with_windows, &self.exe)
+        {
+            storage::log("settings: cannot change the Run entry");
+            new.start_with_windows = old.start_with_windows;
+        }
+        self.config = new;
+        storage::save_config(&self.config);
+        if self.config.theme != old.theme {
+            let id = self.config.theme.clone();
+            self.set_theme(&id);
+        }
+        if self.config.snap.hotkey != old.snap.hotkey
+            || self.config.snap.alt_hotkey != old.snap.alt_hotkey
+        {
+            self.register_snap_hotkey();
+        }
+        if self.config.spotlight != old.spotlight {
+            self.register_spotlight_hotkey();
+            if self.config.spotlight.files != old.spotlight.files {
+                let raw = self.hwnd.0 as isize;
+                self.spot_index
+                    .rebuild(self.config.spotlight.files, true, raw);
+            }
+            if !self.config.spotlight.enabled {
+                self.close_spotlight(false);
+            }
+        }
+        if self.config.island != old.island {
+            let (w, h) = self.config.island.notch_size();
+            self.island.set_idle_size(w, h);
+            self.sync_appbar(false);
+            self.sync_layer(true);
+            self.dirty = true;
+        }
+        if self.config.terminal != old.terminal {
+            self.terminal.set_config(self.config.terminal.clone());
+            let cell = self.term_cell();
+            self.terminal.measure(cell, self.scale);
+            self.dirty = true;
+        }
+        // What actually took (a refused Run entry, a hotkey another app holds).
+        let taken = self.taken();
+        let config = self.config.clone();
+        if let Some((win, doc)) = self.settings_win.as_mut() {
+            doc.set_taken(taken);
+            doc.config_changed(&config);
+            win.dirty = true;
+        }
+    }
+
+    /// Something else changed the config (the theme hotkey, the tray): the open Settings
+    /// window follows.
+    fn settings_follow_config(&mut self) {
+        let config = self.config.clone();
+        if let Some((win, doc)) = self.settings_win.as_mut() {
+            doc.config_changed(&config);
+            win.dirty = true;
+        }
     }
 
     fn settings_view(&self) -> SettingsView {
@@ -2076,6 +2563,7 @@ impl App {
         self.config.theme = id.to_string();
         storage::save_config(&self.config);
         self.dirty = true;
+        self.settings_follow_config();
     }
 
     fn cycle_theme(&mut self) {
@@ -2366,6 +2854,7 @@ impl App {
             Some(MenuCommand::MusicSignOut) => self.sign_out(),
             Some(MenuCommand::MusicStop) => self.stop_engine(),
             Some(MenuCommand::SnapPreviews) => self.previews.focus_keyboard(Instant::now()),
+            Some(MenuCommand::Settings) => self.open_settings_window(),
             Some(MenuCommand::Quit) => self.quit(),
             None => {}
         }
@@ -2392,6 +2881,11 @@ impl App {
         tray::remove(self.hwnd);
         window::unregister_hotkey(self.hwnd, HOTKEY_TOGGLE);
         window::unregister_hotkey(self.hwnd, HOTKEY_THEME);
+        window::unregister_hotkey(self.hwnd, HOTKEY_SPOTLIGHT);
+        self.close_settings_window();
+        if let Some(w) = self.spot_win.take() {
+            w.destroy();
+        }
         window::unregister_hotkey(self.hwnd, HOTKEY_TERMINAL);
         // The shell ends with the island.
         self.release_keyboard(false);
@@ -2486,6 +2980,7 @@ impl Handler for App {
                     ClickOutcome::Snap(action) => self.snap_action(action),
                     ClickOutcome::Timer(action) => self.timer_action(action),
                     ClickOutcome::Settings(action) => self.settings_action(action),
+                    ClickOutcome::OpenSettings => self.open_settings_window(),
                     // A clean that is still running keeps its view; otherwise preview afresh.
                     ClickOutcome::OpenSweep if !self.cleaning => self.start_preview(),
                     ClickOutcome::Sweep { x, y } => {
@@ -2568,6 +3063,9 @@ impl Handler for App {
             }
             Event::Hotkey(HOTKEY_TOGGLE) => self.set_visible(!self.visible),
             Event::Hotkey(HOTKEY_THEME) => self.cycle_theme(),
+            Event::Hotkey(HOTKEY_SPOTLIGHT) => self.toggle_spotlight(),
+            Event::Popup(PopupKind::Spotlight, input) => self.spotlight_input(input),
+            Event::Popup(PopupKind::Settings, input) => self.settings_input(input),
             Event::Hotkey(HOTKEY_TERMINAL) => {
                 if self.island.terminal_open() {
                     self.close_terminal(true);
@@ -2677,6 +3175,7 @@ impl Handler for App {
                     self.dirty = true;
                 }
                 self.drain_art();
+                self.drain_spotlight();
                 // A card saved the thumb's shot: the thumb reads "open" too.
                 let saved = self.previews.drain(Instant::now());
                 if !saved.is_empty() {
@@ -2762,8 +3261,7 @@ impl Handler for App {
             | Event::RightClick { .. }
             | Event::MiddleClick { .. }
             | Event::DoubleClick { .. }
-            | Event::FocusLost
-            | Event::Popup(..) => {}
+            | Event::FocusLost => {}
         }
         self.sync_vu_timer();
         self.sync_vitals();
@@ -2772,6 +3270,9 @@ impl Handler for App {
         self.sync_snap();
         self.sync_tile();
         self.sync_terminal();
+        self.sync_layer(false);
+        self.render_spotlight();
+        self.render_settings();
     }
 
     fn wants_frame(&self) -> bool {
@@ -2796,6 +3297,19 @@ impl Handler for App {
         let theming = self.anim.animating();
         self.anim.step(dt);
         self.island.step(dt, self.anim.current());
+        // The island may sink to the desktop layer once a collapse has settled.
+        self.sync_layer(false);
+        if theming {
+            // The popups follow a theme crossfade.
+            if let Some((w, _)) = self.settings_win.as_mut() {
+                w.dirty = true;
+            }
+            if let Some(w) = self.spot_win.as_mut().filter(|w| w.shown) {
+                w.dirty = true;
+            }
+            self.render_settings();
+            self.render_spotlight();
+        }
         // The preview stack follows the island's edge and its theme, and draws only when
         // it has something new (a ring tick or a spring can come without the island).
         if theming {

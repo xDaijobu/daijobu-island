@@ -258,6 +258,13 @@ impl Terminal {
         &self.config
     }
 
+    /// New `[terminal]` settings (from the Settings window). Tabs opened from now on use
+    /// the new shell; running ones keep theirs. The app remeasures the cells after a font
+    /// change (`measure`).
+    pub fn set_config(&mut self, config: TerminalConfig) {
+        self.config = config;
+    }
+
     /// The panel opens with cells of `cell` device px at `scale`. The first time it brings
     /// back the saved pinned tabs; with no tab at all it opens one.
     pub fn open(&mut self, cell: (u16, u16), scale: f32) {
