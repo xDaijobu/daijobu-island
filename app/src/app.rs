@@ -1468,6 +1468,7 @@ impl App {
     /// Hotkeys capture open panels in place. Only the Home tile collapses its launcher
     /// before freezing, so that launcher is not part of a capture started from Home.
     fn request_snap(&mut self, from_home: bool) {
+        self.previews.cancel_drag(Instant::now());
         if self.overlay.is_some() || self.snap_pending {
             return;
         }
@@ -3029,6 +3030,11 @@ impl App {
     }
 
     fn quit(&mut self) {
+        if window::quitting() {
+            return;
+        }
+        // Latch termination before cleanup can pump another native callback.
+        window::quit();
         // Give the strip back first, or the work area stays short after we're gone.
         appbar::release(self.hwnd);
         self.reserved = None;
@@ -3062,7 +3068,6 @@ impl App {
             storage::save_terminal_tabs(&toml);
         }
         self.terminal.shutdown();
-        window::quit();
     }
 
     /// Device-px edges of the island's column: the pill, or in notch style the pill
@@ -3101,8 +3106,31 @@ impl App {
 }
 
 impl Handler for App {
+    fn take_drag(&mut self) -> Option<(u64, dj_win::drag_drop::DragPayload)> {
+        if window::quitting() || self.snap_pending || self.overlay.is_some() || !self.visible {
+            self.previews.cancel_drag(Instant::now());
+            return None;
+        }
+        self.previews.take_drag(Instant::now())
+    }
+
+    fn drag_finished(
+        &mut self,
+        request: u64,
+        result: Result<dj_win::drag_drop::DragOutcome, String>,
+    ) {
+        self.previews.finish_drag(request, result, Instant::now());
+    }
+
     fn event(&mut self, ev: Event) {
+        if window::quitting() {
+            return;
+        }
         match ev {
+            Event::Close => self.quit(),
+            Event::DragEscape(request) => {
+                self.previews.cancel_drag_request(request, Instant::now())
+            }
             Event::Click { x, y } => {
                 // The island never takes the keyboard, so the picker can't see this click
                 // as a focus loss: a click on the island leaves the picker here.
@@ -3449,6 +3477,9 @@ impl Handler for App {
             | Event::DoubleClick { .. }
             | Event::FocusLost => {}
         }
+        if window::quitting() {
+            return;
+        }
         self.sync_vu_timer();
         self.sync_vitals();
         self.sync_sweep();
@@ -3462,6 +3493,9 @@ impl Handler for App {
     }
 
     fn wants_frame(&self) -> bool {
+        if window::quitting() {
+            return false;
+        }
         // While a snap is up, only the overlay draws, and only after input.
         if let Some(ov) = &self.overlay {
             return ov.dirty;
@@ -3470,6 +3504,9 @@ impl Handler for App {
     }
 
     fn frame(&mut self) {
+        if window::quitting() {
+            return;
+        }
         if self.overlay.is_some() {
             self.render_overlay();
             return;

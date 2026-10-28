@@ -1,6 +1,7 @@
 # Stage 7c-2 brief: Snap stack drag-out
 
-Status: planned, not dispatched. Read the [coordination plan](stage-snap-clipboard-plan.md)
+Status: implemented and reviewed; automated/release/runtime checks passed. See the
+[report](stage-7c2-report.md) for remaining desktop acceptance. Read the [coordination plan](stage-snap-clipboard-plan.md)
 for worker ownership and shared contracts. Start from master after the existing 7c
 stack; no new feature-registry unlock is needed.
 

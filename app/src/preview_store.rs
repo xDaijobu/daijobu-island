@@ -8,7 +8,7 @@
 //! the bytes are freed when the last owner (the thumb, the card, a queued job) lets go.
 //! Removing a card (dismissed, expired, evicted) only drops its `Arc`s: it never
 //! touches the clipboard and never deletes a file, and nothing is written to disk
-//! except by an explicit [`Store::save`].
+//! except by an explicit [`Store::save`] or drag preparation in `snap_drag_store`.
 //!
 //! Threads: everything on `Store` is called from the UI thread and returns at once. A
 //! copy that has its PNG goes to the clipboard right away, as the thumb's does. What can
@@ -28,6 +28,8 @@ use dj_core::snap::{Bitmap, Stamp};
 use dj_sweep::Ops;
 use std::collections::HashMap;
 use std::fmt;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -319,6 +321,102 @@ fn reveal_with(ops: &dyn Ops, path: &Path) -> Result<(), RevealError> {
         .map_err(|e| RevealError::Other(e.to_string()))
 }
 
+/// Materializes the final shared PNG for a drag, without changing normal Copy/Save.
+/// Only an unchanged regular file is reused: an edited, unreadable or missing saved
+/// file gets a fresh name. Neither that old path nor any completed PNG is deleted.
+/// Called only on the drag IO worker; comparing large files never blocks the UI.
+pub(crate) fn materialize_drag_png(
+    png: &[u8],
+    saved: Option<&Path>,
+    dir: &Path,
+    stamp: Stamp,
+) -> Result<PathBuf, String> {
+    if png.is_empty() {
+        return Err("the image has no PNG bytes".into());
+    }
+    if let Some(path) = saved {
+        if file_matches(path, png) {
+            return std::path::absolute(path)
+                .map_err(|e| format!("cannot resolve {}: {e}", path.display()));
+        }
+    }
+    let dir =
+        std::path::absolute(dir).map_err(|e| format!("cannot resolve {}: {e}", dir.display()))?;
+    match saved {
+        None => write_new(&dir, stamp, png),
+        Some(old) => write_drag_png(&dir, stamp, png, old, |f, bytes| {
+            f.write_all(bytes).and_then(|()| f.flush())
+        }),
+    }
+}
+
+fn file_matches(path: &Path, bytes: &[u8]) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() != bytes.len() as u64 {
+        return false;
+    }
+    let mut buffer = [0; 64 * 1024];
+    for chunk in bytes.chunks(buffer.len()) {
+        let read = &mut buffer[..chunk.len()];
+        if file.read_exact(read).is_err() || read != chunk {
+            return false;
+        }
+    }
+    // Also detect a file that grew after metadata was read.
+    matches!(file.read(&mut buffer[..1]), Ok(0))
+}
+
+/// The same create-new/write/flush discipline and name range as `snap::write_new`,
+/// with one extra exclusion for a disappeared saved file. Skipping the basename
+/// even across directories avoids Windows path-case/alias differences. The old
+/// file is never reserved, truncated or removed, even when it does not exist.
+fn write_drag_png(
+    dir: &Path,
+    stamp: Stamp,
+    bytes: &[u8],
+    old: &Path,
+    write: impl Fn(&mut File, &[u8]) -> io::Result<()>,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    for n in 1..=999 {
+        let name = dj_core::snap::file_name(stamp, n);
+        if old
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case(&name))
+        {
+            continue;
+        }
+        let path = dir.join(name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                return match write(&mut file, bytes) {
+                    Ok(()) => Ok(path),
+                    Err(e) => {
+                        drop(file);
+                        // This operation created this partial file; never remove
+                        // a collision or the previously saved path.
+                        let _ = fs::remove_file(&path);
+                        Err(format!("cannot write {}: {e}", path.display()))
+                    }
+                };
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
+        }
+    }
+    Err(format!("no free file name in {}", dir.display()))
+}
+
 /// The IO thread: one job at a time until the store lets go of the queue.
 fn work(
     jobs: &Receiver<Job>,
@@ -490,6 +588,72 @@ mod tests {
             bitmap: Arc::new(Bitmap::black(w, h)),
             png: png.map(Arc::from),
         }
+    }
+
+    #[test]
+    fn drag_reuses_only_unchanged_regular_files_and_preserves_edited_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = dir.path().join("annotated \u{732b}.png");
+        // Larger than the comparison buffer, including a short final chunk.
+        let png = vec![91; 64 * 1024 + 7];
+        fs::write(&saved, &png).unwrap();
+        assert_eq!(
+            materialize_drag_png(&png, Some(&saved), dir.path(), STAMP).unwrap(),
+            saved
+        );
+        let mut changed = png.clone();
+        *changed.last_mut().unwrap() = 19;
+        fs::write(&saved, &changed).unwrap();
+        let new = materialize_drag_png(&png, Some(&saved), dir.path(), STAMP).unwrap();
+        assert_ne!(new, saved);
+        assert_eq!(fs::read(&saved).unwrap(), changed);
+        assert_eq!(fs::read(&new).unwrap(), png);
+        let as_directory = dir.path().join("directory.png");
+        fs::create_dir(&as_directory).unwrap();
+        let new = materialize_drag_png(b"PNG", Some(&as_directory), dir.path(), STAMP).unwrap();
+        assert!(as_directory.is_dir());
+        assert_eq!(fs::read(new).unwrap(), b"PNG");
+    }
+
+    #[test]
+    fn drag_recreation_skips_the_disappeared_name_even_with_different_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join(format!("{STAMP_NAME}.png").to_uppercase());
+        let collision = dir.path().join(format!("{STAMP_NAME}-2.png"));
+        fs::write(&collision, b"other user's image").unwrap();
+        let path = materialize_drag_png(b"final PNG", Some(&old), dir.path(), STAMP).unwrap();
+        assert_eq!(path, dir.path().join(format!("{STAMP_NAME}-3.png")));
+        assert!(!old.exists());
+        assert_eq!(fs::read(&collision).unwrap(), b"other user's image");
+        assert_eq!(fs::read(&path).unwrap(), b"final PNG");
+    }
+
+    #[test]
+    fn drag_partial_write_removes_only_the_file_this_operation_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join(format!("{STAMP_NAME}.png"));
+        let occupied = dir.path().join(format!("{STAMP_NAME}-2.png"));
+        fs::write(&old, b"user-saved file").unwrap();
+        fs::write(&occupied, b"another image").unwrap();
+        let result = write_drag_png(dir.path(), STAMP, b"PNG complete", &old, |file, png| {
+            file.write_all(&png[..4])?;
+            Err(io::Error::other("synthetic disk-full failure"))
+        });
+        assert!(result.unwrap_err().contains("synthetic disk-full failure"));
+        assert_eq!(fs::read(&old).unwrap(), b"user-saved file");
+        assert_eq!(fs::read(&occupied).unwrap(), b"another image");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert!(!dir.path().join(format!("{STAMP_NAME}-3.png")).exists());
+    }
+
+    #[test]
+    fn drag_empty_png_never_creates_a_file_or_replaces_a_saved_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("saved.png");
+        fs::write(&old, b"keep").unwrap();
+        assert!(materialize_drag_png(&[], Some(&old), dir.path(), STAMP).is_err());
+        assert_eq!(fs::read(&old).unwrap(), b"keep");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     /// Polls `drain` until `n` replies are in (or fails after 5 s).

@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_SNAPSHOT,
-    VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
+    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    VK_SNAPSHOT, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, PostMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
@@ -29,6 +29,8 @@ static VOLUME_KEYS: AtomicBool = AtomicBool::new(false);
 static PRINT_SCREEN: AtomicBool = AtomicBool::new(false);
 /// A PrtSc press was swallowed, so its release is swallowed too.
 static PRINT_DOWN: AtomicBool = AtomicBool::new(false);
+/// Escape was used to cancel a preparing drag; consume the matching release too.
+static DRAG_ESCAPE_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// True for the virtual-key codes of the volume mute, down and up keys.
 pub fn is_volume_key(vk: u32) -> bool {
@@ -110,6 +112,7 @@ pub fn install(hwnd: HWND) -> bool {
 
 /// Removes the hook if installed. Safe to call twice.
 pub fn uninstall() {
+    DRAG_ESCAPE_DOWN.store(false, Ordering::Release);
     let raw = HOOK.swap(0, Ordering::AcqRel);
     if raw != 0 {
         // SAFETY: the handle came from SetWindowsHookExW and is removed only once.
@@ -137,6 +140,18 @@ unsafe extern "system" fn keyboard_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LR
             // SAFETY: for WH_KEYBOARD_LL with code >= 0, lParam points to a
             // KBDLLHOOKSTRUCT that stays valid for the duration of this call.
             let vk = unsafe { (*(lp.0 as *const KBDLLHOOKSTRUCT)).vkCode };
+            if vk == u32::from(VK_ESCAPE.0) {
+                if is_down
+                    && (DRAG_ESCAPE_DOWN.load(Ordering::Acquire)
+                        || crate::window::drag_escape_pressed())
+                {
+                    DRAG_ESCAPE_DOWN.store(true, Ordering::Release);
+                    return LRESULT(1);
+                }
+                if is_up && DRAG_ESCAPE_DOWN.swap(false, Ordering::AcqRel) {
+                    return LRESULT(1);
+                }
+            }
             let print = PRINT_SCREEN.load(Ordering::Acquire);
             let mods = print && vk == u32::from(VK_SNAPSHOT.0) && is_down && modifiers_held();
             let take = classify(

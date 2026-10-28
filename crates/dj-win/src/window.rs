@@ -7,6 +7,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -16,7 +17,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent,
+    GetCapture, GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent,
     UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, TME_LEAVE,
     TRACKMOUSEEVENT, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
@@ -154,6 +155,10 @@ pub enum Event {
     /// with `WA_INACTIVE`). One deactivation can send both, so handle it idempotently.
     /// Sent only in keyboard mode.
     FocusLost,
+    /// A close request, handled outside the native callback and any OLE drag loop.
+    Close,
+    /// Escape during asynchronous preview preparation, tied to its exact request.
+    DragEscape(u64),
 }
 
 pub trait Handler {
@@ -162,6 +167,17 @@ pub trait Handler {
     fn wants_frame(&self) -> bool;
     /// Render one frame. Called only while `wants_frame` is true; paced by `Present(1)`.
     fn frame(&mut self);
+    /// Take an owned drag after all queued input has been handled. No handler borrow
+    /// or application callback is retained by the native drag operation.
+    fn take_drag(&mut self) -> Option<(u64, crate::drag_drop::DragPayload)> {
+        None
+    }
+    fn drag_finished(
+        &mut self,
+        _request: u64,
+        _result: std::result::Result<crate::drag_drop::DragOutcome, String>,
+    ) {
+    }
 }
 
 thread_local! {
@@ -172,13 +188,127 @@ thread_local! {
     static KEYBOARD: Cell<bool> = const { Cell::new(false) };
     /// A high surrogate from `WM_CHAR` waiting for its low half.
     static HIGH_SURROGATE: Cell<Option<u16>> = const { Cell::new(None) };
+    /// Native callbacks may cancel a modal operation, but only enqueue app events.
+    static ACTIVE_DRAG: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    static QUIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
+    static DRAG_ESCAPE_REQUEST: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 /// The backtick key on US layouts (`VK_OEM_3`), the terminal's hotkey.
 pub const VK_OEM_3: u32 = 0xC0;
 
 fn push(ev: Event) {
-    QUEUE.with(|q| q.borrow_mut().push_back(ev));
+    if interrupts_drag(ev) {
+        cancel_modal_drag();
+    }
+    let modal = ACTIVE_DRAG.with(|active| active.borrow().is_some());
+    QUEUE.with(|q| {
+        let mut queue = q.borrow_mut();
+        // These are level-triggered notifications: one drain observes all pending
+        // results/current time. A long OLE drag must not accumulate thousands of
+        // redundant timer/wake callbacks. Commands and input retain FIFO order.
+        if modal
+            && matches!(
+                ev,
+                Event::Timer(_)
+                    | Event::Wake
+                    | Event::Music
+                    | Event::VitalsReady
+                    | Event::SweepReady
+            )
+            && queue.iter().any(|queued| *queued == ev)
+        {
+            return;
+        }
+        queue.push_back(ev);
+    });
+}
+
+fn interrupts_drag(ev: Event) -> bool {
+    matches!(
+        ev,
+        Event::Hotkey(_)
+            | Event::PrintScreen
+            | Event::TrayLeft
+            | Event::TrayRight
+            | Event::DpiChanged
+            | Event::DisplayChange
+            | Event::AppBarMoved
+            | Event::Close
+            | Event::DragEscape(_)
+            | Event::Previews(crate::previews::PreviewInput::CancelCapture)
+    )
+}
+
+fn cancel_modal_drag() {
+    let first = ACTIVE_DRAG.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .is_some_and(|cancelled| !cancelled.swap(true, Ordering::AcqRel))
+    });
+    if first {
+        // Do not wait for another physical pointer movement to wake a stationary
+        // OLE loop. GetCapture is limited to this UI thread; WM_CANCELMODE asks its
+        // capture window to cancel its mode. The token remains authoritative.
+        // SAFETY: no pointer dereference; only our current thread's capture HWND
+        // receives a parameter-free asynchronous message, after the TLS borrow ends.
+        unsafe {
+            let capture = GetCapture();
+            if !capture.0.is_null() {
+                let _ = PostMessageW(Some(capture), WM_CANCELMODE, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+}
+
+/// Capture Escape only while a preview request prepares in the background. The
+/// keyboard hook records key-down immediately, so a short tap between timer ticks
+/// still invalidates that exact request without activating the preview window.
+pub fn watch_drag_escape(owner: HWND, request: Option<u64>) -> bool {
+    if request.is_some() && !crate::hook::install(owner) {
+        DRAG_ESCAPE_REQUEST.with(|active| active.set(None));
+        return false;
+    }
+    DRAG_ESCAPE_REQUEST.with(|active| active.set(request));
+    true
+}
+
+/// Called only by our UI thread's keyboard hook. It never enters application code.
+pub(crate) fn drag_escape_pressed() -> bool {
+    let Some(request) = DRAG_ESCAPE_REQUEST.with(Cell::get) else {
+        return false;
+    };
+    push(Event::DragEscape(request));
+    true
+}
+
+/// OLE setup is complete. Its message loop now owns Escape; preparation kept the
+/// request watcher armed through any reentrant helper/COM initialization callbacks.
+pub(crate) fn finish_drag_preparation() {
+    DRAG_ESCAPE_REQUEST.with(|active| active.set(None));
+}
+
+/// Registers only a cancellation token for native callbacks. Neither the queue's
+/// RefCell guard nor any reference to application state crosses the modal call.
+fn with_drag_cancellation<T>(operation: impl FnOnce(Arc<AtomicBool>) -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ACTIVE_DRAG.with(|active| *active.borrow_mut() = None);
+            finish_drag_preparation();
+        }
+    }
+    // frame/take_drag can synchronously pump callbacks (notably capture release).
+    // Include their queued cancellation before a transport is allowed to start.
+    let queued_cancel = QUEUE.with(|queue| queue.borrow().iter().copied().any(interrupts_drag));
+    let cancelled = Arc::new(AtomicBool::new(queued_cancel));
+    ACTIVE_DRAG.with(|active| {
+        assert!(active.borrow().is_none(), "nested source drag");
+        *active.borrow_mut() = Some(Arc::clone(&cancelled));
+    });
+    let _reset = Reset;
+    operation(cancelled)
 }
 
 fn pop() -> Option<Event> {
@@ -414,8 +544,15 @@ pub fn kill_timer(hwnd: HWND, id: usize) {
 }
 
 pub fn quit() {
+    QUIT_REQUESTED.with(|quitting| quitting.set(true));
+    cancel_modal_drag();
     // SAFETY: posts WM_QUIT to this thread's queue.
     unsafe { PostQuitMessage(0) }
+}
+
+/// Shutdown was requested on this UI thread; no deferred application work may run.
+pub fn quitting() -> bool {
+    QUIT_REQUESTED.with(Cell::get)
 }
 
 pub const MOD_CTRL_ALT: u32 = MOD_CONTROL.0 | MOD_ALT.0;
@@ -703,7 +840,17 @@ fn translate_live(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<Event>
     ev
 }
 
-pub fn run(handler: &mut dyn Handler) {
+fn drain_events(handler: &mut impl Handler) -> bool {
+    while !quitting() {
+        let Some(event) = pop() else {
+            return true;
+        };
+        handler.event(event);
+    }
+    false
+}
+
+pub fn run(mut handler: impl Handler) {
     let mut msg = MSG::default();
     'outer: loop {
         if handler.wants_frame() {
@@ -727,11 +874,29 @@ pub fn run(handler: &mut dyn Handler) {
                 DispatchMessageW(&msg);
             }
         }
-        while let Some(ev) = pop() {
-            handler.event(ev);
-        }
-        if handler.wants_frame() {
-            handler.frame();
+        loop {
+            if !drain_events(&mut handler) {
+                break 'outer;
+            }
+            if handler.wants_frame() {
+                handler.frame();
+            }
+            if quitting() {
+                break 'outer;
+            }
+            let Some((request, payload)) = handler.take_drag() else {
+                break;
+            };
+            let result = with_drag_cancellation(|cancelled| {
+                if cancelled.load(Ordering::Acquire) {
+                    Ok(crate::drag_drop::DragOutcome::Cancelled)
+                } else {
+                    crate::drag_drop::run(payload, cancelled)
+                }
+            });
+            handler.drag_finished(request, result);
+            // OLE pumped native callbacks. Drain their queued events before blocking
+            // again, and only after the drag controller has consumed its result.
         }
     }
 }
@@ -866,7 +1031,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             return LRESULT(0);
         }
+        WM_CLOSE => {
+            push(Event::Close);
+            return LRESULT(0);
+        }
         WM_DESTROY => {
+            cancel_modal_drag();
             // Closed from outside (WM_CLOSE, logoff): the top strip must not outlive us.
             crate::appbar::release(hwnd);
             quit();
@@ -892,6 +1062,149 @@ pub fn foreground() -> isize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_escape_tap_is_queued_with_its_preparation_generation() {
+        assert!(!drag_escape_pressed());
+        DRAG_ESCAPE_REQUEST.with(|active| active.set(Some(7)));
+        assert!(drag_escape_pressed());
+        // Releasing Escape before the next timer does not erase this event.
+        DRAG_ESCAPE_REQUEST.with(|active| active.set(None));
+        assert_eq!(pop(), Some(Event::DragEscape(7)));
+        assert!(pop().is_none());
+        assert!(!drag_escape_pressed());
+    }
+
+    #[test]
+    fn escape_tap_during_reentrant_native_setup_cancels_before_modal_entry() {
+        DRAG_ESCAPE_REQUEST.with(|active| active.set(Some(9)));
+        with_drag_cancellation(|cancelled| {
+            // Synthetic helper-setup callback: Escape goes down and up before the
+            // final physical-state check. The request event and token retain it.
+            assert!(drag_escape_pressed());
+            finish_drag_preparation();
+            assert!(cancelled.load(Ordering::Acquire));
+        });
+        assert_eq!(pop(), Some(Event::DragEscape(9)));
+        assert!(pop().is_none());
+        assert!(!drag_escape_pressed());
+    }
+
+    #[test]
+    fn modal_notifications_coalesce_without_losing_ordered_commands() {
+        with_drag_cancellation(|_| {
+            for _ in 0..200 {
+                push_event(Event::Timer(1));
+                push_event(Event::Timer(9));
+                push_event(Event::Wake);
+            }
+            push_event(Event::TrayLeft);
+            push_event(Event::TrayLeft);
+        });
+        assert_eq!(pop(), Some(Event::Timer(1)));
+        assert_eq!(pop(), Some(Event::Timer(9)));
+        assert_eq!(pop(), Some(Event::Wake));
+        assert_eq!(pop(), Some(Event::TrayLeft));
+        assert_eq!(pop(), Some(Event::TrayLeft));
+        assert!(pop().is_none());
+    }
+
+    #[test]
+    fn deferred_quit_stops_snap_and_wake_replay_before_any_further_handler_call() {
+        struct FakeHandler(Vec<Event>);
+        impl Handler for FakeHandler {
+            fn event(&mut self, event: Event) {
+                self.0.push(event);
+                if event == Event::Close {
+                    // Only set the pure latch: this test posts no OS messages.
+                    QUIT_REQUESTED.with(|quitting| quitting.set(true));
+                }
+            }
+            fn wants_frame(&self) -> bool {
+                false
+            }
+            fn frame(&mut self) {
+                panic!("shutdown must not render");
+            }
+        }
+        let mut handler = FakeHandler(Vec::new());
+        push_event(Event::Close);
+        push_event(Event::PrintScreen);
+        push_event(Event::Wake);
+        assert!(!drain_events(&mut handler));
+        assert_eq!(handler.0, vec![Event::Close]);
+        assert_eq!(pop(), Some(Event::PrintScreen));
+        assert_eq!(pop(), Some(Event::Wake));
+        assert!(pop().is_none());
+        QUIT_REQUESTED.with(|quitting| quitting.set(false));
+    }
+
+    #[test]
+    fn modal_drag_defers_disruptive_events_and_only_sets_a_cancel_token() {
+        for event in [
+            Event::Hotkey(1),
+            Event::PrintScreen,
+            Event::TrayLeft,
+            Event::TrayRight,
+            Event::DpiChanged,
+            Event::DisplayChange,
+            Event::AppBarMoved,
+            Event::Close,
+            Event::Previews(crate::previews::PreviewInput::CancelCapture),
+        ] {
+            assert!(pop().is_none());
+            with_drag_cancellation(|cancelled| {
+                assert!(!cancelled.load(Ordering::Acquire));
+                push_event(event);
+                assert!(cancelled.load(Ordering::Acquire));
+                // An app callback is never invoked by push_event: the event stays
+                // queued until the outer dispatcher resumes after the modal call.
+                QUEUE.with(|queue| assert_eq!(queue.borrow().len(), 1));
+            });
+            ACTIVE_DRAG.with(|active| assert!(active.borrow().is_none()));
+            assert_eq!(pop(), Some(event));
+            assert!(pop().is_none());
+        }
+    }
+
+    #[test]
+    fn modal_drag_keeps_regular_wakes_and_timers_without_cancelling() {
+        with_drag_cancellation(|cancelled| {
+            push_event(Event::Wake);
+            push_event(Event::Timer(9));
+            assert!(!cancelled.load(Ordering::Acquire));
+        });
+        assert_eq!(pop(), Some(Event::Wake));
+        assert_eq!(pop(), Some(Event::Timer(9)));
+        assert!(pop().is_none());
+    }
+
+    #[test]
+    fn cancellation_queued_during_frame_or_capture_release_blocks_transport_entry() {
+        for event in [Event::Close, Event::DisplayChange] {
+            // Simulates a native callback while frame/take_drag runs, after the
+            // outer dispatcher last drained its queue but before the token exists.
+            push_event(event);
+            let transport_called =
+                with_drag_cancellation(|cancelled| !cancelled.load(Ordering::Acquire));
+            assert!(!transport_called);
+            assert_eq!(pop(), Some(event));
+            assert!(pop().is_none());
+        }
+    }
+
+    #[test]
+    fn modal_cancellation_token_is_cleared_after_error_and_unwind() {
+        let result: std::result::Result<(), ()> = with_drag_cancellation(|_| Err(()));
+        assert!(result.is_err());
+        ACTIVE_DRAG.with(|active| assert!(active.borrow().is_none()));
+        assert!(std::panic::catch_unwind(|| {
+            with_drag_cancellation(|_| panic!("synthetic transport panic"));
+        })
+        .is_err());
+        ACTIVE_DRAG.with(|active| assert!(active.borrow().is_none()));
+        with_drag_cancellation(|cancelled| assert!(!cancelled.load(Ordering::Acquire)));
+    }
 
     fn lp(x: i16, y: i16) -> isize {
         (u32::from(y as u16) << 16 | u32::from(x as u16)) as isize

@@ -8,6 +8,7 @@ mod popups;
 mod preview_store;
 mod previews;
 mod snap;
+mod snap_drag_store;
 mod storage;
 mod sweep;
 mod terminal;
@@ -32,6 +33,6 @@ fn main() {
             return;
         }
     };
-    let mut app = app::App::new(hwnd, config, exe);
-    window::run(&mut app);
+    let app = app::App::new(hwnd, config, exe);
+    window::run(app);
 }
