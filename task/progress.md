@@ -23,7 +23,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
 | 7b | **Snap annotations**: Lightshot-style editor on release (8 tools, select/move, text re-edit, HSV picker, undo/redo) | ✅ merged, live test pending | `xDaijobu/stage-7b-work` | Opus 5.5 agent (headless) · merged at the user's request before the live test · [`stage-7b-report.md`](stage-7b-report.md) |
 | 7c | Snap stack: floating previews, countdown, keep-in-stack pin, multi-select, copy/save | ✅ | `xDaijobu/stage-7c-snap-stack` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 541 tests · live test with the user · [`stage-7c-report.md`](stage-7c-report.md) · no OLE in this stage |
-| 7c-2 | Snap stack: multi-file OLE drag-out | ⬜ planned, not dispatched | — | next; [brief](stage-7c2-brief.md), four implementation workers + two reviewers |
+| 7c-2 | Snap stack: multi-file OLE drag-out | 🟡 implementing | `xDaijobu/stage-7c2-snap-drag` | [brief](stage-7c2-brief.md), [live dispatch](stage-7c2-dispatch.md); no commit before review/tests |
 | 7d | Snap: standalone pin-to-screen | ⬜ planned, not dispatched | — | after 7c-2; [brief](stage-7d-brief.md); OCR removed |
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
 | N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
@@ -46,7 +46,8 @@ The order of stages 2+ can still change. Only one stage runs at a time.
 **Next work (2026-10-28):** the user selected Snap and Clipboard and asked for a plan
 before spawning many subagents. Order: **7c-2 → 7d → 8**. The
 [coordination plan](stage-snap-clipboard-plan.md) contains file ownership, dependencies,
-dispatch prompts and validation. No implementation workers have been dispatched.
+dispatch prompts and validation. Stage 7c-2 workers are dispatched through Orca;
+this conversation coordinates integration, review and verification before commits.
 **OCR is removed, not deferred.** Earlier reports/logs mentioning OCR are historical.
 
 ---
@@ -477,20 +478,25 @@ Use [`stage-7c-brief.md`](stage-7c-brief.md). Implementation runs in its own wor
 - 2026-10-26: built in `xDaijobu/stage-7c-snap-stack` after the Kilo handover: the coordinator (Opus 5.5) wrote the seam contract ([`stage-7c-plan.md`](stage-7c-plan.md)) and ran four Sonnet 5.5 workers in parallel worktrees (core, native window, render, payload store), then wrote the controller and the app wiring itself. Deviations: no fan or hover lift; no drop shadow and the focus ring sits inside the card, because the window region that keeps gaps click-through also clips what shows. fmt, clippy `-D warnings`, 541 workspace tests (after the wiring review fixes) and the release build pass on a worktree-local target. **Live test pending** (report lists the five sequences and the coordinates to drive them).
 - 2026-10-26: a Sonnet 5.5 review of the wiring found no high-severity bug; its medium/low findings (tick re-armed on every input, hover/focus kept across a rebuild, no retry after a lost device, stale focus loss, hidden buttons tappable, thumb/card saved state) were fixed with tests. **Live test passed**: the user ran the 9-step checklist on the release build (cards, countdown pause/resume, card buttons, multi-select bar, exclusion from the next capture, click-through, stack full, tray keyboard access, theme/panel) and confirmed it works as specified ("ok mantap ud sesuai").
 
-## Stage 7c-2: Snap stack OLE drag-out (planned)
+## Stage 7c-2: Snap stack OLE drag-out
 
-**Status:** ready for later dispatch; no implementation started.
+**Status:** implemented and source-reviewed on `xDaijobu/stage-7c2-snap-drag`;
+1,323 workspace tests, fmt, all-target clippy, release build and restart/Snap-cancel
+smoke check pass. [Report](stage-7c2-report.md); [dispatch](stage-7c2-dispatch.md).
 Contract: [stage-7c2-brief.md](stage-7c2-brief.md).
 Worker ownership and dependencies: [coordination plan](stage-snap-clipboard-plan.md).
 
-- [ ] Body drag with native threshold; single card or selected group, thumbnail/count ghost.
-- [ ] Copy-only OLE transport: CF_HDROP for real PNG files, plus PNG/CF_DIB for a single image.
-- [ ] Async all-or-nothing preparation, collision-safe saves and stable file lifetime.
-- [ ] Reentrant dispatcher with no App borrow held through DoDragDrop; cancellation and
+- [x] Body drag with native threshold; single card or selected group, thumbnail/count ghost implementation.
+- [x] Copy-only OLE transport: CF_HDROP for real PNG files, plus PNG/CF_DIB for a single image.
+- [x] Async all-or-nothing preparation, collision-safe saves and stable file lifetime.
+- [x] Reentrant dispatcher with no App borrow held through DoDragDrop; cancellation and
   release-before-ready never start a delayed drag.
-- [ ] Confirmed copy drops dismiss only dragged unpinned cards; cancel/reject keeps cards,
+- [x] Confirmed copy drops dismiss only dragged unpinned cards; cancel/reject keeps cards,
   selection and countdown remainder.
-- [ ] Format/ownership/state tests, standard workspace checks and local target-app tests.
+- [x] Format/ownership/state tests; fmt, clippy and the complete workspace test suite.
+- [x] Release build, graceful restart, native responsiveness and real Snap open/cancel.
+- [ ] Local target-app drops, visible ghost, stationary OLE cancellation and real DPI
+  checks (not claimed by synthetic tests; exact gaps are recorded in the report).
 
 Acceptance: drag one and several annotated synthetic shots into Explorer and a local
 browser file input; verify exact pixels, copy-only behaviour, cancel/reject, DPI and

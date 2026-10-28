@@ -37,7 +37,8 @@ Early development. Music (YouTube Music), the volume OSD, Vitals with Sweep, Tim
 | 5 | Vitals + Sweep: disk I/O, top processes, safe disk cleanup | ✅ done |
 | 6 | Timer / pomodoro | ✅ done |
 | 7a–7c | Screenshots: capture, annotate, floating preview stack | ✅ done |
-| 7c-2–7d | Screenshot drag-out and pin-to-screen | planned |
+| 7c-2 | Screenshot drag-out into compatible apps | implemented; desktop drag checks pending |
+| 7d | Screenshot pin-to-screen | planned |
 | T | Terminal: shell tabs, pinned tabs, Claude and Codex tabs | ✅ merged |
 | N–N2 | Notch style and reserved top space | ✅ done |
 | V | Spotlight, standalone Settings, notch size and stay behind windows | ✅ merged, live testing pending |
@@ -47,10 +48,12 @@ Early development. Music (YouTube Music), the volume OSD, Vitals with Sweep, Tim
 | 12b–12d | Scenes, restore-after-reboot, admin apps | locked |
 | 13 | File shelf, ambient sounds | locked |
 
-Next: screenshot drag-out, then pin-to-screen, then Clipboard history. The
+Current work: screenshot drag-out, followed by pin-to-screen and Clipboard history. The
 [implementation plan](task/stage-snap-clipboard-plan.md) includes stage briefs, worker
 ownership, dependencies and acceptance checks. OCR has been removed from the roadmap.
-These stages are planned; their implementation workers have not been dispatched.
+Stage 7c-2 passed source review, workspace checks, release build and restart/Snap-cancel
+smoke checks; its [report](task/stage-7c2-report.md) lists remaining desktop drag checks.
+The later stages remain locked until their own implementation and validation are complete.
 
 ## Download and run
 
@@ -110,6 +113,16 @@ target\release\daijobu.exe
 The tray also offers Settings, themes, *Start with Windows* and Quit. Open Settings from the Home gear or the tray. Its General, Notch, Hotkeys, Terminal and Spotlight pages apply and save changes immediately; sliders preview while dragging and save on release. Config is stored in `~/.daijobu/config.toml`.
 
 Snap hotkeys capture open panels as shown, including the island terminal. Finishing or cancelling returns to the open panel; a new screenshot thumbnail waits behind it. Starting Snap from the Home tile still hides its launcher before capture.
+
+Drag a screenshot preview by its image into an app that accepts file drops. Click
+several previews first to drag them together; dragging an unselected preview selects
+that image alone. Buttons remain separate from the drag gesture. Escape or releasing
+before preparation finishes cancels the operation.
+
+Drag-out exports the final annotated PNGs to the configured Snap save folder
+(`Pictures/Daijobu` by default). These files remain after cancellation, a drop, preview
+expiry or app exit. The drag copies files and leaves the clipboard unchanged. After a
+successful copy drop, unpinned previews disappear; previews kept in the stack remain.
 
 By default the island is a notch attached to the top edge of the screen. Choose *Island style* in Settings to switch to the floating pill, or set `[island] style = "pill"` in the config. The Notch page also adjusts its width and height.
 

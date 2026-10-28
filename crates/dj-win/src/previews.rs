@@ -17,14 +17,17 @@ use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::{
-    CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint,
-    SetWindowRgn, HGDIOBJ, HRGN, MONITORINFO, MONITOR_DEFAULTTONEAREST, RGN_OR,
+    ClientToScreen, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW,
+    MonitorFromPoint, SetWindowRgn, HGDIOBJ, HRGN, MONITORINFO, MONITOR_DEFAULTTONEAREST, RGN_OR,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::HiDpi::{
+    GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetCapture, GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE,
-    TRACKMOUSEEVENT, VK_CONTROL, VK_MENU, VK_SHIFT,
+    GetAsyncKeyState, GetCapture, GetKeyState, ReleaseCapture, SetCapture, SetFocus,
+    TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_MENU,
+    VK_RBUTTON, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -43,10 +46,12 @@ pub enum PreviewInput {
     Press { x: i32, y: i32 },
     /// Left button released.
     Release { x: i32, y: i32 },
-    /// The pointer left the window (`WM_MOUSELEAVE`), or the pointer capture was lost to
-    /// something else, or the system cancelled the mouse mode (`WM_CANCELMODE`). Treat it
-    /// as "no hover and no press in progress", so a lost mouse-up never leaves a press stuck.
+    /// The pointer left the window (`WM_MOUSELEAVE`). Clear hover, but retain a held
+    /// press: captured drags are allowed to travel outside the preview window.
     Leave,
+    /// Capture was lost or Windows cancelled mouse mode. Clear the press and cancel
+    /// preparation, so a late worker reply cannot start a drag without its gesture.
+    CancelCapture,
     /// A key went down while the window has the keyboard (see [`focus`]). `ctrl` is false
     /// while Alt is held too, so AltGr (Ctrl+Alt) characters never read as Ctrl shortcuts.
     Key { vk: u16, ctrl: bool, shift: bool },
@@ -93,7 +98,8 @@ fn translate(msg: u32, wp: usize, lp: isize) -> Option<PreviewInput> {
         WM_LBUTTONDOWN => Some(PreviewInput::Press { x, y }),
         WM_LBUTTONUP => Some(PreviewInput::Release { x, y }),
         WM_MOUSEMOVE => Some(PreviewInput::Move { x, y }),
-        WM_MOUSELEAVE | WM_CANCELMODE => Some(PreviewInput::Leave),
+        WM_MOUSELEAVE => Some(PreviewInput::Leave),
+        WM_CANCELMODE => Some(PreviewInput::CancelCapture),
         WM_KILLFOCUS => Some(PreviewInput::FocusLost),
         // The low word of `wparam` is the activation state; the high word is "minimized".
         WM_ACTIVATE if (wp & 0xFFFF) as u32 == WA_INACTIVE => Some(PreviewInput::FocusLost),
@@ -258,7 +264,7 @@ pub fn show(hwnd: HWND) {
 }
 
 /// Hides the window. If it held the pointer capture or the keyboard focus, Windows takes
-/// them away, which arrives as `Leave` and `FocusLost`.
+/// them away, which arrives as `CancelCapture` and `FocusLost`.
 pub fn hide(hwnd: HWND) {
     // The hidden window can't deliver the pending `WM_MOUSELEAVE` reliably, so re-arm on
     // the next move instead of waiting for it.
@@ -298,7 +304,7 @@ pub fn has_foreground(hwnd: HWND) -> bool {
 /// Destroys the window (on the thread that created it).
 pub fn destroy(hwnd: HWND) {
     TRACKING.with(|t| t.set(false));
-    release_capture_quietly();
+    release_capture(hwnd);
     // SAFETY: our own window, destroyed on the thread that created it.
     unsafe {
         let _ = DestroyWindow(hwnd);
@@ -362,6 +368,60 @@ fn key_down(vk: u16) -> bool {
     unsafe { GetKeyState(i32::from(vk)) < 0 }
 }
 
+/// Converts a queued mouse event's client coordinates to physical screen pixels.
+/// Never use a fresh cursor position for a press: it may have moved since the event.
+pub fn screen_point(hwnd: HWND, x: i32, y: i32) -> Option<(i32, i32)> {
+    let mut point = POINT { x, y };
+    // SAFETY: the live window belongs to this thread and point is a valid out-pointer.
+    unsafe { ClientToScreen(hwnd, &mut point) }
+        .as_bool()
+        .then_some((point.x, point.y))
+}
+
+/// Windows' configured drag distances in physical pixels at this window's DPI.
+/// They already include DPI scaling; the app must not multiply by its render scale.
+pub fn drag_threshold(hwnd: HWND) -> (i32, i32) {
+    // SAFETY: window/system queries without owned resources or retained pointers.
+    unsafe {
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        (
+            GetSystemMetricsForDpi(SM_CXDRAG, dpi).max(1),
+            GetSystemMetricsForDpi(SM_CYDRAG, dpi).max(1),
+        )
+    }
+}
+
+fn primary_button(swapped: bool) -> i32 {
+    i32::from(if swapped { VK_RBUTTON.0 } else { VK_LBUTTON.0 })
+}
+
+fn pointer_valid(owns_capture: bool, button_state: i16, escape_state: i16) -> bool {
+    owns_capture && button_state < 0 && escape_state >= 0
+}
+
+/// Rechecks live state immediately before dispatch. Mouse-up/cancellation may already
+/// have occurred while its queued app event is still waiting behind a worker wake.
+pub fn drag_pointer_valid(hwnd: HWND) -> bool {
+    // SAFETY: read-only state queries on the UI thread. Only the high state bit is
+    // used; GetAsyncKeyState's unreliable "pressed since last call" bit is ignored.
+    unsafe {
+        pointer_valid(
+            GetCapture() == hwnd,
+            GetAsyncKeyState(primary_button(GetSystemMetrics(SM_SWAPBUTTON) != 0)),
+            GetAsyncKeyState(i32::from(VK_ESCAPE.0)),
+        )
+    }
+}
+
+/// Releases only the preview window's capture, without reporting our own handoff as
+/// cancellation. Call immediately before entering OLE, after taking the owned payload.
+pub fn release_capture(hwnd: HWND) {
+    // SAFETY: compares thread-local capture with the supplied live window handle.
+    if unsafe { GetCapture() } == hwnd {
+        release_capture_quietly();
+    }
+}
+
 /// Releases the pointer capture without the `WM_CAPTURECHANGED` it sends being reported
 /// as a loss. Windows delivers that message synchronously, inside the call.
 fn release_capture_quietly() {
@@ -391,7 +451,7 @@ extern "system" fn preview_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             return LRESULT(0);
         }
         WM_LBUTTONUP => {
-            release_capture_quietly();
+            release_capture(hwnd);
             if let Some(input) = translate(msg, wp.0, lp.0) {
                 send(input);
             }
@@ -421,19 +481,16 @@ extern "system" fn preview_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             return LRESULT(0);
         }
         // Capture went to another window or was cancelled by the system: a press in
-        // progress would never see its release, so report it as a leave.
+        // progress would never see its release, so report cancellation, not a leave.
         WM_CAPTURECHANGED => {
             if capture_lost(RELEASING.with(Cell::get), lp.0, hwnd.0 as isize) {
-                send(PreviewInput::Leave);
+                send(PreviewInput::CancelCapture);
             }
             return LRESULT(0);
         }
         WM_CANCELMODE => {
-            // SAFETY: no pointers involved; we only compare handles.
-            if unsafe { GetCapture() } == hwnd {
-                release_capture_quietly();
-            }
-            send(PreviewInput::Leave);
+            release_capture(hwnd);
+            send(PreviewInput::CancelCapture);
             return LRESULT(0);
         }
         WM_KEYDOWN => {
@@ -536,7 +593,10 @@ mod tests {
             Some(PreviewInput::Move { x: -3, y: 40 })
         );
         assert_eq!(translate(WM_MOUSELEAVE, 0, 0), Some(PreviewInput::Leave));
-        assert_eq!(translate(WM_CANCELMODE, 0, 0), Some(PreviewInput::Leave));
+        assert_eq!(
+            translate(WM_CANCELMODE, 0, 0),
+            Some(PreviewInput::CancelCapture)
+        );
         assert_eq!(translate(WM_KILLFOCUS, 0, 0), Some(PreviewInput::FocusLost));
         assert_eq!(translate(WM_KEYDOWN, 0x41, 0), None);
         assert_eq!(translate(WM_CAPTURECHANGED, 0, 5), None);
@@ -569,6 +629,21 @@ mod tests {
         assert!(!capture_lost(true, 0, 0x99));
         assert!(!capture_lost(true, 0x1234, 0x99));
         assert!(!capture_lost(false, 0x99, 0x99));
+    }
+
+    #[test]
+    fn readiness_requires_capture_held_primary_button_and_no_escape() {
+        assert!(pointer_valid(true, i16::MIN, 0));
+        assert!(pointer_valid(true, i16::MIN | 1, 1));
+        assert!(!pointer_valid(false, i16::MIN, 0));
+        assert!(!pointer_valid(true, 0, 0));
+        assert!(
+            !pointer_valid(true, 1, 0),
+            "recent press is not a held button"
+        );
+        assert!(!pointer_valid(true, i16::MIN, i16::MIN));
+        assert_eq!(primary_button(false), i32::from(VK_LBUTTON.0));
+        assert_eq!(primary_button(true), i32::from(VK_RBUTTON.0));
     }
 
     #[test]

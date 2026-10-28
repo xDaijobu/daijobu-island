@@ -71,7 +71,8 @@ pub struct PreviewCard<'a> {
     /// An empty check box when not selected (hover, or any selection).
     pub show_check: bool,
     pub show_actions: bool,
-    /// The status chip: its label and whether it is an error.
+    /// The status chip: its label and whether it is an error. Preparation feedback
+    /// can use a wider body `status_rect`, leaving selection and pin badges visible.
     pub status: Option<(&'a str, bool)>,
     pub check: LRect,
     pub ring: LRect,
@@ -385,7 +386,8 @@ fn draw_card(
     canvas.restore_to_count(base);
 }
 
-/// A busy card (copying or saving): dimmed, with three dots over the thumbnail.
+/// A busy card (copying, saving or preparing a drag): dimmed, with three dots over
+/// the thumbnail. A body status chip may cover the dots with explicit feedback.
 fn busy_mark(canvas: &Canvas, t: &ResolvedTokens, r: Rect, s: f32) {
     canvas.draw_rect(r, &fill_paint(col(t.pill, 0.45)));
     let dot = fill_paint(col(t.text, 1.0));
@@ -1075,6 +1077,43 @@ mod tests {
         assert!(dim[2] < RED[2] && dim[2] > bgra(t.pill)[2]);
         // Three dots in the text colour at the centre.
         assert!(busy.count_in((20 + 50, 20 + 36, 26, 8), bgra(t.text), 20) > 8);
+    }
+
+    #[test]
+    fn preparing_drag_feedback_preserves_the_selection_and_pin_at_each_scale() {
+        let t = tokens();
+        for scale in [1.0, 1.5, 2.0] {
+            let mut c = card(1, 20.0, 20.0);
+            c.busy = true;
+            c.selected = true;
+            c.pinned = true;
+            c.show_check = true;
+            c.status_rect = LRect::new(6.0, 31.0, 112.0, 18.0);
+            let cards = [c];
+            let size = ((180.0 * scale) as i32, (120.0 * scale) as i32);
+            let plain = paint(&scene(&t, scale, &cards), &HashMap::new(), size.0, size.1);
+            c.status = Some(("Preparing drag", false));
+            let cards = [c];
+            let preparing = paint(&scene(&t, scale, &cards), &HashMap::new(), size.0, size.1);
+            let mut text_pixels = 0;
+            for y in 0..size.1 {
+                for x in 0..size.0 {
+                    let in_status = (26.0 * scale..132.0 * scale).contains(&(x as f32))
+                        && (51.0 * scale..69.0 * scale).contains(&(y as f32));
+                    if in_status {
+                        text_pixels += usize::from(near(preparing.at(x, y), bgra(t.text), 40));
+                    } else {
+                        assert_eq!(
+                            preparing.at(x, y),
+                            plain.at(x, y),
+                            "badge/outline changed at {scale}x ({x},{y})"
+                        );
+                    }
+                }
+            }
+            assert!(text_pixels > 30, "readable preparation label at {scale}x");
+            assert_ne!(preparing.px, plain.px);
+        }
     }
 
     #[test]

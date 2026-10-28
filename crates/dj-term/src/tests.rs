@@ -1071,6 +1071,14 @@ public static class WheelClient {
     received.Append((char)r.Char); if (r.Char == 'M') break;
    }
    Console.Write("\r\nWHEEL-RECEIVED:" + BitConverter.ToString(System.Text.Encoding.UTF8.GetBytes(received.ToString())));
+   // Keep the child alive until the host has observed its complete result:
+   // child exit can overtake the final ConPTY output, even with drain_on_exit.
+   // Ignore the other two wheel reports while waiting for the acknowledgement.
+   while (true) {
+    Record r; uint read;
+    if (!ReadConsoleInputW(input, out r, 1, out read)) throw new Exception("ack read failed");
+    if (read == 1 && r.Type == 1 && r.Down != 0 && r.Char == 'q') break;
+   }
   } finally {
    SetConsoleMode(input, oldInput); SetConsoleMode(output, oldOutput);
   }
@@ -1093,13 +1101,22 @@ public static class WheelClient {
     });
     assert!(text(&screen).contains("WHEEL-READY"), "{}", text(&screen));
     session.wheel(3, 4, 2);
-    let (screen, _) = wait_for(&mut session, &rx, Duration::from_secs(10), |s, _| {
-        text(s).contains("WHEEL-RECEIVED:")
+    let expected = "WHEEL-RECEIVED:1B-5B-3C-36-34-3B-35-3B-33-4D";
+    let (screen, events) = wait_for(&mut session, &rx, Duration::from_secs(10), |s, ev| {
+        text(s).contains(expected) || ev.iter().any(|e| matches!(e, TermEvent::Exited(_)))
     });
     assert!(
-        text(&screen).contains("WHEEL-RECEIVED:1B-5B-3C-36-34-3B-35-3B-33-4D"),
-        "{}",
+        text(&screen).contains(expected),
+        "events: {events:?}\n{}",
         text(&screen)
+    );
+    session.write(b"q".to_vec());
+    let (_, events) = wait_for(&mut session, &rx, Duration::from_secs(10), |_, ev| {
+        ev.iter().any(|e| matches!(e, TermEvent::Exited(_)))
+    });
+    assert!(
+        events.contains(&TermEvent::Exited(Some(0))),
+        "client exits successfully after acknowledgement: {events:?}"
     );
 }
 

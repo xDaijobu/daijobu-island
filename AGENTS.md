@@ -25,15 +25,15 @@ Daijobu Island is a dynamic-island overlay for Windows 11, written in Rust and d
 Development happens **one stage at a time**:
 
 1. The coordinator defines the stage in `task/progress.md` (scope checklist + acceptance) and writes `task/stage-N-brief.md`.
-2. An Orca worktree is created per stage (`stage-N-<slug>`) and an agent works there. Commit in small steps on that branch and don't push.
+2. An Orca worktree is created per stage (`stage-N-<slug>`) and agents implement there. Keep the plan, scaffold and implementation uncommitted until the implementation is complete and review/tests pass.
 3. The agent finishes by writing `task/stage-N-report.md`: an honest per-item checklist, how to run, known issues, and what was not verified.
-4. The coordinator re-checks the result (build, clippy, tests, run the exe), updates `task/progress.md`, and opens a PR into `master`.
+4. The coordinator re-checks the result (build, clippy, tests, run the exe), resolves review findings, updates `task/progress.md`, then commits and opens a PR into `master`. Merge only after this verification; remove the stage worktree after the merge is confirmed.
 
 When the user requests parallel subagents, keep them within the current stage. Freeze
 shared interfaces before dispatch, assign non-overlapping file ownership, and let the
 coordinator integrate shared files and manage Git. The Snap/Clipboard dispatch plan is
-`task/stage-snap-clipboard-plan.md`; it prepares workers for a later implementation
-and does not itself dispatch them.
+`task/stage-snap-clipboard-plan.md`; the current stage dispatch file records exact
+ownership and interfaces. This conversation remains the coordinator.
 
 When a stage unlocks a feature, flip its entry in `dj-core`'s feature registry from `Locked` to `Available` and handle `ClickOutcome::Open`.
 

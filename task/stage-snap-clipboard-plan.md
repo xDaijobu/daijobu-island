@@ -1,6 +1,9 @@
 # Snap + Clipboard: implementation and subagent plan
 
-Date: 2026-10-28. Status: **planned; no implementation workers dispatched**.
+Date: 2026-10-28. Status: **implementation authorized; Stage 7c-2 implemented and checked**.
+The user clarified the workflow: implement, review and test before any commit/merge.
+Stage 7c-2 ownership/signatures: [dispatch](stage-7c2-dispatch.md);
+results and unperformed desktop cases: [report](stage-7c2-report.md).
 
 The user chose Snap and Clipboard as the next work and explicitly removed OCR.
 This document prepares the work for a later multi-agent implementation. Music remains
@@ -49,9 +52,9 @@ cloud sync and a Win+V replacement hook are outside this batch.
 
 ## Coordinator-owned integration
 
-Before spawning a stage's implementation workers, commit a compiling skeleton with
-the types below, empty modules, fake backend traits and module exports. Workers must
-agree on that commit and contracts before editing consumers. The coordinator owns:
+Before spawning a stage's implementation workers, freeze exact interface signatures
+in its dispatch file and prepare shared module exports. Keep all scaffolding
+uncommitted until the implementation and review/tests pass. The coordinator owns:
 
 - Workspace/app Cargo manifests and lockfile, crate lib.rs exports, NOTICE, AGENTS.md.
 - app/src/app.rs, app/src/main.rs and app/src/storage.rs.
@@ -63,8 +66,9 @@ agree on that commit and contracts before editing consumers. The coordinator own
 Workers edit only the paths in their row. Cross-owner requests go to the coordinator;
 they do not silently change another worker's interface. Workers report changes and
 validation; only the coordinator stages/commits shared-tree work and pushes/merges.
-If isolated child worktrees are used instead, create them through orca-cli from the
-explicit stage scaffold commit and integrate their commits one at a time.
+The stage uses one shared Orca worktree with separate file ownership. If isolation
+becomes necessary, create child worktrees through orca-cli and transfer reviewed
+patches without introducing premature scaffold commits.
 
 ### Contracts to freeze in the skeleton
 
@@ -160,7 +164,7 @@ files. The coordinator routes repairs to the owning worker.
 
 ## Ready-to-use dispatch prompt
 
-Fill the role ID, stage, worktree, scaffold commit and owned files from the tables:
+Fill the role ID, stage, worktree, dispatch contract and owned files from the tables:
 
     Implement ROLE for STAGE in WORKTREE, based on SCAFFOLD_COMMIT.
     Read AGENTS.md, task/stage-snap-clipboard-plan.md and the stage brief.

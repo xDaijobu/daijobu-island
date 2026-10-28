@@ -19,6 +19,7 @@ pub mod osd;
 pub mod settings;
 pub mod settings_ui;
 pub mod snap;
+pub mod snap_drag;
 pub mod snap_edit;
 pub mod snap_stack;
 pub mod spotlight;
