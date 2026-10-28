@@ -416,6 +416,7 @@ impl Terminal {
                 shell: t.spec.shell.clone(),
                 args: t.spec.args.clone(),
                 cwd: t.spec.cwd.clone(),
+                agent: String::new(),
             })
             .collect();
         tabs::pinned_to_toml(&pinned)
@@ -579,10 +580,7 @@ impl Terminal {
             return match self.tabs.press(x, y) {
                 Press::None => Outcome::None,
                 Press::Activated(_) | Press::MenuDismissed => Outcome::Redraw,
-                Press::Plus => {
-                    self.new_tab();
-                    Outcome::Redraw
-                }
+                Press::PlusMenu => Outcome::Redraw,
                 Press::Menu(action, id) => self.menu_action(action, id),
             };
         }
@@ -612,6 +610,10 @@ impl Terminal {
             MenuAction::CloseRight => {
                 let closed = self.tabs.close_right(id);
                 self.close_tabs(&closed)
+            }
+            MenuAction::NewShell | MenuAction::NewClaude | MenuAction::NewCodex => {
+                self.new_tab();
+                Outcome::Redraw
             }
         }
     }
