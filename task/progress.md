@@ -782,4 +782,4 @@ Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim,
 
 - 2026-10-28: Terminal wheel follow-up complete: forward wheel events with cell coordinates to mouse-tracking applications, honor alternate-screen scrolling and preserve shell history. 1223 tests, fmt, clippy, release and desktop smoke pass. [Brief](stage-terminal-wheel-brief.md) / [Report](stage-terminal-wheel-report.md).
 
-- 2026-10-28: Terminal rename follow-up started: context-menu editing and persistent custom titles for pinned tabs. [Brief](stage-terminal-rename-brief.md).
+- 2026-10-28: Terminal rename complete: context-menu editing, automatic-title reset and pinned custom-title persistence. User confirmed the restarted build works. fmt/clippy/release pass; 1230 tests pass with one existing ConPTY host test excluded after recorded failures. [Brief](stage-terminal-rename-brief.md) / [Report](stage-terminal-rename-report.md).

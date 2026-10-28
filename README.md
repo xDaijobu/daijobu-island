@@ -137,6 +137,8 @@ Claude and Codex must be installed separately. Their tabs run in **yolo mode**, 
 
 The mouse wheel scrolls shell history. Programs that enable terminal mouse tracking receive wheel events at the pointer's cell instead, so they can scroll their own content. Full-screen programs without mouse tracking receive up/down keys when alternate-scroll mode is enabled.
 
+Right-click a tab and choose **Rename tab...** to set its name. Press Enter or Save to apply, or Esc or Cancel to discard. Clear the name to follow the application's title again. Custom names stay through shell title changes and restarts; pin the tab to keep its name across app restarts.
+
 When the island shows its idle clock, running terminal tabs appear beside it as shortcuts. Click an icon to reopen that exact tab. Claude and Codex use the same agent logos as the **+** menu; plain shells use the terminal icon. The notch widens to fit the shortcuts and returns to its configured width when the sessions close. These shortcuts track the island's own terminal sessions, including shells at a prompt after an agent exits.
 
 ```toml
