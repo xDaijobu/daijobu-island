@@ -101,6 +101,9 @@ fn local_stamp() -> Stamp {
 /// The Snap overlay while a snap is in progress: its window and its renderer.
 struct Overlay {
     hwnd: HWND,
+    /// The window visible/focused when the screen was frozen, before overlay activation.
+    previous_foreground: isize,
+    shown: bool,
     /// Dropped before the window is destroyed.
     renderer: Option<SnapOverlay>,
     /// The window's desktop origin (the virtual screen's top-left; can be negative).
@@ -1148,7 +1151,12 @@ impl App {
             PopupInput::Close => SpotAction::Close,
             // Clicking another window dismisses it; the keyboard stays where it went.
             PopupInput::FocusLost => {
-                self.close_spotlight(false);
+                if snapper::dismiss_on_focus_loss(
+                    self.overlay.is_some(),
+                    window::is_foreground(win.hwnd),
+                ) {
+                    self.close_spotlight(false);
+                }
                 SpotAction::None
             }
             PopupInput::Dpi { .. } | PopupInput::Release { .. } => SpotAction::None,
@@ -1453,23 +1461,18 @@ impl App {
         }
     }
 
-    /// PrtSc or the Home tile. Any open panel collapses first (so it isn't in the
-    /// shot) and the freeze waits until the island is still; a resting island is
-    /// frozen at once. A thumb that is still up goes first.
-    fn request_snap(&mut self) {
+    /// Hotkeys capture open panels in place. Only the Home tile collapses its launcher
+    /// before freezing, so that launcher is not part of a capture started from Home.
+    fn request_snap(&mut self, from_home: bool) {
         if self.overlay.is_some() || self.snap_pending {
             return;
         }
         let tokens = self.anim.current().clone();
-        let before = self.island.state();
-        if self.island.snap_shown() {
+        if from_home && self.island.snap_shown() {
             self.snapper.dismiss();
-            self.island.hide_snap(&tokens);
         }
-        self.island.collapse(&tokens);
-        // Only a state change (a panel or an old thumb going) is worth waiting for; a
-        // resting island is part of the screen like the taskbar.
-        if self.visible && self.island.state() != before {
+        let changed = snapper::prepare_island(&mut self.island, from_home, &tokens);
+        if self.visible && changed {
             self.snap_pending = true;
             self.dirty = true;
         } else {
@@ -1483,6 +1486,7 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        let previous_foreground = window::foreground();
         // The preview stack must not be in the shot: hidden, and gone from the composed
         // desktop, before the freeze. A window picker stops.
         self.previews.hide_for_capture(Instant::now());
@@ -1501,17 +1505,31 @@ impl App {
         let desktop = IRect::new(vx, vy, vw, vh);
         let prefs = self.config.snap.annotate.prefs();
         let accent = Rgba::from_rgb(self.anim.current().accent);
-        let frames = match self
-            .snapper
-            .begin(desktop, overlay::cursor_pos(), prefs, accent)
-        {
-            Ok(session) => &session.frames,
-            Err(e) => {
-                storage::log(&format!("snap: cannot capture the screen: {e}"));
-                self.previews.set_allowed(self.visible, Instant::now());
-                return;
-            }
+        // Our topmost panel is deliberately included; the platform's window list skips
+        // this process to keep preview/editor windows out of the candidate list.
+        let own_windows = if self.visible && self.layer == Layer::Top {
+            let (l, t, r, b) = self.device_rect();
+            vec![IRect::new(
+                self.win_pos.0 + l,
+                self.win_pos.1 + t,
+                r - l,
+                b - t,
+            )]
+        } else {
+            Vec::new()
         };
+        let frames =
+            match self
+                .snapper
+                .begin(desktop, overlay::cursor_pos(), prefs, accent, &own_windows)
+            {
+                Ok(session) => &session.frames,
+                Err(e) => {
+                    storage::log(&format!("snap: cannot capture the screen: {e}"));
+                    self.previews.set_allowed(self.visible, Instant::now());
+                    return;
+                }
+            };
         let hwnd = match overlay::create(vx, vy, vw, vh) {
             Ok(h) => h,
             Err(e) => {
@@ -1534,6 +1552,8 @@ impl App {
             };
         self.overlay = Some(Overlay {
             hwnd,
+            previous_foreground,
+            shown: false,
             renderer: Some(renderer),
             origin: (vx, vy),
             dirty: true,
@@ -1549,8 +1569,9 @@ impl App {
         }
         // Draw the first frame before showing, so the live desktop never flashes through.
         self.render_overlay();
-        if let Some(ov) = &self.overlay {
+        if let Some(ov) = self.overlay.as_mut() {
             overlay::show(ov.hwnd);
+            ov.shown = true;
         }
     }
 
@@ -1738,11 +1759,17 @@ impl App {
         let Some(mut ov) = self.overlay.take() else {
             return;
         };
+        let restore_focus = !ov.shown || window::is_foreground(ov.hwnd);
         ov.renderer = None;
         overlay::destroy(ov.hwnd);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ESC);
         if self.visible {
             window::set_visible(self.hwnd, true);
+        }
+        // Return focus before encoding/copying can take time, without pulling it back
+        // after the user has deliberately left the overlay for another window.
+        if restore_focus {
+            window::give_back_keyboard(ov.previous_foreground);
         }
         self.last_frame = None;
         self.dirty = true;
@@ -1769,6 +1796,9 @@ impl App {
             }
         }
         self.previews.set_allowed(self.visible, now);
+        if self.term_keyboard {
+            self.terminal.set_focused(window::is_foreground(self.hwnd));
+        }
     }
 
     /// The fresh shot goes into the island's thumb with a new countdown.
@@ -2099,7 +2129,7 @@ impl App {
         }
     }
 
-    /// The keyboard follows the panel: when something else collapsed it (a snap, another
+    /// The keyboard follows the panel: when something else collapsed it (another
     /// panel, a theme switch through Home), the island stops taking keys, and if it still
     /// has them they go back to where they were (never stuck on a window that won't take
     /// them).
@@ -2139,7 +2169,7 @@ impl App {
 
     /// The panel is open and has (or had, with `hide_on_blur` off) the keyboard.
     fn terminal_input(&self) -> bool {
-        self.term_keyboard && self.island.terminal_open()
+        self.overlay.is_none() && self.term_keyboard && self.island.terminal_open()
     }
 
     /// A window device-px point is on the panel itself: not the notch's shoulders around
@@ -3089,7 +3119,7 @@ impl Handler for App {
                     ClickOutcome::Open(i) if FEATURES[i].id == "timer" => {
                         self.island.open_timer(&tokens);
                     }
-                    ClickOutcome::Open(i) if FEATURES[i].id == "snap" => self.request_snap(),
+                    ClickOutcome::Open(i) if FEATURES[i].id == "snap" => self.request_snap(true),
                     // The panel is for the app in front (the island never takes focus).
                     ClickOutcome::Open(i) if FEATURES[i].id == "tile" => {
                         self.tiler.open_home();
@@ -3216,7 +3246,7 @@ impl Handler for App {
                 }
             }
             Event::Hotkey(HOTKEY_SNAP | HOTKEY_SNAP_ALT) | Event::PrintScreen => {
-                self.request_snap()
+                self.request_snap(false)
             }
             Event::Hotkey(HOTKEY_SNAP_ESC) => self.snap_escape(),
             Event::Hotkey(id @ HOTKEY_ZONE_1..=HOTKEY_DOWN) => {
@@ -3378,7 +3408,9 @@ impl Handler for App {
                 let outcome = self.terminal.middle_click(px, py);
                 self.term_outcome(outcome);
             }
-            Event::DoubleClick { x, y } if self.island.terminal_open() => {
+            Event::DoubleClick { x, y }
+                if self.island.terminal_open() && self.overlay.is_none() =>
+            {
                 let (lx, ly) = self.island_point(x, y);
                 let (px, py) = Self::terminal_local(lx, ly);
                 let outcome = self.terminal.double_click(px, py);
@@ -3387,7 +3419,12 @@ impl Handler for App {
             // Clicking another window: the panel hides (the shell keeps running), or with
             // `hide_on_blur` off it stays with a hollow cursor until clicked again.
             Event::FocusLost if self.term_keyboard => {
-                if self.terminal.config().hide_on_blur {
+                let foreground = window::is_foreground(self.hwnd);
+                if !snapper::dismiss_on_focus_loss(self.overlay.is_some(), foreground) {
+                    self.terminal
+                        .set_focused(foreground && self.overlay.is_none());
+                    self.dirty = true;
+                } else if self.terminal.config().hide_on_blur {
                     self.close_terminal(false);
                 } else {
                     self.terminal.set_focused(false);

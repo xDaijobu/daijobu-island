@@ -441,14 +441,11 @@ impl Island {
         self.settle_rest(tokens);
     }
 
-    /// Shows the snap thumb for a fresh shot, from any state: the user just asked for
-    /// it, so it takes over an open panel too (the app collapses the island before a
-    /// snap, so normally this comes from a rest state).
+    /// A fresh shot is available. Open panels stay open; the thumb waits below them
+    /// and appears on collapse, or expires while the panel remains open.
     pub fn show_snap(&mut self, tokens: &ResolvedTokens) {
         self.snap = true;
-        if self.state != IslandState::SnapThumb {
-            self.set_state(IslandState::SnapThumb, tokens);
-        }
+        self.settle_rest(tokens);
     }
 
     /// The thumb goes (countdown over or dismissed): back to the rest state below it.
@@ -485,7 +482,7 @@ impl Island {
 
     /// Opens the Tile panel: from any rest state (the picker while a window is dragged) or
     /// from the Home tile. Like the other panels it is not a rest state, so `collapse`
-    /// returns to the rest state below it, and a snap thumb that arrives takes it over.
+    /// returns to the rest state below it. A new snap thumb waits behind the panel.
     pub fn open_tile(&mut self, tokens: &ResolvedTokens) {
         if self.state != IslandState::TilePanel {
             self.set_state(IslandState::TilePanel, tokens);
@@ -1956,14 +1953,16 @@ mod tests {
     }
 
     #[test]
-    fn the_thumb_takes_over_an_open_panel_and_returns_to_rest() {
+    fn the_thumb_waits_behind_an_open_panel_and_can_expire_there() {
         let t = tokens();
         let mut i = Island::new(&t);
         i.set_timer(RUNNING, &t);
         i.open_vitals(&t);
         i.show_snap(&t);
-        assert_eq!(i.state(), IslandState::SnapThumb);
+        assert_eq!(i.state(), IslandState::Vitals);
         i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::Vitals);
+        i.collapse(&t);
         assert_eq!(i.state(), IslandState::TimerCompact);
     }
 
@@ -2400,24 +2399,24 @@ mod tests {
     }
 
     #[test]
-    fn the_snap_thumb_takes_over_the_tile_panel_and_hands_back_to_rest() {
+    fn the_snap_thumb_waits_for_the_tile_panel_to_collapse() {
         let t = tokens();
         let mut i = Island::new(&t);
         i.set_music(with_track(), &t);
         i.open_tile(&t);
         settle(&mut i, &t);
         i.show_snap(&t);
-        assert_eq!(i.state(), IslandState::SnapThumb);
-        assert!(!i.tile_open());
+        assert!(i.tile_open());
         settle(&mut i, &t);
-        assert_eq!(size(&i), (layout::SNAP_W, layout::SNAP_H));
+        assert_eq!(size(&i), (layout::TILE_PANEL_W, layout::TILE_PANEL_H));
         let l = i.view().layers;
-        assert_eq!((l.tile, l.snap), (0.0, 1.0));
-        // A click is the thumb's, never the panel's; the panel's old area is outside it.
+        assert_eq!((l.tile, l.snap), (1.0, 0.0));
+        let (x, y) = panel_pt(200.0, 100.0);
+        assert!(matches!(i.click(x, y, &t), ClickOutcome::Tile { .. }));
+        i.collapse(&t);
+        settle(&mut i, &t);
         let (x, y) = view_at(layout::SNAP_W, layout::SN_COPY);
         assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Copy));
-        let (x, y) = panel_pt(200.0, 100.0);
-        assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
         let (x, y) = view_at(layout::SNAP_W, layout::SN_SHOT);
         assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Dismiss));
         assert_eq!(i.state(), IslandState::MusicCompact);
@@ -2782,22 +2781,22 @@ mod tests {
     }
 
     #[test]
-    fn the_snap_thumb_takes_over_the_terminal_and_hands_back_to_rest() {
+    fn the_snap_thumb_waits_for_the_terminal_to_close() {
         let t = tokens();
         let mut i = Island::new(&t);
         i.set_music(with_track(), &t);
         i.open_terminal(&t);
         settle(&mut i, &t);
         i.show_snap(&t);
-        assert_eq!(i.state(), IslandState::SnapThumb);
-        assert!(!i.terminal_open());
+        assert!(i.terminal_open());
         settle(&mut i, &t);
-        assert_eq!(size(&i), (layout::SNAP_W, layout::SNAP_H));
+        assert_eq!(size(&i), (layout::TERM_W, layout::TERM_H));
         let l = i.view().layers;
-        assert_eq!((l.terminal, l.snap), (0.0, 1.0));
-        // A click is the thumb's; the panel's old area is outside it.
+        assert_eq!((l.terminal, l.snap), (1.0, 0.0));
         let (x, y) = term_pt(380.0, 200.0);
-        assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+        assert!(matches!(i.click(x, y, &t), ClickOutcome::Terminal { .. }));
+        i.collapse(&t);
+        settle(&mut i, &t);
         let (x, y) = view_at(layout::SNAP_W, layout::SN_SHOT);
         assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Dismiss));
         assert_eq!(i.state(), IslandState::MusicCompact);
