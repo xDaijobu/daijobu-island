@@ -3,7 +3,7 @@
 
 use crate::window::WM_THEMES_CHANGED;
 use std::path::Path;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HMODULE, HWND, LPARAM, WPARAM,
@@ -161,6 +161,15 @@ static TOPMOST_HWND: AtomicIsize = AtomicIsize::new(0);
 /// A second window that stays on top with the island (the Snap preview stack); 0 if none.
 static COMPANION_HWND: AtomicIsize = AtomicIsize::new(0);
 
+/// The island belongs on top (the default). Off, the topmost hook keeps it on the desktop
+/// layer instead (see [`crate::window::set_layer`]).
+static ISLAND_ON_TOP: AtomicBool = AtomicBool::new(true);
+
+/// Tells the topmost hook which layer to keep the island on.
+pub fn set_island_on_top(on_top: bool) {
+    ISLAND_ON_TOP.store(on_top, Ordering::Relaxed);
+}
+
 // SAFETY: only ever invoked by the system as a WINEVENTPROC; it ignores all arguments.
 unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
@@ -171,11 +180,23 @@ unsafe extern "system" fn foreground_changed(
     _thread: u32,
     _time: u32,
 ) {
-    for raw in [&TOPMOST_HWND, &COMPANION_HWND].map(|h| h.load(Ordering::Relaxed)) {
+    for (i, raw) in [&TOPMOST_HWND, &COMPANION_HWND]
+        .map(|h| h.load(Ordering::Relaxed))
+        .into_iter()
+        .enumerate()
+    {
         if raw == 0 {
             continue;
         }
         let ours = HWND(raw as *mut _);
+        // The island (index 0) stays behind when the app says so; the companion never does.
+        if i == 0 && !ISLAND_ON_TOP.load(Ordering::Relaxed) {
+            // SAFETY: our own window; only the z-order is touched.
+            if unsafe { IsWindowVisible(ours).as_bool() } {
+                crate::window::set_layer(ours, crate::window::Layer::Desktop);
+            }
+            continue;
+        }
         // SAFETY: the handle is one of our own windows; only the z-order is touched.
         unsafe {
             if IsWindowVisible(ours).as_bool() {

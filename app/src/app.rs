@@ -2762,7 +2762,8 @@ impl Handler for App {
             | Event::RightClick { .. }
             | Event::MiddleClick { .. }
             | Event::DoubleClick { .. }
-            | Event::FocusLost => {}
+            | Event::FocusLost
+            | Event::Popup(..) => {}
         }
         self.sync_vu_timer();
         self.sync_vitals();
