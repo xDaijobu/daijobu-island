@@ -22,6 +22,7 @@ mod session;
 mod shell;
 #[allow(unsafe_code)]
 mod tap;
+mod wheel;
 
 pub use listener::TermEvent;
 pub use session::{Session, SpawnOptions};

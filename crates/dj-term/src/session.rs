@@ -252,6 +252,17 @@ impl Session {
         self.term.lock().scroll_display(Scroll::Delta(lines));
     }
 
+    /// Wheel over a visible cell: applications that enable mouse tracking receive
+    /// reports, alternate-screen programs receive arrows, ordinary shells scroll history.
+    pub fn wheel(&mut self, lines: i32, col: usize, row: usize) {
+        let bytes = crate::wheel::route(&mut self.term.lock(), lines, col, row);
+        if !bytes.is_empty() {
+            // Do not use `write`: wheel reports aren't typing and must not reset
+            // the viewport or selection.
+            let _ = self.sender.send(Msg::Input(Cow::Owned(bytes)));
+        }
+    }
+
     pub fn scroll_to_bottom(&mut self) {
         self.term.lock().scroll_display(Scroll::Bottom);
     }

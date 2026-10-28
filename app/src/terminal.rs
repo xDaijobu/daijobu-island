@@ -24,7 +24,7 @@ const VK_RETURN: u16 = 0x0D;
 pub trait Backend {
     fn write(&self, bytes: Vec<u8>);
     fn resize(&mut self, cols: u16, rows: u16, cell_w: u16, cell_h: u16);
-    fn scroll(&mut self, lines: i32);
+    fn wheel(&mut self, lines: i32, col: usize, row: usize);
     fn scroll_to_bottom(&mut self);
     fn select_start(&mut self, col: usize, row: usize, right_half: bool, word: bool);
     fn select_update(&mut self, col: usize, row: usize, right_half: bool);
@@ -44,8 +44,8 @@ impl Backend for dj_term::Session {
     fn resize(&mut self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) {
         dj_term::Session::resize(self, cols, rows, cell_w, cell_h);
     }
-    fn scroll(&mut self, lines: i32) {
-        dj_term::Session::scroll(self, lines);
+    fn wheel(&mut self, lines: i32, col: usize, row: usize) {
+        dj_term::Session::wheel(self, lines, col, row);
     }
     fn scroll_to_bottom(&mut self) {
         dj_term::Session::scroll_to_bottom(self);
@@ -830,11 +830,17 @@ impl Terminal {
         }
     }
 
-    pub fn wheel(&mut self, delta: i32) -> Outcome {
+    pub fn wheel(&mut self, delta: i32, x: f32, y: f32) -> Outcome {
+        if self.tabs.menu_open() || Self::in_header(y) {
+            return Outcome::None;
+        }
+        let Some((col, row, _)) = self.cell_at(x, y) else {
+            return Outcome::None;
+        };
         let lines = self.wheel.feed(delta);
         match self.active_session() {
             Some(s) if lines != 0 => {
-                s.scroll(lines);
+                s.wheel(lines, col, row);
                 Outcome::Redraw
             }
             _ => Outcome::None,
@@ -933,6 +939,7 @@ mod tests {
         writes: Vec<Vec<u8>>,
         resizes: Vec<(u16, u16)>,
         scrolled: i32,
+        wheel_cell: Option<(usize, usize)>,
         at_bottom: u32,
         /// (col, row, word) of the last selection start, and updates since.
         selection: Option<(usize, usize, bool)>,
@@ -952,8 +959,10 @@ mod tests {
         fn resize(&mut self, cols: u16, rows: u16, _: u16, _: u16) {
             self.0.borrow_mut().resizes.push((cols, rows));
         }
-        fn scroll(&mut self, lines: i32) {
-            self.0.borrow_mut().scrolled += lines;
+        fn wheel(&mut self, lines: i32, col: usize, row: usize) {
+            let mut shell = self.0.borrow_mut();
+            shell.scrolled += lines;
+            shell.wheel_cell = Some((col, row));
         }
         fn scroll_to_bottom(&mut self) {
             self.0.borrow_mut().at_bottom += 1;
@@ -1361,14 +1370,30 @@ mod tests {
     fn the_wheel_scrolls_in_whole_lines() {
         let mut r = Rig::new();
         r.open();
-        assert_eq!(r.term.wheel(120), Outcome::Redraw);
+        let (x, y) = (TERM_TEXT.x + 17.0, TERM_TEXT.y + 35.0);
+        assert_eq!(r.term.wheel(120, x, y), Outcome::Redraw);
         assert_eq!(r.shell().borrow().scrolled, 3);
+        assert_eq!(r.shell().borrow().wheel_cell, Some((2, 2)));
         // A touchpad's small steps add up.
-        assert_eq!(r.term.wheel(20), Outcome::None);
-        r.term.wheel(20);
+        assert_eq!(r.term.wheel(20, x, y), Outcome::None);
+        r.term.wheel(20, x, y);
         assert_eq!(r.shell().borrow().scrolled, 4);
-        r.term.wheel(-240);
+        r.term.wheel(-240, x, y);
         assert_eq!(r.shell().borrow().scrolled, -2);
+    }
+
+    #[test]
+    fn wheel_over_header_or_menu_does_not_reach_the_program() {
+        let mut r = Rig::new();
+        r.open();
+        assert_eq!(r.term.wheel(120, TERM_TEXT.x, 1.0), Outcome::None);
+        let p = bar(&r).plus.unwrap();
+        r.term.press(p.x + 1.0, p.y + 1.0);
+        assert_eq!(
+            r.term.wheel(120, TERM_TEXT.x, TERM_TEXT.y + 5.0),
+            Outcome::None
+        );
+        assert!(r.shell().borrow().wheel_cell.is_none());
     }
 
     #[test]
