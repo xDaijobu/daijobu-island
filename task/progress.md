@@ -779,3 +779,5 @@ Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim,
 - 2026-10-25: progress.md created. The plan, the README draft, and the name **Daijobu Island** were finalized.
 
 - 2026-10-28: Terminal pin restore follow-up complete: pins start in the background with idle shortcuts; latest reported folders/names persist. 1215 tests, fmt, clippy and release pass. Live restart restored both pins without focus change or duplicate processes. [Brief](stage-terminal-restore-brief.md) � [Report](stage-terminal-restore-report.md).
+
+- 2026-10-28: Terminal wheel follow-up started: forward wheel events to mouse-tracking applications and honor alternate-screen scrolling. [Brief](stage-terminal-wheel-brief.md).
