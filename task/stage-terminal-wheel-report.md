@@ -16,7 +16,7 @@ Brief: [stage-terminal-wheel-brief.md](stage-terminal-wheel-brief.md).
 - Workspace tests: **1223 passed**, 0 failed. Six emulator regressions exercise real parsed VT modes, local history, tracking in both screen buffers, protocol formats/ranges, alternate-screen cursor behavior, resets and bounds. One controller regression guards headers/menus; existing wheel test now checks cell coordinates too.
 - New real ConPTY integration test starts a local PowerShell/C# VT client, sends a normal three-line wheel notch through `Session::wheel`, reads raw console key records and verifies the first complete SGR report's bytes and coordinates. No agent prompts or external services.
 - Locked release build: pass, using main checkout `target/stage-t4` cache. Verified executable copied into `target/release/daijobu.exe` and restarted.
-- Desktop smoke: opened Terminal, posted wheel-up/down at a client-translated screen point, collapsed it again. App remained responsive; clipboard unchanged. No real cursor movement, shell commands or agent prompts in the user's terminal.
+- Desktop smoke: opened Terminal, posted wheel-up/down at a client-translated screen point, collapsed it again. App remained responsive (PID 22476). The clipboard sequence changed during the check, so clipboard preservation is not claimed for this run; the check only read its sequence and never called a clipboard writer. No real cursor movement, shell commands or agent prompts in the user's terminal.
 
 ## Limits and run
 
