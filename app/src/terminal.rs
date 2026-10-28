@@ -737,6 +737,7 @@ impl Terminal {
                     TermEvent::Title(t) => tab.title = Some(t).filter(|t| !t.trim().is_empty()),
                     TermEvent::ResetTitle => tab.title = None,
                     TermEvent::Bell => {}
+                    TermEvent::Cwd(_) => {}
                     TermEvent::Exited(code) => tab.exited = Some(code),
                 }
             }

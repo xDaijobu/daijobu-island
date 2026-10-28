@@ -42,6 +42,18 @@ pub(crate) fn resolve_with(
     }
 }
 
+/// Whether `program` is Windows PowerShell or PowerShell 7: the file stem is `powershell` or
+/// `pwsh`, in any case, with or without `.exe`, at any path.
+pub fn is_powershell(program: &str) -> bool {
+    let program = program.trim().trim_matches('"');
+    let name = program.rsplit(['\\', '/']).next().unwrap_or(program);
+    let stem = Path::new(name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    stem == "powershell" || stem == "pwsh"
+}
+
 fn system_root() -> PathBuf {
     std::env::var_os("SystemRoot")
         .or_else(|| std::env::var_os("windir"))

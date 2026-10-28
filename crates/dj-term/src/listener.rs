@@ -21,6 +21,8 @@ pub enum TermEvent {
     /// The program asked for the default title again.
     ResetTitle,
     Bell,
+    /// The shell reported its current folder (OSC 9;9 or OSC 7).
+    Cwd(String),
     /// The shell ended, with its exit code when Windows gave one. Sent once.
     Exited(Option<i32>),
 }

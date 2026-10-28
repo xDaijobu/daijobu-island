@@ -8,20 +8,24 @@
 //! - Nothing polls: the UI is woken (once, until it calls [`Session::take_events`]) when the
 //!   shell prints, sets a title, rings or exits.
 //!
-//! `unsafe` is confined to `child.rs` (our handle on the shell process).
+//! `unsafe` is confined to `child.rs` (our handle on the shell process) and `tap.rs` (one
+//! delegating call).
 
 #![deny(unsafe_code)]
 
 #[allow(unsafe_code)]
 mod child;
 mod listener;
+mod osc;
 mod screen;
 mod session;
 mod shell;
+#[allow(unsafe_code)]
+mod tap;
 
 pub use listener::TermEvent;
 pub use session::{Session, SpawnOptions};
-pub use shell::resolve_shell;
+pub use shell::{is_powershell, resolve_shell};
 
 #[cfg(test)]
 mod tests;
