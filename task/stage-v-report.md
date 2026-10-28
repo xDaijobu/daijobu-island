@@ -13,7 +13,8 @@ Plan: `task/stage-v-plan.md`. Branch `xDaijobu/stage-v-notch` (not pushed, no PR
   - An activatable popup of 868×608 logical px (the 820×560 panel plus its shadow margin).
   - Sidebar with search and five pages: General, Notch, Hotkeys, Terminal, Spotlight.
   - Controls: toggle, segmented, chip, slider, fixed value and read-only lines.
-  - Footer: Reset, Apply and Save. Closing with unsaved changes asks for a second click.
+  - **Every change applies and saves at once** (asked for on 2026-10-28). Apply and Save are gone; only Reset is left, and it also applies at once.
+  - Sliders preview live while dragged and save on release. ✕ and Esc just close.
   - Opened from the Home gear (the island collapses) and from the new tray item "Settings…". The title bar drags the window.
   - Apply applies live:
     - Start with Windows

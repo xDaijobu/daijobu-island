@@ -209,8 +209,12 @@ pub struct ViewModel {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Outcome {
     pub redraw: bool,
-    /// Apply this config (write it, save `config.toml`, apply side effects).
+    /// Apply this config at once (side effects, live). Every edit applies: there is no
+    /// Apply button.
     pub apply: Option<crate::config::Config>,
+    /// Also save it to `config.toml`. False while a slider is being dragged (a live
+    /// preview); the release saves.
+    pub persist: bool,
     /// Close the window.
     pub close: bool,
 }
@@ -262,6 +266,7 @@ const VK_ESCAPE: u16 = 0x1B;
 const VK_UP: u16 = 0x26;
 const VK_DOWN: u16 = 0x28;
 const VK_F: u16 = 0x46;
+#[cfg(test)]
 const VK_S: u16 = 0x53;
 
 const SHELLS: [(&str, &str); 4] = [
@@ -758,11 +763,12 @@ impl SettingsDoc {
             return Self::close_rect();
         }
         let f = Self::footer();
-        // Reset, Apply, Save from the left; Save is flush with the right padding.
+        // Only Reset is shown (every edit applies at once), flush with the right padding.
+        // Apply and Save keep a rect for the shared type but are never shown.
         let slot = match b {
-            Button::Reset => 0.0,
+            Button::Reset => 2.0,
             Button::Apply => 1.0,
-            _ => 2.0,
+            _ => 0.0,
         };
         let right = f.x + f.w - ROW_PAD;
         let x = right - BTN_W - (2.0 - slot) * (BTN_W + BTN_GAP);
@@ -941,7 +947,7 @@ impl SettingsDoc {
     fn button_enabled(&self, b: Button) -> bool {
         match b {
             Button::Close => true,
-            Button::Apply | Button::Save => self.is_dirty(),
+            Button::Apply | Button::Save => false,
             Button::Reset => !self.page_at_defaults(),
         }
     }
@@ -1107,34 +1113,31 @@ impl SettingsDoc {
         })
     }
 
-    fn apply_now(&mut self, close: bool) -> Outcome {
-        if !self.is_dirty() {
-            return Outcome::default();
+    /// An edit took: hand the pending config to the app to apply now. `persist` saves it
+    /// (and makes it the saved config); a slider being dragged only previews.
+    fn commit(&mut self, persist: bool) -> Outcome {
+        if persist {
+            self.saved = self.pending.clone();
+            self.status = Some("Saved".to_string());
         }
-        self.saved = self.pending.clone();
-        self.armed = false;
-        self.status = Some("Saved".to_string());
         Outcome {
             redraw: true,
             apply: Some(self.pending.clone()),
-            close,
+            persist,
+            close: false,
         }
     }
 
-    /// Close or Esc: with unsaved changes the first one arms a discard.
+    /// Close or Esc. Everything is applied and saved already, so it just closes (a
+    /// slider still being dragged is saved first).
     fn close_request(&mut self) -> Outcome {
-        if self.is_dirty() && !self.armed {
-            self.armed = true;
-            return Outcome {
-                redraw: true,
-                ..Outcome::default()
-            };
-        }
-        Outcome {
-            redraw: true,
-            close: true,
-            ..Outcome::default()
-        }
+        let mut out = if self.is_dirty() {
+            self.commit(true)
+        } else {
+            redraw_if(true)
+        };
+        out.close = true;
+        out
     }
 
     fn run_button(&mut self, b: Button) -> Outcome {
@@ -1143,9 +1146,9 @@ impl SettingsDoc {
         }
         match b {
             Button::Close => self.close_request(),
-            Button::Apply => self.apply_now(false),
-            Button::Save => self.apply_now(true),
-            Button::Reset => redraw_if(self.reset()),
+            Button::Apply | Button::Save => Outcome::default(),
+            Button::Reset if self.reset() => self.commit(true),
+            Button::Reset => Outcome::default(),
         }
     }
 
@@ -1192,11 +1195,14 @@ impl SettingsDoc {
             }
             Hit::Control(key, part) if self.enabled(key) => {
                 if slider_spec(key).is_some() {
+                    // A live preview from the first press; the release saves.
                     self.drag = Some(key);
-                    self.set_slider_from_x(key, x);
+                    if self.set_slider_from_x(key, x) {
+                        return self.commit(false);
+                    }
                     redraw = true;
-                } else {
-                    redraw |= self.click_control(key, part);
+                } else if self.click_control(key, part) {
+                    return self.commit(true);
                 }
             }
             _ => {}
@@ -1204,25 +1210,38 @@ impl SettingsDoc {
         redraw_if(redraw)
     }
 
-    /// The pointer moved with the button down: moves a slider being dragged.
+    /// The pointer moved with the button down: moves a slider being dragged, which
+    /// previews live (applied, not saved yet).
     pub fn drag(&mut self, x: f32, _y: f32) -> Outcome {
-        match self.drag {
-            Some(key) => redraw_if(self.set_slider_from_x(key, x)),
-            None => Outcome::default(),
+        let Some(key) = self.drag else {
+            return Outcome::default();
+        };
+        if self.set_slider_from_x(key, x) {
+            self.commit(false)
+        } else {
+            Outcome::default()
         }
     }
 
-    /// The button went up: ends a drag, and runs a button that is still under the pointer.
+    /// The button went up: ends a drag (saving what it previewed), and runs a button that
+    /// is still under the pointer.
     pub fn release(&mut self, x: f32, y: f32) -> Outcome {
         let mut out = Outcome::default();
         if self.drag.take().is_some() {
-            out.redraw = true;
+            out = if self.is_dirty() {
+                self.commit(true)
+            } else {
+                redraw_if(true)
+            };
         }
         if let Some(b) = self.pressed.take() {
             if Self::button_rect(b).contains(x, y) {
                 let run = self.run_button(b);
                 out.redraw |= run.redraw;
-                out.apply = run.apply;
+                if run.apply.is_some() {
+                    out.apply = run.apply;
+                    out.persist = run.persist;
+                }
                 out.close = run.close;
             }
         }
@@ -1244,9 +1263,6 @@ impl SettingsDoc {
 
     /// A key down (`vk` is a Windows virtual-key code).
     pub fn key(&mut self, vk: u16, ctrl: bool, shift: bool) -> Outcome {
-        if ctrl && vk == VK_S {
-            return self.apply_now(true);
-        }
         if ctrl && vk == VK_F {
             let changed = !self.search_focused;
             self.search_focused = true;
@@ -1318,7 +1334,7 @@ impl SettingsDoc {
                 (Self::content().h / content_h).clamp(0.0, 1.0),
             )
         });
-        let buttons = [Button::Close, Button::Reset, Button::Apply, Button::Save]
+        let buttons = [Button::Close, Button::Reset]
             .into_iter()
             .map(|b| ButtonView {
                 button: b,
@@ -1334,13 +1350,11 @@ impl SettingsDoc {
                 primary: b == Button::Save,
             })
             .collect();
-        let status = if self.armed {
-            Some("Unsaved changes \u{2014} close again to discard".to_string())
-        } else if self.is_dirty() {
-            Some("Unsaved changes".to_string())
-        } else {
-            self.status.clone()
-        };
+        // Every change applies and saves at once; the footer says so until one has.
+        let status = self
+            .status
+            .clone()
+            .or_else(|| Some("Changes apply instantly".to_string()));
         ViewModel {
             title: if searching {
                 "Search".to_string()
@@ -1444,6 +1458,7 @@ mod tests {
         let r = d.release(x, y);
         Outcome {
             redraw: p.redraw || r.redraw,
+            persist: r.persist || p.persist,
             apply: r.apply.or(p.apply),
             close: r.close || p.close,
         }
@@ -2025,7 +2040,7 @@ mod tests {
             .iter()
             .any(|b| b.button == Button::Reset && b.enabled));
         let out = click_button(&mut d, Button::Reset);
-        assert!(out.redraw && out.apply.is_none() && !out.close);
+        assert!(out.redraw && out.apply.is_some() && out.persist && !out.close);
         let def = Config::default();
         let p = d.pending();
         assert_eq!(p.island, def.island);
@@ -2034,7 +2049,7 @@ mod tests {
         assert_eq!(p.spotlight, edited.spotlight);
         assert_eq!(p.snap, edited.snap);
         assert_eq!(p.theme, edited.theme);
-        assert!(d.is_dirty());
+        assert!(!d.is_dirty());
         // Nothing left to reset on this page: the button is disabled and a click is nothing.
         let reset = d
             .view()
@@ -2089,145 +2104,106 @@ mod tests {
     // -- apply, save, close ----------------------------------------------------------
 
     #[test]
-    fn apply_hands_over_exactly_the_edited_config() {
+    fn every_edit_applies_and_saves_at_once() {
         let mut d = doc();
         let before = d.pending().clone();
-        click_row(&mut d, RowKey::Autostart);
-        click_seg(&mut d, RowKey::Style, 1);
-        assert!(d.is_dirty());
-        assert_eq!(d.view().status.as_deref(), Some("Unsaved changes"));
-        let out = click_button(&mut d, Button::Apply);
+        assert_eq!(d.view().status.as_deref(), Some("Changes apply instantly"));
+        let out = click_row(&mut d, RowKey::Autostart);
         let mut want = before;
         want.start_with_windows = true;
-        want.island.style = "pill".into();
         assert_eq!(out.apply, Some(want.clone()));
-        assert!(out.redraw && !out.close);
+        assert!(out.persist && out.redraw && !out.close);
         assert_eq!(d.saved(), &want);
         assert!(!d.is_dirty());
         assert_eq!(d.view().status.as_deref(), Some("Saved"));
-        // Nothing to apply now: both buttons are off and do nothing.
-        for b in [Button::Apply, Button::Save] {
-            let bv = d
-                .view()
-                .buttons
-                .into_iter()
-                .find(|x| x.button == b)
-                .unwrap();
-            assert!(!bv.enabled);
-            let out = click_button(&mut d, b);
-            assert_eq!(out, Outcome::default());
-        }
-        // Another edit clears the note.
-        click_row(&mut d, RowKey::HideOnBlur);
-        assert_eq!(d.view().status.as_deref(), Some("Unsaved changes"));
+        let out = click_seg(&mut d, RowKey::Style, 1);
+        want.island.style = "pill".into();
+        assert_eq!(out.apply, Some(want));
+        assert!(out.persist);
+        // A click that changes nothing (the segment already picked) applies nothing.
+        assert_eq!(click_seg(&mut d, RowKey::Style, 1).apply, None);
     }
 
     #[test]
-    fn save_applies_and_closes() {
+    fn a_slider_previews_while_dragged_and_saves_on_release() {
         let mut d = doc();
-        click_seg(&mut d, RowKey::Shell, 2);
-        let out = click_button(&mut d, Button::Save);
-        assert!(out.close);
-        assert_eq!(
-            out.apply.as_ref().map(|c| c.terminal.shell.as_str()),
-            Some("cmd")
-        );
-        assert_eq!(out.apply.as_ref(), Some(d.saved()));
-        // The Save button is the primary one.
-        let v = d.view();
-        let primary: Vec<_> = v
-            .buttons
-            .iter()
-            .filter(|b| b.primary)
-            .map(|b| b.button)
-            .collect();
-        assert_eq!(primary, [Button::Save]);
+        d.set_page(Page::Notch);
+        let x0 = track_x(&mut d, RowKey::NotchWidth, 0.25);
+        let (_, y) = mid(row(&mut d, RowKey::NotchWidth).control_rect);
+        let out = d.press(x0, y);
+        assert!(out.apply.is_some() && !out.persist, "a preview");
+        let x1 = track_x(&mut d, RowKey::NotchWidth, 0.75);
+        let out = d.drag(x1, y);
+        let previewed = out.apply.clone().unwrap();
+        assert!(!out.persist);
+        assert!(d.is_dirty());
+        let out = d.release(x1, y);
+        assert!(out.persist);
+        assert_eq!(out.apply, Some(previewed));
+        assert!(!d.is_dirty());
+        // A drag that ends where it began still leaves nothing unsaved.
+        let out = d.press(x1, y);
+        assert!(out.apply.is_none());
+        let out = d.release(x1, y);
+        assert!(out.apply.is_none());
+    }
+
+    #[test]
+    fn only_close_and_reset_are_shown() {
+        let d = doc();
+        let shown: Vec<_> = d.view().buttons.iter().map(|b| b.button).collect();
+        assert_eq!(shown, [Button::Close, Button::Reset]);
+        assert!(d.view().buttons.iter().all(|b| !b.primary));
+    }
+
+    #[test]
+    fn reset_applies_the_defaults_at_once() {
+        let mut d = SettingsDoc::new(&custom(), themes(), Taken::default());
+        d.set_page(Page::Notch);
+        let out = click_button(&mut d, Button::Reset);
+        let applied = out.apply.expect("applied");
+        assert!(out.persist);
+        assert_eq!(applied.island, Config::default().island);
+        assert!(!d.is_dirty());
     }
 
     #[test]
     fn buttons_act_on_release_over_them() {
-        let mut d = doc();
-        click_row(&mut d, RowKey::Autostart);
-        let (x, y) = mid(SettingsDoc::button_rect(Button::Apply));
+        let mut d = SettingsDoc::new(&custom(), themes(), Taken::default());
+        d.set_page(Page::Notch);
+        let (x, y) = mid(SettingsDoc::button_rect(Button::Reset));
         assert!(d.press(x, y).apply.is_none());
         // Released somewhere else: cancelled.
-        let out = d.release(x, y - 80.0);
-        assert!(out.apply.is_none());
-        assert!(d.is_dirty());
+        assert!(d.release(x, y - 80.0).apply.is_none());
         // Released over it: applied.
         d.press(x, y);
-        let out = d.release(x + 1.0, y);
-        assert!(out.apply.is_some());
-        assert!(!d.is_dirty());
+        assert!(d.release(x + 1.0, y).apply.is_some());
     }
 
     #[test]
-    fn close_with_unsaved_changes_needs_a_second_click() {
+    fn close_and_esc_close_at_once() {
         let mut d = doc();
-        // Clean: closes at once.
         assert!(click_button(&mut d, Button::Close).close);
-
-        click_row(&mut d, RowKey::Autostart);
-        let out = click_button(&mut d, Button::Close);
-        assert!(!out.close && out.redraw);
-        assert_eq!(
-            d.view().status.as_deref(),
-            Some("Unsaved changes \u{2014} close again to discard")
-        );
-        assert!(click_button(&mut d, Button::Close).close);
-
-        // An edit disarms it.
         let mut d = doc();
         click_row(&mut d, RowKey::Autostart);
-        click_button(&mut d, Button::Close);
-        click_row(&mut d, RowKey::HideOnBlur);
-        assert_eq!(d.view().status.as_deref(), Some("Unsaved changes"));
-        assert!(!click_button(&mut d, Button::Close).close);
         assert!(click_button(&mut d, Button::Close).close);
-
-        // Esc is the same, and saving first leaves nothing to discard.
         let mut d = doc();
-        click_row(&mut d, RowKey::Autostart);
+        assert!(d.key(VK_ESCAPE, false, false).close);
+        // With a search, the first Esc clears it.
+        let mut d = doc();
+        type_text(&mut d, "notch");
         assert!(!d.key(VK_ESCAPE, false, false).close);
         assert!(d.key(VK_ESCAPE, false, false).close);
-        let mut d = doc();
-        click_row(&mut d, RowKey::Autostart);
-        d.key(VK_ESCAPE, false, false);
-        click_button(&mut d, Button::Apply);
-        assert!(d.key(VK_ESCAPE, false, false).close);
     }
 
     #[test]
-    fn config_changed_updates_unedited_rows_only() {
+    fn config_changed_follows_the_new_config() {
         let mut d = doc();
-        // Clean: it simply follows.
         let mut c = cfg();
         c.theme = "b".into();
         d.config_changed(&c);
         assert_eq!(d.pending(), &c);
-        assert!(!d.is_dirty());
-        // Dirty: the edited row keeps its pending value, the rest follows.
-        click_row(&mut d, RowKey::Autostart);
-        let mut c2 = c.clone();
-        c2.theme = "a".into();
-        c2.terminal.font_size = 20.0;
-        d.config_changed(&c2);
-        assert!(d.pending().start_with_windows);
-        assert_eq!(d.pending().theme, "a");
-        assert_eq!(d.pending().terminal.font_size, 20.0);
-        assert_eq!(d.saved(), &c2);
-        assert!(d.is_dirty());
-        // Apply sends the user's edit on top of the new theme.
-        let out = click_button(&mut d, Button::Apply);
-        let applied = out.apply.unwrap();
-        assert!(applied.start_with_windows);
-        assert_eq!(applied.theme, "a");
-        // The changed config is the edit: no longer dirty.
-        let mut d = doc();
-        click_row(&mut d, RowKey::Autostart);
-        let mut c3 = cfg();
-        c3.start_with_windows = true;
-        d.config_changed(&c3);
+        assert_eq!(d.saved(), &c);
         assert!(!d.is_dirty());
     }
 
@@ -2283,14 +2259,10 @@ mod tests {
     // -- keyboard --------------------------------------------------------------------
 
     #[test]
-    fn ctrl_s_saves_and_closes() {
+    fn ctrl_s_does_nothing_since_everything_is_saved() {
         let mut d = doc();
-        // Nothing to save: nothing happens.
-        assert_eq!(d.key(VK_S, true, false), Outcome::default());
         click_row(&mut d, RowKey::Autostart);
-        let out = d.key(VK_S, true, false);
-        assert!(out.close);
-        assert!(out.apply.unwrap().start_with_windows);
+        assert_eq!(d.key(VK_S, true, false), Outcome::default());
     }
 
     #[test]
@@ -2440,18 +2412,15 @@ mod tests {
         assert_eq!((b(Button::Close).w, b(Button::Close).h), (28.0, 28.0));
         assert!(inside(b(Button::Close), v.title_bar));
         let footer = Rect::new(v.content.x, footer_y, v.content.w, FOOTER_H);
-        for k in [Button::Reset, Button::Apply, Button::Save] {
-            assert!(inside(b(k), footer), "{k:?}");
-        }
-        assert!(b(Button::Reset).x + b(Button::Reset).w <= b(Button::Apply).x);
-        assert!(b(Button::Apply).x + b(Button::Apply).w <= b(Button::Save).x);
+        // Only Reset is in the footer (every edit applies at once), flush right.
+        assert!(inside(b(Button::Reset), footer));
         assert_eq!(
-            b(Button::Save).x + b(Button::Save).w,
+            b(Button::Reset).x + b(Button::Reset).w,
             PANEL.x + PANEL_W - 24.0
         );
         assert_eq!(
             v.buttons.iter().map(|b| b.label).collect::<Vec<_>>(),
-            ["\u{2715}", "Reset", "Apply", "Save"]
+            ["\u{2715}", "Reset"]
         );
         // The window fits the panel with its margin.
         assert!(inside(PANEL, Rect::new(0.0, 0.0, WIN_W, WIN_H)));

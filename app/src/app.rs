@@ -1236,7 +1236,7 @@ impl App {
             self.sync_settings_drag();
         }
         if let Some(config) = outcome.apply {
-            self.apply_config(config);
+            self.apply_config(config, outcome.persist);
         }
         if outcome.close {
             self.close_settings_window();
@@ -1260,9 +1260,10 @@ impl App {
         }
     }
 
-    /// The Settings window's Apply / Save: takes `new` as the config, saves it, and
-    /// applies what changed.
-    fn apply_config(&mut self, mut new: Config) {
+    /// A change in the Settings window (every edit applies at once): takes `new` as the
+    /// config and applies what changed. `persist` also saves it; a slider being dragged
+    /// only previews (the release saves).
+    fn apply_config(&mut self, mut new: Config, persist: bool) {
         let old = self.config.clone();
         if new.start_with_windows != old.start_with_windows
             && !system::set_autostart(new.start_with_windows, &self.exe)
@@ -1271,7 +1272,9 @@ impl App {
             new.start_with_windows = old.start_with_windows;
         }
         self.config = new;
-        storage::save_config(&self.config);
+        if persist {
+            storage::save_config(&self.config);
+        }
         if self.config.theme != old.theme {
             let id = self.config.theme.clone();
             self.set_theme(&id);
@@ -1310,7 +1313,11 @@ impl App {
         let config = self.config.clone();
         if let Some((win, doc)) = self.settings_win.as_mut() {
             doc.set_taken(taken);
-            doc.config_changed(&config);
+            // Not while a slider previews: the model must still see its drag as unsaved,
+            // so the release saves it.
+            if persist {
+                doc.config_changed(&config);
+            }
             win.dirty = true;
         }
     }
