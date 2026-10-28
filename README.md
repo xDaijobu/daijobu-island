@@ -131,7 +131,9 @@ Terminal and agent actions start a new island terminal tab in the folder itself 
 
 ``Ctrl+Alt+` `` (or the Terminal tile on Home) drops a real shell out of the notch, like VS Code's built-in terminal. It keeps running when you close the panel, so a long build carries on while you work. Clicking another window hides it. Copy and paste work as in Windows Terminal: select and press Ctrl+C (without a selection Ctrl+C stops the command), Ctrl+V to paste, right-click to copy or paste.
 
-Use the **+** menu for a new Terminal, Claude or Codex tab. Tabs can be reordered, closed and pinned; pinned tabs reopen after a restart. Claude and Codex must be installed separately. Their tabs run in **yolo mode**, bypassing approval prompts (and Codex's sandbox); pinned agent tabs restart in that mode too.
+Use the **+** menu for a new Terminal, Claude or Codex tab. Tabs can be reordered, closed and pinned; pinned tabs start in the background automatically after a restart, with their saved order, names, shell arguments and agent type. PowerShell tabs also restore their last reported folder. Their live shortcuts appear beside the clock without opening Terminal first. Unpinned tabs are not restored. This starts new processes; terminal scrollback, running commands and agent conversations are not restored.
+
+Claude and Codex must be installed separately. Their tabs run in **yolo mode**, bypassing approval prompts (and Codex's sandbox); pinned agent tabs restart in that mode too.
 
 When the island shows its idle clock, running terminal tabs appear beside it as shortcuts. Click an icon to reopen that exact tab. Claude and Codex use the same agent logos as the **+** menu; plain shells use the terminal icon. The notch widens to fit the shortcuts and returns to its configured width when the sessions close. These shortcuts track the island's own terminal sessions, including shells at a prompt after an agent exits.
 
