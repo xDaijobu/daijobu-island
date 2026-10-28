@@ -13,7 +13,7 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
-use windows::Win32::System::Ole::CF_UNICODETEXT;
+use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
 
 /// Another app can hold the clipboard for a moment: after the first try, retry this many
 /// times, waiting `OPEN_WAIT` before each.
@@ -92,6 +92,60 @@ pub fn set_text(owner: isize, text: &str) -> bool {
         }
         put_units(&units)
     }
+}
+
+/// Puts files on the clipboard (`CF_HDROP`), as Explorer's Copy does: they paste into a
+/// folder, a chat or a mail. `owner` as for [`set_text`]. False when busy or refused.
+pub fn set_files(owner: isize, paths: &[std::path::PathBuf]) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    let bytes = drop_files(paths);
+    let Some(_open) = Open::acquire(owner) else {
+        return false;
+    };
+    // SAFETY: the clipboard is open on this thread for the whole block (`_open`); the
+    // block is `bytes.len()` long and locked while written; on success the clipboard owns
+    // it, on failure it is freed here.
+    unsafe {
+        if EmptyClipboard().is_err() {
+            return false;
+        }
+        let Ok(mem) = GlobalAlloc(GMEM_MOVEABLE, bytes.len()) else {
+            return false;
+        };
+        let dst = GlobalLock(mem) as *mut u8;
+        if dst.is_null() {
+            let _ = GlobalFree(Some(mem));
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+        let _ = GlobalUnlock(mem);
+        if SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(mem.0))).is_ok() {
+            true
+        } else {
+            let _ = GlobalFree(Some(mem));
+            false
+        }
+    }
+}
+
+/// A `DROPFILES` block: the 20-byte header (`pFiles` = 20, no point, not client area,
+/// wide strings), then each path in UTF-16 with its NUL, then one more NUL.
+fn drop_files(paths: &[std::path::PathBuf]) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut out = Vec::new();
+    for v in [20u32, 0, 0, 0, 1] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    for p in paths {
+        for u in p.as_os_str().encode_wide().filter(|&u| u != 0) {
+            out.extend_from_slice(&u.to_le_bytes());
+        }
+        out.extend_from_slice(&[0, 0]);
+    }
+    out.extend_from_slice(&[0, 0]);
+    out
 }
 
 /// Copies `units` into a movable global block and hands it to the clipboard.
@@ -200,5 +254,21 @@ mod tests {
             assert_eq!(decode(&encode(s)), s);
         }
         assert_eq!(decode(&encode("one\ntwo")), "one\r\ntwo");
+    }
+
+    #[test]
+    fn drop_files_layout() {
+        let b = drop_files(&[r"C:\a".into(), r"D:\b c".into()]);
+        // Header: pFiles = 20, pt = (0, 0), fNC = 0, fWide = 1.
+        assert_eq!(
+            &b[..20],
+            &[20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+        );
+        let units: Vec<u16> = b[20..]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let want: Vec<u16> = "C:\\a\0D:\\b c\0\0".encode_utf16().collect();
+        assert_eq!(units, want);
     }
 }

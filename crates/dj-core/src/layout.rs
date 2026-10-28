@@ -3,7 +3,7 @@
 
 use crate::features::FEATURES;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -227,6 +227,12 @@ pub const NOTCH_SHOULDER: f32 = 8.0;
 /// top of the screen (logical px). It holds the notch in every rest state (idle, Music
 /// and Timer compact), so only the expanded panels hang over other windows.
 pub const RESERVE_H: f32 = TOP_MARGIN + 36.0;
+
+/// `RESERVE_H` for a configured idle height: the strip holds the idle notch and the
+/// taller compact Music / Timer views, whichever is larger.
+pub fn reserve_h(idle_h: f32) -> f32 {
+    TOP_MARGIN + idle_h.max(MUSIC_COMPACT_H.max(TIMER_COMPACT_H))
+}
 
 /// Notch style: the box the notch shape covers for a pill rect (window-logical px):
 /// from the top edge (y = 0) down to the pill's bottom, widened by a shoulder on each

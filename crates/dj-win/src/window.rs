@@ -6,6 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -44,7 +45,7 @@ const TIMER_THEMES_DEBOUNCE: usize = 0xD001;
 const THEMES_DEBOUNCE_MS: u32 = 200;
 const CLASS_NAME: PCWSTR = w!("DaijobuIslandWindow");
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     /// Left button pressed, client coordinates in device pixels.
     Click {
@@ -91,6 +92,8 @@ pub enum Event {
     SweepReady,
     /// Input on the Snap overlay window (see [`crate::overlay`]).
     Snap(crate::overlay::SnapInput),
+    /// Input on a popup window (Settings or Spotlight, see [`crate::popup`]).
+    Popup(crate::popup::PopupKind, crate::popup::PopupInput),
     /// Input on the Snap preview stack's window (see [`crate::previews`]).
     Previews(crate::previews::PreviewInput),
     /// The shell moved the AppBars around (see [`crate::appbar`]): set the strip again.
@@ -199,6 +202,7 @@ pub struct Monitor {
     pub left: i32,
     pub top: i32,
     pub width: i32,
+    pub height: i32,
     pub dpi: u32,
 }
 
@@ -226,6 +230,7 @@ pub fn primary_monitor() -> Monitor {
             left: rc.left,
             top: rc.top,
             width: rc.right - rc.left,
+            height: rc.bottom - rc.top,
             dpi: dx.max(96),
         }
     }
@@ -273,8 +278,64 @@ pub fn create_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND> {
     }
 }
 
-/// Moves/resizes the window and keeps it topmost without activating it.
+/// Which z-order layer the island lives on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layer {
+    /// Topmost, over every window.
+    Top,
+    /// Directly above the desktop, under every normal window.
+    Desktop,
+}
+
+/// The layer last set by [`set_layer`] (`true` = Desktop); [`place`] keeps it.
+static LAYER_DESKTOP: AtomicBool = AtomicBool::new(false);
+
+/// The layer the island is currently on.
+pub fn current_layer() -> Layer {
+    if LAYER_DESKTOP.load(Ordering::Relaxed) {
+        Layer::Desktop
+    } else {
+        Layer::Top
+    }
+}
+
+/// Puts the island on `layer` without moving, sizing or activating it. `Desktop` takes it
+/// out of topmost and inserts it right above `Progman`; never `HWND_BOTTOM`, which hides
+/// it under the desktop.
+pub fn set_layer(hwnd: HWND, layer: Layer) {
+    LAYER_DESKTOP.store(layer == Layer::Desktop, Ordering::Relaxed);
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    // SAFETY: z-order calls on our own window; `Progman` and its neighbour are only
+    // used as insert-after handles and may be stale (the call then just fails).
+    unsafe {
+        match layer {
+            Layer::Top => {
+                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+            }
+            Layer::Desktop => {
+                let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
+                let Ok(progman) = FindWindowW(w!("Progman"), PCWSTR::null()) else {
+                    return;
+                };
+                if let Ok(above) = GetWindow(progman, GW_HWNDPREV) {
+                    if above != hwnd {
+                        let _ = SetWindowPos(hwnd, Some(above), 0, 0, 0, 0, flags);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Moves/resizes the window and keeps its layer (see [`set_layer`]) without activating it.
 pub fn place(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
+    if current_layer() == Layer::Desktop {
+        // SAFETY: valid window handle owned by this thread; z-order is left alone.
+        unsafe {
+            let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
+        }
+        return;
+    }
     // SAFETY: valid window handle owned by this thread.
     unsafe {
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
@@ -360,6 +421,8 @@ pub fn quit() {
 pub const MOD_CTRL_ALT: u32 = MOD_CONTROL.0 | MOD_ALT.0;
 pub const MOD_CTRL_SHIFT: u32 = MOD_CONTROL.0 | MOD_SHIFT.0;
 pub const MOD_CTRL: u32 = MOD_CONTROL.0;
+/// Alt on its own (Alt+Space, Spotlight).
+pub const MOD_ALT_ONLY: u32 = MOD_ALT.0;
 /// No modifiers (PrtSc on its own).
 pub const MOD_NONE: u32 = 0;
 
@@ -817,6 +880,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     }
     // SAFETY: forwards the unhandled message with the original arguments.
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+
+/// The foreground window's raw handle (0 when there is none), to give the keyboard back
+/// to later with [`give_back_keyboard`].
+pub fn foreground() -> isize {
+    // SAFETY: no arguments; the handle is only stored, never dereferenced here.
+    unsafe { GetForegroundWindow().0 as isize }
 }
 
 #[cfg(test)]

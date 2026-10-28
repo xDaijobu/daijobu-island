@@ -23,6 +23,7 @@ pub struct Config {
     pub tile: TileConfig,
     #[serde(deserialize_with = "lenient_terminal")]
     pub terminal: TerminalConfig,
+    pub spotlight: SpotlightConfig,
 }
 
 /// How the island sits at the top of the screen. Only the drawn shape differs: the pill
@@ -72,13 +73,28 @@ pub struct IslandConfig {
     /// Notch style only: reserve a strip along the top of the screen (an AppBar), so
     /// maximized windows start below the notch instead of under it.
     pub reserve_top: bool,
+    /// Keep the island on the desktop layer, below every app window. It comes to the
+    /// front while it shows a panel (or the OSD) and sinks back when it rests.
+    pub stay_behind: bool,
+    /// The resting notch/pill size in logical px; read them through `notch_size()`.
+    pub notch_width: u32,
+    pub notch_height: u32,
 }
+
+/// Slider ranges (logical px) for the resting island size.
+pub const NOTCH_W_RANGE: (u32, u32) = (96, 240);
+pub const NOTCH_H_RANGE: (u32, u32) = (24, 44);
+pub const NOTCH_W_DEFAULT: u32 = 128;
+pub const NOTCH_H_DEFAULT: u32 = 32;
 
 impl Default for IslandConfig {
     fn default() -> Self {
         Self {
             style: IslandStyle::default().label().to_string(),
             reserve_top: true,
+            stay_behind: false,
+            notch_width: NOTCH_W_DEFAULT,
+            notch_height: NOTCH_H_DEFAULT,
         }
     }
 }
@@ -90,9 +106,94 @@ impl IslandConfig {
     }
 
     /// Whether the top strip is reserved while the island is visible: only a notch
-    /// reserves, and only when `reserve_top` is on.
+    /// reserves, only when `reserve_top` is on, and never while it stays behind windows.
     pub fn reserves_top(&self) -> bool {
-        self.reserve_top && self.style() == IslandStyle::Notch
+        self.reserve_top && self.style() == IslandStyle::Notch && !self.stay_behind
+    }
+
+    /// The resting size `(w, h)` in logical px, clamped to the slider ranges.
+    pub fn notch_size(&self) -> (f32, f32) {
+        (
+            self.notch_width.clamp(NOTCH_W_RANGE.0, NOTCH_W_RANGE.1) as f32,
+            self.notch_height.clamp(NOTCH_H_RANGE.0, NOTCH_H_RANGE.1) as f32,
+        )
+    }
+}
+
+/// The Spotlight hotkey choices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpotlightHotkey {
+    #[default]
+    AltSpace,
+    CtrlAltSpace,
+    Off,
+}
+
+impl SpotlightHotkey {
+    pub const ALL: [SpotlightHotkey; 3] = [Self::AltSpace, Self::CtrlAltSpace, Self::Off];
+
+    /// The config value.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::AltSpace => "alt_space",
+            Self::CtrlAltSpace => "ctrl_alt_space",
+            Self::Off => "off",
+        }
+    }
+
+    /// The Settings chip text.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AltSpace => "Alt+Space",
+            Self::CtrlAltSpace => "Ctrl+Alt+Space",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|h| h.key().eq_ignore_ascii_case(s.trim()))
+    }
+
+    /// The next choice (the Settings chip cycles).
+    pub fn next(self) -> Self {
+        match self {
+            Self::AltSpace => Self::CtrlAltSpace,
+            Self::CtrlAltSpace => Self::Off,
+            Self::Off => Self::AltSpace,
+        }
+    }
+}
+
+/// `[spotlight]` section: the Alt+Space launcher.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpotlightConfig {
+    pub enabled: bool,
+    /// `"alt_space"` (default), `"ctrl_alt_space"` or `"off"`; read it through `hotkey()`.
+    pub hotkey: String,
+    /// Also search file names in the user's folders, not only apps.
+    pub files: bool,
+}
+
+impl Default for SpotlightConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hotkey: SpotlightHotkey::default().key().to_string(),
+            files: true,
+        }
+    }
+}
+
+impl SpotlightConfig {
+    /// An unknown value falls back to the default; `Off` when Spotlight is disabled.
+    pub fn hotkey(&self) -> SpotlightHotkey {
+        if !self.enabled {
+            return SpotlightHotkey::Off;
+        }
+        SpotlightHotkey::parse(&self.hotkey).unwrap_or_default()
     }
 }
 
@@ -702,6 +803,7 @@ impl Default for Config {
             snap: SnapConfig::default(),
             tile: TileConfig::default(),
             terminal: TerminalConfig::default(),
+            spotlight: SpotlightConfig::default(),
         }
     }
 }
@@ -743,6 +845,9 @@ mod tests {
             island: IslandConfig {
                 style: "pill".into(),
                 reserve_top: false,
+                stay_behind: true,
+                notch_width: 160,
+                notch_height: 36,
             },
             music: MusicConfig { signed_in: true },
             osd: OsdConfig {
@@ -784,6 +889,11 @@ mod tests {
                 font_size: 13.5,
                 hide_on_blur: false,
                 scrollback: 20_000,
+            },
+            spotlight: SpotlightConfig {
+                enabled: false,
+                hotkey: "ctrl_alt_space".into(),
+                files: false,
             },
         };
         assert_eq!(Config::parse(&c.to_toml()), c);

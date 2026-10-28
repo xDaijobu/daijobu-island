@@ -148,6 +148,8 @@ pub enum ClickOutcome {
     Collapsed,
     /// Back to the Home grid from a Music view.
     Home,
+    /// The gear on Home: the island collapsed, and the app opens the Settings window.
+    OpenSettings,
     /// A locked tile was clicked (index into `FEATURES`): shake + "coming soon".
     Locked(usize),
     /// An available tile was clicked (index into `FEATURES`). The app opens its view;
@@ -263,6 +265,11 @@ pub struct Island {
     dragging: bool,
     /// True when the pill is growing (picks the expand or collapse spring).
     expanding: bool,
+    /// The resting (Idle) size `(w, h)` in logical px; radius is `h / 2`.
+    idle: (f32, f32),
+    /// Latched while the island is out of a rest state (or showing the OSD) and until its
+    /// pill springs have come back to rest; see `wants_front`.
+    front: bool,
 }
 
 impl Island {
@@ -288,6 +295,31 @@ impl Island {
             osd: Osd::new(),
             dragging: false,
             expanding: true,
+            idle: (layout::IDLE_W, layout::IDLE_H),
+            front: false,
+        }
+    }
+
+    /// Whether the island should be above other windows (the "stay behind" setting sinks
+    /// it to the desktop layer only while this is false): true while the state is not a
+    /// rest state, while the OSD shows, and while the pill springs are still collapsing
+    /// back to a rest size after leaving one of those, so it doesn't sink mid-collapse.
+    pub fn wants_front(&self) -> bool {
+        !self.state.is_rest() || self.osd.is_visible() || self.front
+    }
+
+    /// Sets the resting (Idle) size in logical px (the app passes
+    /// `config.island.notch_size()`); the radius is half the height. When Idle is the
+    /// current state the pill animates to it, otherwise it applies on the next collapse.
+    pub fn set_idle_size(&mut self, w: f32, h: f32) {
+        let old_r = self.idle.1 / 2.0;
+        self.idle = (w, h);
+        if self.state == IslandState::Idle && !self.osd.is_visible() {
+            self.expanding = w * h > self.w.target * self.h.target;
+            self.w.target = w;
+            self.h.target = h;
+            // The theme's radius scale is re-applied on the next step.
+            self.r.target *= (h / 2.0) / old_r;
         }
     }
 
@@ -452,7 +484,15 @@ impl Island {
         if self.osd.is_visible() {
             (layout::OSD_W, layout::OSD_H, layout::OSD_R)
         } else {
-            Self::base_size(self.state)
+            self.state_size(self.state)
+        }
+    }
+
+    /// `base_size`, with the configured idle size.
+    fn state_size(&self, state: IslandState) -> (f32, f32, f32) {
+        match state {
+            IslandState::Idle => (self.idle.0, self.idle.1, self.idle.1 / 2.0),
+            _ => Self::base_size(state),
         }
     }
 
@@ -472,6 +512,9 @@ impl Island {
     }
 
     fn set_state(&mut self, state: IslandState, tokens: &ResolvedTokens) {
+        if !self.state.is_rest() {
+            self.front = true;
+        }
         self.state = state;
         for (i, layer) in self.layers.iter_mut().enumerate() {
             layer.retarget(if i == state.layer() { 1.0 } else { 0.0 }, FADE_SPEC);
@@ -487,6 +530,7 @@ impl Island {
     pub fn show_osd(&mut self, volume: Volume, tokens: &ResolvedTokens) {
         let was_visible = self.osd.is_visible();
         self.osd.show(volume);
+        self.front = true;
         if !was_visible {
             self.sync_pill(tokens);
         }
@@ -708,8 +752,8 @@ impl Island {
                 }
             }
             IslandState::Home if self.gear_at(x, y) => {
-                self.open_settings(tokens);
-                ClickOutcome::Expanded
+                self.collapse(tokens);
+                ClickOutcome::OpenSettings
             }
             IslandState::Home => match self.tile_at(x, y) {
                 Some(i) if FEATURES[i].availability == Availability::Locked => {
@@ -841,6 +885,9 @@ impl Island {
     }
 
     pub fn step(&mut self, dt: f32, tokens: &ResolvedTokens) {
+        if self.osd.is_visible() {
+            self.front = true;
+        }
         if self.osd.step(dt) {
             self.sync_pill(tokens);
         }
@@ -858,6 +905,11 @@ impl Island {
         }
         for layer in &mut self.layers {
             layer.step(dt);
+        }
+        if !self.state.is_rest() || self.osd.is_visible() {
+            self.front = true;
+        } else if self.front && self.w.settled() && self.h.settled() && self.r.settled() {
+            self.front = false;
         }
         if let Some((i, t)) = self.shake {
             self.shake = (t + dt < SHAKE_SECS).then_some((i, t + dt));
@@ -1891,8 +1943,11 @@ mod tests {
         let mut i = Island::new(&t);
         open_home(&mut i, &t);
         let (x, y) = view_at(layout::HOME_W, layout::HOME_GEAR);
-        assert_eq!(i.click(x, y, &t), ClickOutcome::Expanded);
-        assert_eq!(i.state(), IslandState::Settings);
+        // The gear opens the Settings window: the island collapses.
+        assert_eq!(i.click(x, y, &t), ClickOutcome::OpenSettings);
+        assert_eq!(i.state(), IslandState::Idle);
+        // The in-island panel is still reachable directly (kept for now).
+        i.open_settings(&t);
         settle(&mut i, &t);
         assert_eq!(size(&i), (layout::SETTINGS_W, layout::SETTINGS_H));
         let l = i.view().layers;
@@ -2695,5 +2750,206 @@ mod tests {
         let (x, y) = view_at(layout::HOME_W, layout::HOME_GEAR);
         assert!(i.hover(x, y));
         assert!(i.view().gear_hover);
+    }
+}
+
+#[cfg(test)]
+mod front_and_size_tests {
+    use super::*;
+    use crate::theme::{ThemeRegistry, DEFAULT_THEME};
+
+    fn tokens() -> ResolvedTokens {
+        ThemeRegistry::with_builtins()
+            .get(DEFAULT_THEME)
+            .unwrap()
+            .clone()
+    }
+
+    fn settle(i: &mut Island, t: &ResolvedTokens) {
+        for _ in 0..2000 {
+            i.step(1.0 / 144.0, t);
+        }
+        assert!(!i.is_animating());
+    }
+
+    fn size(i: &Island) -> (f32, f32) {
+        let r = i.pill_rect();
+        (r.w, r.h)
+    }
+
+    #[test]
+    fn a_fresh_island_rests_behind() {
+        let t = tokens();
+        let i = Island::new(&t);
+        assert!(!i.wants_front());
+    }
+
+    #[test]
+    fn wants_front_follows_the_state() {
+        let t = tokens();
+        type Open = fn(&mut Island, &ResolvedTokens);
+        let open: [(&str, Open); 8] = [
+            ("home", |i, t| i.expand(t)),
+            ("music", |i, t| i.open_music(t)),
+            ("vitals", |i, t| i.open_vitals(t)),
+            ("sweep", |i, t| i.open_sweep(t)),
+            ("timer", |i, t| i.open_timer(t)),
+            ("settings", |i, t| i.open_settings(t)),
+            ("tile", |i, t| i.open_tile(t)),
+            ("terminal", |i, t| i.open_terminal(t)),
+        ];
+        for (name, f) in open {
+            let mut i = Island::new(&t);
+            f(&mut i, &t);
+            assert!(i.wants_front(), "{name} just opened");
+            settle(&mut i, &t);
+            assert!(i.wants_front(), "{name} open");
+            i.collapse(&t);
+            assert!(i.wants_front(), "{name} collapsing");
+            settle(&mut i, &t);
+            assert!(!i.wants_front(), "{name} back at rest");
+        }
+    }
+
+    #[test]
+    fn rest_states_stay_behind() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(
+            MusicUi {
+                signed_in: true,
+                has_track: true,
+                blocked: false,
+            },
+            &t,
+        );
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+        assert!(!i.wants_front());
+
+        let mut i = Island::new(&t);
+        i.set_timer(
+            TimerUi {
+                active: true,
+                done: false,
+            },
+            &t,
+        );
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::TimerCompact);
+        assert!(!i.wants_front());
+        i.set_timer(
+            TimerUi {
+                active: false,
+                done: true,
+            },
+            &t,
+        );
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        assert!(!i.wants_front());
+
+        let mut i = Island::new(&t);
+        i.show_snap(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        assert!(!i.wants_front());
+    }
+
+    #[test]
+    fn the_osd_brings_it_forward_until_it_has_collapsed() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_osd(
+            Volume {
+                level: 0.5,
+                muted: false,
+            },
+            &t,
+        );
+        assert!(i.wants_front());
+        for _ in 0..30 {
+            i.step(1.0 / 144.0, &t);
+            assert!(i.wants_front());
+        }
+        // Run until the hold ends; it must stay in front until the pill is back at rest.
+        let mut hidden_at = None;
+        for n in 0..4000 {
+            i.step(1.0 / 144.0, &t);
+            if !i.wants_front() {
+                hidden_at = Some(n);
+                break;
+            }
+        }
+        assert!(hidden_at.is_some());
+        assert!(!i.is_animating() || size(&i).0 - layout::IDLE_W < 1.0);
+        assert!((size(&i).0 - layout::IDLE_W).abs() < 1.0);
+    }
+
+    #[test]
+    fn the_collapse_tail_keeps_it_in_front() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        settle(&mut i, &t);
+        i.collapse(&t);
+        let mut moved = 0;
+        while i.is_animating() {
+            if i.pill_rect().w > layout::IDLE_W + 1.0 {
+                assert!(i.wants_front());
+                moved += 1;
+            }
+            i.step(1.0 / 144.0, &t);
+        }
+        assert!(moved > 3);
+        assert!(!i.wants_front());
+    }
+
+    #[test]
+    fn idle_size_defaults_and_applies_while_idle() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        assert_eq!(size(&i), (layout::IDLE_W, layout::IDLE_H));
+        i.set_idle_size(160.0, 40.0);
+        assert!(i.is_animating());
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (160.0, 40.0));
+        assert_eq!(i.view().radius, 20.0 * t.radius_scale);
+        i.set_idle_size(96.0, 24.0);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (96.0, 24.0));
+        assert_eq!(i.view().radius, 12.0 * t.radius_scale);
+        i.set_idle_size(240.0, 44.0);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (240.0, 44.0));
+        assert_eq!(i.view().radius, 22.0 * t.radius_scale);
+        // The default keeps radius 16.
+        i.set_idle_size(layout::IDLE_W, layout::IDLE_H);
+        settle(&mut i, &t);
+        assert_eq!(i.view().radius, layout::IDLE_R * t.radius_scale);
+    }
+
+    #[test]
+    fn idle_size_set_while_home_applies_on_collapse() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        settle(&mut i, &t);
+        i.set_idle_size(200.0, 40.0);
+        assert_eq!(i.state(), IslandState::Home);
+        assert!(!i.is_animating());
+        assert_eq!(size(&i), (layout::HOME_W, layout::HOME_H));
+        i.collapse(&t);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (200.0, 40.0));
+        assert_eq!(i.view().radius, 20.0 * t.radius_scale);
+    }
+
+    #[test]
+    fn reserve_height_follows_the_idle_height() {
+        assert_eq!(layout::reserve_h(layout::IDLE_H), layout::RESERVE_H);
+        // Small notches still reserve room for the compact music/timer views.
+        assert_eq!(layout::reserve_h(24.0), layout::RESERVE_H);
+        assert_eq!(layout::reserve_h(44.0), layout::TOP_MARGIN + 44.0);
     }
 }

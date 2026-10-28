@@ -17,6 +17,7 @@ const CMD_MUSIC_SHOW: usize = 4;
 const CMD_MUSIC_SIGNOUT: usize = 5;
 const CMD_MUSIC_STOP: usize = 6;
 const CMD_SNAP_PREVIEWS: usize = 7;
+const CMD_SETTINGS: usize = 8;
 const CMD_THEME_BASE: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +30,8 @@ pub enum MenuCommand {
     MusicStop,
     /// Give the Snap preview stack the keyboard (deliberate keyboard access).
     SnapPreviews,
+    /// Open the Settings window.
+    Settings,
     Quit,
 }
 
@@ -153,6 +156,7 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
             "Stop engine",
         );
         append(menu, MF_STRING, CMD_TOGGLE, "Show / Hide");
+        append(menu, MF_STRING, CMD_SETTINGS, "Settings…");
         let _ = AppendMenuW(menu, MF_POPUP, themes.0 as usize, w!("Theme"));
         let _ = AppendMenuW(menu, MF_POPUP, music.0 as usize, w!("YouTube Music"));
         append(
@@ -198,6 +202,7 @@ fn command_for(id: usize) -> Option<MenuCommand> {
         CMD_MUSIC_SIGNOUT => Some(MenuCommand::MusicSignOut),
         CMD_MUSIC_STOP => Some(MenuCommand::MusicStop),
         CMD_SNAP_PREVIEWS => Some(MenuCommand::SnapPreviews),
+        CMD_SETTINGS => Some(MenuCommand::Settings),
         CMD_QUIT => Some(MenuCommand::Quit),
         n if n >= CMD_THEME_BASE => Some(MenuCommand::Theme(n - CMD_THEME_BASE)),
         _ => None,
@@ -227,10 +232,11 @@ mod tests {
             Some(MenuCommand::SnapPreviews)
         );
         assert_eq!(command_for(CMD_QUIT), Some(MenuCommand::Quit));
+        assert_eq!(command_for(CMD_SETTINGS), Some(MenuCommand::Settings));
         assert_eq!(command_for(CMD_THEME_BASE), Some(MenuCommand::Theme(0)));
         assert_eq!(command_for(CMD_THEME_BASE + 3), Some(MenuCommand::Theme(3)));
         // An id in the gap between the fixed commands and the themes is nothing.
-        assert_eq!(command_for(CMD_SNAP_PREVIEWS + 1), None);
+        assert_eq!(command_for(CMD_SETTINGS + 1), None);
         assert_eq!(command_for(CMD_THEME_BASE - 1), None);
     }
 
@@ -240,6 +246,7 @@ mod tests {
             CMD_TOGGLE,
             CMD_AUTOSTART,
             CMD_QUIT,
+            CMD_SETTINGS,
             CMD_MUSIC_SHOW,
             CMD_MUSIC_SIGNOUT,
             CMD_MUSIC_STOP,

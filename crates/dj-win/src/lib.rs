@@ -14,7 +14,9 @@ pub mod appbar;
 pub mod assist;
 pub mod clipboard;
 pub mod hook;
+pub mod launcher;
 pub mod overlay;
+pub mod popup;
 pub mod previews;
 pub mod sound;
 pub mod system;
@@ -25,5 +27,5 @@ pub mod window;
 
 pub use window::{Event, Handler};
 
-pub use windows::Win32::Foundation::HWND;
+pub use windows::Win32::Foundation::{HWND, RECT};
 pub use windows::Win32::UI::WindowsAndMessaging::HICON;
