@@ -3161,6 +3161,7 @@ mod tests {
                 .map(|(i, &(action, label, enabled))| term_tabs::MenuItemView {
                     action,
                     label,
+                    hint: "",
                     rect: LRect::new(
                         x,
                         30.0 + term_tabs::MENU_ROW_H * i as f32,
@@ -3482,6 +3483,7 @@ mod tests {
                     items: vec![term_tabs::MenuItemView {
                         action: term_tabs::MenuAction::Close,
                         label: "Close",
+                        hint: "",
                         rect: nan,
                         enabled: true,
                     }],

@@ -65,12 +65,20 @@ pub enum MenuAction {
     Close,
     CloseOthers,
     CloseRight,
+    /// The "+" menu: a new shell tab.
+    NewShell,
+    /// The "+" menu: a new tab running Claude (yolo).
+    NewClaude,
+    /// The "+" menu: a new tab running Codex (yolo).
+    NewCodex,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuItemView {
     pub action: MenuAction,
     pub label: &'static str,
+    /// A dim hint drawn on the right ("" for none).
+    pub hint: &'static str,
     pub rect: Rect,
     pub enabled: bool,
 }
@@ -154,10 +162,14 @@ struct Held {
     x: f32,
 }
 
-/// The open menu: whose it is, where it sits and the row under the pointer.
+/// The open menu: whose it is (a tab's, or the "+" menu), where it sits and the row under
+/// the pointer.
 #[derive(Clone, Copy, Debug)]
 struct Menu {
+    /// The tab it is for; unused when `plus`.
     id: TabId,
+    /// The new-tab menu under "+".
+    plus: bool,
     x: f32,
     y: f32,
     hover: Option<usize>,
@@ -188,10 +200,12 @@ pub enum Press {
     None,
     /// A tab was pressed and is now the active one (also when it already was).
     Activated(TabId),
-    /// "+" was pressed.
-    Plus,
+    /// "+" was pressed and its new-tab menu is now open (nothing is added yet).
+    PlusMenu,
     /// A menu row was pressed; it closed the menu. The action is for that tab and is the
-    /// caller's to carry out (`Tabs` has not changed).
+    /// caller's to carry out (`Tabs` has not changed). For the "+" menu's rows
+    /// (`NewShell`, `NewClaude`, `NewCodex`) the id is the active tab, or 0 if there is none,
+    /// and means nothing.
     Menu(MenuAction, TabId),
     /// The menu was open and the press closed it without acting: it landed outside the menu
     /// or on a disabled row. Whatever is under the pointer did not get the press.
@@ -521,11 +535,18 @@ impl Tabs {
         if let Some(menu) = self.menu.take() {
             // Everything this press does is about the menu: nothing under it is touched.
             return match self.menu_row(&menu, x, y) {
-                Some((_, action, true)) => Press::Menu(action, menu.id),
+                Some((_, action, true)) => {
+                    let id = if menu.plus {
+                        self.active.unwrap_or(0)
+                    } else {
+                        menu.id
+                    };
+                    Press::Menu(action, id)
+                }
                 _ => Press::MenuDismissed,
             };
         }
-        let (rects, _) = self.layout();
+        let (rects, plus) = self.layout();
         match self.hit(x, y) {
             Some(BarHit::Tab(i)) => {
                 let id = self.tabs[i].id;
@@ -538,7 +559,19 @@ impl Tabs {
                 self.hold(id, (x, y), rects[i].x, true);
                 Press::None
             }
-            Some(BarHit::Plus) => Press::Plus,
+            Some(BarHit::Plus) => {
+                // `hit` only reports "+" when it exists.
+                let p = plus.unwrap_or(TABS);
+                self.menu = Some(Menu {
+                    id: 0,
+                    plus: true,
+                    x: p.x.clamp(MENU_MARGIN, TERM_W - MENU_MARGIN - MENU_W),
+                    y: p.y + p.h + TAB_GAP,
+                    hover: None,
+                });
+                self.hover = None;
+                Press::PlusMenu
+            }
             None => Press::None,
         }
     }
@@ -654,6 +687,7 @@ impl Tabs {
         let r = rects[tab];
         self.menu = Some(Menu {
             id: self.tabs[tab].id,
+            plus: false,
             x: r.x.clamp(MENU_MARGIN, TERM_W - MENU_MARGIN - MENU_W),
             y: r.y + r.h + TAB_GAP,
             hover: None,
@@ -802,51 +836,67 @@ impl Tabs {
         if self.held.is_some_and(|h| gone(self, h.id)) {
             self.held = None;
         }
-        if self.menu.is_some_and(|m| gone(self, m.id)) {
+        if self.menu.is_some_and(|m| !m.plus && gone(self, m.id)) {
+            self.menu = None;
+        }
+        // No "+" at the limit, so no menu under it.
+        if self.menu.is_some_and(|m| m.plus) && self.tabs.len() >= MAX_TABS {
             self.menu = None;
         }
     }
 
-    /// The menu's rows for this tab: what, the label and whether it can be used.
-    fn menu_items(&self, id: TabId) -> Vec<(MenuAction, &'static str, bool)> {
+    /// The menu's rows: what, the label, the hint and whether it can be used.
+    fn menu_items(&self, menu: &Menu) -> Vec<(MenuAction, &'static str, &'static str, bool)> {
+        if menu.plus {
+            return vec![
+                (MenuAction::NewShell, "Terminal", "", true),
+                (MenuAction::NewClaude, "Claude", "yolo", true),
+                (MenuAction::NewCodex, "Codex", "yolo", true),
+            ];
+        }
+        let id = menu.id;
         let Some(i) = self.index_of(id) else {
             return Vec::new();
         };
         let pin = if self.tabs[i].pinned {
-            (MenuAction::Unpin, "Unpin tab", true)
+            (MenuAction::Unpin, "Unpin tab", "", true)
         } else {
-            (MenuAction::Pin, "Pin tab", true)
+            (MenuAction::Pin, "Pin tab", "", true)
         };
         let others = self.tabs.iter().any(|t| !t.pinned && t.id != id);
         let right = self.tabs[i + 1..].iter().any(|t| !t.pinned);
         vec![
             pin,
-            (MenuAction::Close, "Close", true),
-            (MenuAction::CloseOthers, "Close others", others),
-            (MenuAction::CloseRight, "Close to the right", right),
+            (MenuAction::Close, "Close", "", true),
+            (MenuAction::CloseOthers, "Close others", "", others),
+            (MenuAction::CloseRight, "Close to the right", "", right),
         ]
     }
 
     /// The row of `menu` under the point: its index, action and whether it is enabled.
     fn menu_row(&self, menu: &Menu, x: f32, y: f32) -> Option<(usize, MenuAction, bool)> {
-        let items = self.menu_items(menu.id);
+        let items = self.menu_items(menu);
+        if items.is_empty() {
+            return None;
+        }
         let area = Rect::new(menu.x, menu.y, MENU_W, items.len() as f32 * MENU_ROW_H);
         if !area.contains(x, y) {
             return None;
         }
         let k = (((y - menu.y) / MENU_ROW_H) as usize).min(items.len() - 1);
-        let (action, _, enabled) = items[k];
+        let (action, _, _, enabled) = items[k];
         Some((k, action, enabled))
     }
 
     fn menu_view(&self, menu: &Menu) -> Option<MenuView> {
         let items: Vec<MenuItemView> = self
-            .menu_items(menu.id)
+            .menu_items(menu)
             .into_iter()
             .enumerate()
-            .map(|(k, (action, label, enabled))| MenuItemView {
+            .map(|(k, (action, label, hint, enabled))| MenuItemView {
                 action,
                 label,
+                hint,
                 rect: Rect::new(menu.x, menu.y + k as f32 * MENU_ROW_H, MENU_W, MENU_ROW_H),
                 enabled,
             })
@@ -903,6 +953,10 @@ pub struct PinnedTab {
     /// The folder the tab started in; empty for the default (home).
     #[serde(default)]
     pub cwd: String,
+    /// The coding agent the tab runs (a `term_agents::Agent::key`), or empty for a plain
+    /// shell. Unknown values are kept as they are; the app decides what to do with them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent: String,
 }
 
 /// Reads `terminal-tabs.toml`: the valid pinned tabs (at most `MAX_TABS`, in file order),
@@ -1780,9 +1834,10 @@ mod tests {
     fn pressing_plus_or_empty_space() {
         let mut t = tabs(2);
         let (x, y) = middle(&t.layout().1.unwrap());
-        assert_eq!(t.press(x, y), Press::Plus);
+        assert_eq!(t.press(x, y), Press::PlusMenu);
         assert_eq!(t.release(x, y), Release::None);
         assert_eq!(t.len(), 2, "the model does not add by itself");
+        t.close_menu();
         assert_eq!(t.press(700.0, 10.0), Press::None);
         let (cx, cy) = middle(&TERM_CLOSE);
         assert_eq!(t.press(cx, cy), Press::None);
@@ -2506,6 +2561,7 @@ mod tests {
             shell: shell.into(),
             args: args.iter().map(|a| a.to_string()).collect(),
             cwd: cwd.into(),
+            agent: String::new(),
         }
     }
 
@@ -2674,5 +2730,191 @@ args = ["/k"]
     fn an_empty_pinned_list_round_trips() {
         let text = pinned_to_toml(&[]);
         assert_eq!(parse_pinned(&text), (Vec::new(), Vec::new()), "{text}");
+    }
+
+    #[test]
+    fn the_agent_round_trips_and_is_left_out_when_empty() {
+        let mut a = pin("claude", "pwsh.exe", &[], "C:\\x");
+        a.agent = "claude".into();
+        let mut odd = pin("odd", "pwsh.exe", &[], "");
+        odd.agent = "gemini".into();
+        let plain = pin("plain", "pwsh.exe", &[], "");
+        let tabs = vec![a, odd, plain];
+        let text = pinned_to_toml(&tabs);
+        assert_eq!(text.matches("agent").count(), 2, "{text}");
+        let (back, notes) = parse_pinned(&text);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(back, tabs, "unknown agents are kept as they are");
+        // Old files have no agent.
+        let (old, notes) = parse_pinned("[[pinned]]\ntitle = \"x\"\n");
+        assert!(notes.is_empty());
+        assert_eq!(old[0].agent, "");
+    }
+
+    // --- the "+" menu ---
+
+    fn plus_center(t: &Tabs) -> (f32, f32) {
+        middle(&t.layout().1.unwrap())
+    }
+
+    fn open_plus(t: &mut Tabs) -> MenuView {
+        let (x, y) = plus_center(t);
+        assert_eq!(t.press(x, y), Press::PlusMenu);
+        assert!(t.menu_open());
+        t.view().menu.unwrap()
+    }
+
+    #[test]
+    fn the_plus_menu_rows_labels_and_hints() {
+        let mut t = tabs(2);
+        let m = open_plus(&mut t);
+        let got: Vec<_> = m
+            .items
+            .iter()
+            .map(|i| (i.action, i.label, i.hint, i.enabled))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (MenuAction::NewShell, "Terminal", "", true),
+                (MenuAction::NewClaude, "Claude", "yolo", true),
+                (MenuAction::NewCodex, "Codex", "yolo", true),
+            ]
+        );
+        assert_eq!(t.len(), 2, "opening the menu adds nothing");
+        // Existing tab menus have no hints.
+        t.close_menu();
+        assert!(open(&mut t, 0).items.iter().all(|i| i.hint.is_empty()));
+    }
+
+    #[test]
+    fn the_plus_menu_opens_under_plus() {
+        let mut t = tabs(2);
+        let p = t.layout().1.unwrap();
+        let m = open_plus(&mut t);
+        assert_eq!(m.rect.x, p.x);
+        assert_eq!(m.rect.y, p.y + p.h + TAB_GAP);
+        assert_eq!((m.rect.w, m.rect.h), (MENU_W, 3.0 * MENU_ROW_H));
+        // With no tabs "+" is first in the strip.
+        let mut t = Tabs::new();
+        let p = t.layout().1.unwrap();
+        assert_eq!(open_plus(&mut t).rect.x, p.x);
+    }
+
+    #[test]
+    fn the_plus_menu_stays_inside_the_panel_when_plus_is_far_right() {
+        let mut t = tabs(MAX_TABS - 1);
+        let p = t.layout().1.unwrap();
+        let m = open_plus(&mut t);
+        assert!(m.rect.x >= MENU_MARGIN, "{:?}", m.rect);
+        assert!(m.rect.x + m.rect.w <= TERM_W - MENU_MARGIN, "{:?}", m.rect);
+        assert!(m.rect.x < p.x, "plus at {p:?} pushed the menu left");
+    }
+
+    #[test]
+    fn choosing_a_plus_row_returns_the_action_with_the_active_tab() {
+        for (k, action) in [
+            MenuAction::NewShell,
+            MenuAction::NewClaude,
+            MenuAction::NewCodex,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut t = tabs(2);
+            let active = t.active().unwrap();
+            let m = open_plus(&mut t);
+            let (x, y) = row(&m, k);
+            assert_eq!(t.press(x, y), Press::Menu(action, active));
+            assert!(!t.menu_open());
+            assert_eq!(t.len(), 2);
+        }
+        // No tabs: id 0.
+        let mut t = Tabs::new();
+        let m = open_plus(&mut t);
+        let (x, y) = row(&m, 1);
+        assert_eq!(t.press(x, y), Press::Menu(MenuAction::NewClaude, 0));
+    }
+
+    #[test]
+    fn an_outside_press_dismisses_the_plus_menu_without_acting() {
+        let mut t = tabs(2);
+        let ids = t.ids();
+        open_plus(&mut t);
+        let (x, y) = body(&t, 0);
+        assert_eq!(t.press(x, y), Press::MenuDismissed);
+        assert!(!t.menu_open());
+        assert_eq!(
+            t.active(),
+            Some(ids[1]),
+            "the tab under the press is untouched"
+        );
+        open_plus(&mut t);
+        assert_eq!(t.press(400.0, 300.0), Press::MenuDismissed);
+        assert!(!t.menu_open());
+    }
+
+    #[test]
+    fn pressing_plus_again_closes_its_menu() {
+        let mut t = tabs(2);
+        open_plus(&mut t);
+        let (x, y) = plus_center(&t);
+        assert_eq!(t.press(x, y), Press::MenuDismissed);
+        assert!(!t.menu_open());
+        assert_eq!(t.press(x, y), Press::PlusMenu);
+    }
+
+    #[test]
+    fn no_plus_no_plus_menu_at_the_limit() {
+        let mut t = tabs(MAX_TABS);
+        assert!(t.layout().1.is_none());
+        assert_eq!(
+            t.press(TABS.x + TABS.w - 4.0, TABS.y + 4.0),
+            Press::Activated(t.ids()[MAX_TABS - 1])
+        );
+        t.close_menu();
+        // Right click on the empty spot does nothing.
+        assert!(!t.open_menu(TABS.x + TABS.w + 2.0, TABS.y + 4.0));
+        assert!(!t.menu_open());
+    }
+
+    #[test]
+    fn right_click_on_plus_does_nothing() {
+        let mut t = tabs(2);
+        let (x, y) = plus_center(&t);
+        assert!(!t.open_menu(x, y));
+        assert!(!t.menu_open());
+    }
+
+    #[test]
+    fn hovering_plus_menu_rows() {
+        let mut t = tabs(2);
+        let m = open_plus(&mut t);
+        let (x, y) = row(&m, 2);
+        assert!(t.hover(x, y));
+        assert_eq!(t.view().menu.unwrap().hover, Some(2));
+        let (x, y) = row(&m, 0);
+        assert!(t.hover(x, y));
+        assert_eq!(t.view().menu.unwrap().hover, Some(0));
+        assert!(t.hover(400.0, 300.0));
+        assert_eq!(t.view().menu.unwrap().hover, None);
+        assert!(!t.hover(400.0, 300.0));
+        assert!(t.menu_open());
+    }
+
+    #[test]
+    fn the_plus_menu_survives_a_tab_closing_and_tab_presses_still_work() {
+        let mut t = tabs(3);
+        let ids = t.ids();
+        open_plus(&mut t);
+        t.close(ids[0]);
+        assert!(t.menu_open());
+        t.close_menu();
+        // A tab press and a drag behave as before.
+        let (x, y) = body(&t, 0);
+        assert_eq!(t.press(x, y), Press::Activated(t.ids()[0]));
+        assert!(t.drag(x + 60.0, y));
+        assert_eq!(t.release(x + 60.0, y), Release::Reordered);
+        assert!(!t.menu_open());
     }
 }
