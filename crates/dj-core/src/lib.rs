@@ -13,6 +13,7 @@ pub mod features;
 pub mod health;
 pub mod island;
 pub mod layout;
+pub mod line_edit;
 pub mod music;
 pub mod osd;
 pub mod settings;
