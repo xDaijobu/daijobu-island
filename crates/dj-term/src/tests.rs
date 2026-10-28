@@ -417,6 +417,92 @@ fn modes_follow_the_escape_sequences() {
 
 // ---------------------------------------------------------------- scrollback
 
+#[test]
+fn wheel_keeps_plain_shell_scrollback_local() {
+    let mut t = numbered(5, 12);
+    assert!(crate::wheel::route(&mut t.term, 3, 0, 0).is_empty());
+    assert_eq!(t.screen().offset, 3);
+    assert_eq!(row_text(&t.screen(), 0), "L5");
+    assert!(crate::wheel::route(&mut t.term, -2, 0, 0).is_empty());
+    assert_eq!(t.screen().offset, 1);
+}
+
+#[test]
+fn wheel_reports_sgr_mouse_to_applications_in_both_buffers() {
+    for buffer in ["", "\x1b[?1049h"] {
+        for tracking in [1000, 1002, 1003] {
+            let mut t = numbered(5, 12);
+            t.feed(&format!("{buffer}\x1b[?{tracking}h\x1b[?1006h"));
+            assert_eq!(
+                crate::wheel::route(&mut t.term, 2, 4, 2),
+                b"\x1b[<64;5;3M\x1b[<64;5;3M"
+            );
+            assert_eq!(crate::wheel::route(&mut t.term, -1, 4, 2), b"\x1b[<65;5;3M");
+            assert_eq!(t.screen().offset, 0, "program owns scrolling");
+        }
+    }
+}
+
+#[test]
+fn wheel_reports_legacy_and_utf8_coordinates() {
+    let mut t = fed(500, 5);
+    t.feed("\x1b[?1000h");
+    assert_eq!(crate::wheel::route(&mut t.term, 1, 4, 2), b"\x1b[M`%#");
+    assert_eq!(crate::wheel::route(&mut t.term, -1, 4, 2), b"\x1b[Ma%#");
+    assert_eq!(
+        crate::wheel::route(&mut t.term, 1, 222, 0),
+        [0x1b, b'[', b'M', b'`', 255, 33]
+    );
+    assert!(crate::wheel::route(&mut t.term, 1, 223, 0).is_empty());
+    t.feed("\x1b[?1005h");
+    let report = format!("\x1b[M`{}!", char::from_u32(333).unwrap());
+    assert_eq!(
+        crate::wheel::route(&mut t.term, 1, 300, 0),
+        report.as_bytes()
+    );
+}
+
+#[test]
+fn alternate_scroll_honors_cursor_mode_and_application_opt_out() {
+    let mut t = fed(20, 5);
+    t.feed("\x1b[?1049h");
+    assert_eq!(crate::wheel::route(&mut t.term, 2, 0, 0), b"\x1b[A\x1b[A");
+    t.feed("\x1b[?1h");
+    assert_eq!(crate::wheel::route(&mut t.term, -1, 0, 0), b"\x1bOB");
+    t.feed("\x1b[?1007l");
+    assert!(crate::wheel::route(&mut t.term, 2, 0, 0).is_empty());
+    t.feed("\x1b[?1049l");
+    assert!(
+        crate::wheel::route(&mut t.term, 2, 0, 0).is_empty(),
+        "no arrows in a shell"
+    );
+}
+
+#[test]
+fn mouse_mode_reset_returns_wheel_to_shell_history() {
+    let mut t = numbered(5, 12);
+    t.feed("\x1b[?1000h\x1b[?1006h");
+    assert!(!crate::wheel::route(&mut t.term, 1, 0, 0).is_empty());
+    t.feed("\x1b[?1000l");
+    assert!(crate::wheel::route(&mut t.term, 1, 0, 0).is_empty());
+    assert_eq!(t.screen().offset, 1);
+}
+
+#[test]
+fn wheel_clamps_pointer_and_bounds_untrusted_deltas() {
+    let mut t = fed(20, 5);
+    t.feed("\x1b[?1000h\x1b[?1006h");
+    assert_eq!(
+        crate::wheel::route(&mut t.term, 1, usize::MAX, usize::MAX),
+        b"\x1b[<64;20;5M"
+    );
+    assert!(crate::wheel::route(&mut t.term, 0, 0, 0).is_empty());
+    assert_eq!(
+        crate::wheel::route(&mut t.term, i32::MIN, 0, 0),
+        b"\x1b[<65;1;1M".repeat(500)
+    );
+}
+
 fn numbered(rows: usize, count: usize) -> Fed<VoidListener> {
     let mut t = fed(20, rows);
     let lines: Vec<String> = (1..=count).map(|i| format!("L{i}")).collect();
@@ -950,6 +1036,72 @@ fn working_directory_falls_back_to_home() {
 }
 
 // ---------------------------------------------------------------- real ConPTY
+
+#[test]
+fn conpty_delivers_wheel_to_a_mouse_tracking_program() {
+    // A local VT client, not an agent: ConPTY passes SGR through as key records
+    // when VT input is enabled. Read the Unicode payload just as a VT client does.
+    let script = r#"
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WheelClient {
+ [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n);
+ [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+ [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+ [StructLayout(LayoutKind.Explicit, Size=20)] public struct Record {
+  [FieldOffset(0)] public ushort Type;
+  [FieldOffset(4)] public int Down;
+  [FieldOffset(14)] public ushort Char;
+ }
+ [DllImport("kernel32.dll")] public static extern bool ReadConsoleInputW(IntPtr h, out Record r, uint count, out uint read);
+ public static void Run() {
+  var input = GetStdHandle(-10); var output = GetStdHandle(-11);
+  uint oldInput, oldOutput;
+  GetConsoleMode(input, out oldInput); GetConsoleMode(output, out oldOutput);
+  try {
+   if (!SetConsoleMode(input, 0x290)) throw new Exception("input mode failed");
+   if (!SetConsoleMode(output, oldOutput | 4)) throw new Exception("output mode failed");
+   Console.Write("\x1b[?1049h\x1b[?1000h\x1b[?1006hWHEEL-READY");
+   var received = new System.Text.StringBuilder();
+   while (true) {
+    Record r; uint read;
+    if (!ReadConsoleInputW(input, out r, 1, out read)) throw new Exception("read failed");
+    if (r.Type != 1 || r.Down == 0 || r.Char == 0) continue;
+    received.Append((char)r.Char); if (r.Char == 'M') break;
+   }
+   Console.Write("\r\nWHEEL-RECEIVED:" + BitConverter.ToString(System.Text.Encoding.UTF8.GetBytes(received.ToString())));
+  } finally {
+   SetConsoleMode(input, oldInput); SetConsoleMode(output, oldOutput);
+  }
+ }
+}
+'@
+[WheelClient]::Run()
+"#;
+    let (wake, rx) = waker();
+    let mut session = Session::spawn(
+        &opts(
+            "powershell.exe",
+            &["-NoLogo", "-NoProfile", "-Command", script],
+        ),
+        wake,
+    )
+    .expect("local VT client starts");
+    let (screen, _) = wait_for(&mut session, &rx, Duration::from_secs(20), |s, _| {
+        text(s).contains("WHEEL-READY")
+    });
+    assert!(text(&screen).contains("WHEEL-READY"), "{}", text(&screen));
+    session.wheel(3, 4, 2);
+    let (screen, _) = wait_for(&mut session, &rx, Duration::from_secs(10), |s, _| {
+        text(s).contains("WHEEL-RECEIVED:")
+    });
+    assert!(
+        text(&screen).contains("WHEEL-RECEIVED:1B-5B-3C-36-34-3B-35-3B-33-4D"),
+        "{}",
+        text(&screen)
+    );
+}
 
 fn opts(program: &str, args: &[&str]) -> SpawnOptions {
     SpawnOptions {

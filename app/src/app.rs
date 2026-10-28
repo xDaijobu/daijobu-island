@@ -3401,7 +3401,9 @@ impl Handler for App {
                 self.term_outcome(outcome);
             }
             Event::Wheel { delta, x, y } if self.terminal_input() && self.over_panel(x, y) => {
-                let outcome = self.terminal.wheel(delta);
+                let (lx, ly) = self.island_point(x, y);
+                let (px, py) = Self::terminal_local(lx, ly);
+                let outcome = self.terminal.wheel(delta, px, py);
                 self.term_outcome(outcome);
             }
             Event::RightClick { x, y } if self.terminal_input() && self.over_panel(x, y) => {
