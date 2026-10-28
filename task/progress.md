@@ -777,3 +777,5 @@ Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim,
 - 2026-10-25: Stage 2 redefined: Music = YouTube Music (headless WebView2).
 - 2026-10-25: Stage 1 (app shell) done.
 - 2026-10-25: progress.md created. The plan, the README draft, and the name **Daijobu Island** were finalized.
+
+- 2026-10-28: Terminal pin restore follow-up started: restore pins at startup and persist the latest reported folder. See [brief](stage-terminal-restore-brief.md).
