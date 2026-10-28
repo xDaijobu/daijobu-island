@@ -208,7 +208,7 @@ pub struct Terminal {
     clipboard: Box<dyn Clipboard>,
     tabs: Tabs,
     sessions: HashMap<TabId, Tab>,
-    /// Pinned tabs saved by an earlier run, opened as tabs on the first open.
+    /// Pinned tabs saved by an earlier run, started without opening the panel.
     restore: Vec<PinnedTab>,
     /// The pinned tabs changed: the app saves `pinned_toml` (see `take_save`).
     save: bool,
@@ -300,8 +300,8 @@ impl Terminal {
         self.config = config;
     }
 
-    /// The panel opens with cells of `cell` device px at `scale`. The first time it brings
-    /// back the saved pinned tabs; with no tab at all it opens one.
+    /// The panel opens with cells of `cell` device px at `scale`. Any pending pinned
+    /// tabs come back first; with no tab at all it opens one.
     pub fn open(&mut self, cell: (u16, u16), scale: f32) {
         self.restore_pinned(cell, scale);
         if self.tabs.is_empty() {
@@ -324,7 +324,9 @@ impl Terminal {
         }
     }
 
-    fn restore_pinned(&mut self, cell: (u16, u16), scale: f32) {
+    /// Restore saved sessions without showing the panel or creating a default shell.
+    /// Safe to call again when the panel opens or its cell metrics change.
+    pub fn restore_pinned(&mut self, cell: (u16, u16), scale: f32) {
         self.measure(cell, scale);
         for p in std::mem::take(&mut self.restore) {
             let spec = Spec {
@@ -533,7 +535,7 @@ impl Terminal {
                 title: t.name(),
                 shell: t.spec.shell.clone(),
                 args: t.spec.args.clone(),
-                cwd: t.spec.cwd.clone(),
+                cwd: t.cwd.clone().unwrap_or_else(|| t.spec.cwd.clone()),
                 agent: t
                     .spec
                     .agent
@@ -859,6 +861,7 @@ impl Terminal {
         let active = self.active_id();
         let mut changed = false;
         for (id, tab) in self.sessions.iter_mut() {
+            let saved_name = self.tabs.is_pinned(*id).then(|| tab.name());
             let Some(s) = tab.session.as_mut() else {
                 continue;
             };
@@ -872,9 +875,17 @@ impl Terminal {
                     }
                     TermEvent::ResetTitle => tab.title = None,
                     TermEvent::Bell => {}
-                    TermEvent::Cwd(dir) => tab.cwd = Some(dir),
+                    TermEvent::Cwd(dir) => {
+                        if tab.cwd.as_ref() != Some(&dir) {
+                            self.save |= self.tabs.is_pinned(*id);
+                            tab.cwd = Some(dir);
+                        }
+                    }
                     TermEvent::Exited(code) => tab.exited = Some(code),
                 }
+            }
+            if saved_name.is_some_and(|name| name != tab.name()) {
+                self.save = true;
             }
             self.tabs.set_title(*id, tab.name());
             self.tabs.set_exited(*id, tab.exited.is_some());
@@ -1494,7 +1505,7 @@ mod tests {
         assert_eq!(pinned.len(), 1);
         assert_eq!(pinned[0].title, "api");
 
-        // A new island run: the pinned tab is back on the first open, pinned.
+        // A new island run: the pinned tab is live before opening the panel.
         let spawns = Rc::new(RefCell::new(Spawns::default()));
         let mut term = Terminal::new(
             TerminalConfig::default(),
@@ -1502,16 +1513,105 @@ mod tests {
             Box::new(FakeClipboard(Rc::new(RefCell::new(None)))),
             pinned,
         );
-        assert!(
-            spawns.borrow().opts.is_empty(),
-            "no shell before the panel opens"
-        );
-        term.open((8, 17), 1.0);
+        term.restore_pinned((8, 17), 1.0);
+        assert_eq!(term.shortcuts().len(), 1);
         let view = term.view(&palette()).tabs;
         assert_eq!(view.tabs.len(), 1);
         assert!(view.tabs[0].pinned);
         assert_eq!(view.tabs[0].title, "api");
         assert_eq!(spawns.borrow().opts.len(), 1);
+        term.restore_pinned((8, 17), 1.0);
+        term.open((8, 17), 1.0);
+        assert_eq!(spawns.borrow().opts.len(), 1, "no duplicate on first open");
+    }
+
+    #[test]
+    fn startup_without_pins_does_not_spawn_a_default_shell() {
+        let mut r = Rig::new();
+        r.term.restore_pinned((8, 17), 1.0);
+        assert!(r.spawns.borrow().opts.is_empty());
+        assert!(r.term.shortcuts().is_empty());
+        r.open();
+        assert_eq!(r.spawns.borrow().opts.len(), 1);
+    }
+
+    #[test]
+    fn pinned_metadata_changes_save_the_latest_folder_and_name() {
+        let mut r = Rig::new();
+        r.open();
+        menu(&mut r, 0, MenuAction::Pin);
+        r.term.take_save();
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        r.shell().borrow_mut().events.extend([
+            TermEvent::Cwd(dir.clone()),
+            TermEvent::Title("project".into()),
+        ]);
+        r.term.drain();
+        let (pinned, notes) = tabs::parse_pinned(&r.term.take_save().expect("metadata saved"));
+        assert!(notes.is_empty());
+        assert_eq!(pinned[0].cwd, dir);
+        assert_eq!(pinned[0].title, "project");
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Cwd(dir.clone()));
+        r.term.drain();
+        assert!(
+            r.term.take_save().is_none(),
+            "unchanged prompts don't write"
+        );
+        r.term.restore = pinned;
+        r.term.shutdown();
+        r.term.tabs = Tabs::new();
+        r.term.restore_pinned((8, 17), 1.0);
+        assert_eq!(r.spawns.borrow().opts.last().unwrap().cwd, Some(dir.into()));
+    }
+
+    #[test]
+    fn regular_tab_metadata_does_not_trigger_pinned_file_writes() {
+        let mut r = Rig::new();
+        r.open();
+        r.shell().borrow_mut().events.extend([
+            TermEvent::Cwd("C:\\project".into()),
+            TermEvent::Title("project".into()),
+        ]);
+        r.term.drain();
+        assert!(r.term.take_save().is_none());
+    }
+
+    #[test]
+    fn startup_restores_multiple_pins_in_saved_order_including_failed_tabs() {
+        let mut r = Rig::new();
+        r.term.restore = ["first", "second", "third"]
+            .map(|title| PinnedTab {
+                title: title.into(),
+                shell: String::new(),
+                args: vec![],
+                cwd: String::new(),
+                agent: String::new(),
+            })
+            .to_vec();
+        r.spawns.borrow_mut().fail = true;
+        r.term.restore_pinned((8, 17), 1.0);
+        assert_eq!(
+            bar(&r)
+                .tabs
+                .iter()
+                .map(|t| t.title.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+        assert!(bar(&r).tabs.iter().all(|t| t.pinned && t.exited));
+        assert!(r.term.shortcuts().is_empty());
+        r.spawns.borrow_mut().fail = false;
+        r.term.key(VK_RETURN, Mods::default());
+        assert_eq!(r.term.shortcuts().len(), 1, "failed pin remains retryable");
+        r.open();
+        assert_eq!(
+            r.spawns.borrow().opts.len(),
+            4,
+            "no duplicate restored tabs"
+        );
     }
 
     /// Presses "+" and picks `action` from the new-tab menu.

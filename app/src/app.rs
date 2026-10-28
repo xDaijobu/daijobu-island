@@ -415,6 +415,10 @@ impl App {
         app.spot_index
             .rebuild(app.config.spotlight.files, true, raw);
         app.install_shell_integration();
+        // Pinned sessions and their idle shortcuts return without taking the keyboard.
+        let cell = app.term_cell();
+        app.terminal.restore_pinned(cell, app.scale);
+        app.sync_terminal();
         if app.config.music.signed_in {
             // Signed in before: the engine runs hidden from the start.
             app.ensure_engine(false);
@@ -3053,6 +3057,10 @@ impl App {
         window::unregister_hotkey(self.hwnd, HOTKEY_TERMINAL);
         // The shell ends with the island.
         self.release_keyboard(false);
+        self.terminal.drain();
+        if let Some(toml) = self.terminal.take_save() {
+            storage::save_terminal_tabs(&toml);
+        }
         self.terminal.shutdown();
         window::quit();
     }
