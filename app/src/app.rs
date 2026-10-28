@@ -3,7 +3,7 @@
 
 use crate::chime::SystemChime;
 use crate::notch::{self, Edges};
-use crate::popups::{self, IconLoader, PopupWin, SpotIndex};
+use crate::popups::{self, IconLoader, PopupWin, SizeLoader, SpotIndex};
 use crate::preview_store::Store;
 use crate::previews::{self, Model, Previews, TIMER_SNAP_STACK};
 use crate::snap::{
@@ -206,6 +206,8 @@ pub struct App {
     spotlight: Spotlight,
     spot_index: SpotIndex,
     spot_icons: IconLoader,
+    /// Sizes and folder file counts for the rows on screen, loaded lazily.
+    spot_sizes: SizeLoader,
     icon_cache: IconCache,
     spot_prev: isize,
     spot_taken: bool,
@@ -393,6 +395,7 @@ impl App {
             spotlight: Spotlight::new(),
             spot_index: SpotIndex::new(),
             spot_icons: IconLoader::new(raw),
+            spot_sizes: SizeLoader::new(raw),
             icon_cache: IconCache::new(),
             spot_prev: 0,
             spot_taken: false,
@@ -1067,12 +1070,21 @@ impl App {
             return;
         }
         win.dirty = false;
-        let view = self.spotlight.view(&self.spot_index.entries);
-        for row in &view.rows {
+        // The rows on screen ask for their icons and sizes (both load lazily), then draw
+        // with what is known: "…" for a size on its way.
+        let plain = self.spotlight.view(&self.spot_index.entries);
+        let mut wanted = Vec::with_capacity(plain.rows.len());
+        for row in &plain.rows {
             if !self.icon_cache.contains(&row.icon_key) {
                 self.spot_icons.want(row.kind, &row.icon_key);
             }
+            wanted.push((row.kind, row.target.clone(), row.name.clone()));
         }
+        self.spot_sizes.want(&wanted);
+        let sizes = &self.spot_sizes;
+        let view = self
+            .spotlight
+            .view_sized(&self.spot_index.entries, |e| sizes.get(&e.target));
         if let Some(r) = win.renderer.as_mut() {
             if let Err(e) = r.render_spotlight(&view, &tokens, win.scale, &self.icon_cache) {
                 storage::log(&format!("spotlight render: {e}"));
@@ -1090,6 +1102,7 @@ impl App {
         }
         redraw |= self.spotlight.set_indexing(self.spot_index.building());
         redraw |= self.spot_icons.drain(&mut self.icon_cache);
+        redraw |= self.spot_sizes.drain();
         if redraw {
             if let Some(w) = self.spot_win.as_mut() {
                 w.dirty = true;

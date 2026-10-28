@@ -28,6 +28,10 @@ Plan: `task/stage-v-plan.md`. Branch `xDaijobu/stage-v-notch` (not pushed, no PR
   - Ranking tiers: exact > prefix > word start or acronym > substring > subsequence. Apps rank before folders and files.
   - Icons load on a background thread for the visible rows.
   - Keys: Enter opens, Ctrl+Enter reveals the file in Explorer, Esc closes, and clicking away closes.
+  - **Size and file count, loaded lazily** (asked for on 2026-10-28). Only the rows on screen ask for them, through one background worker whose queue is replaced on every redraw, so rows that scroll or get typed away are dropped. A row shows "…" until its size arrives. Search itself never waits.
+    - Files: the size from metadata (cached 1 minute).
+    - Folders: the file count and total size, summed recursively without following junctions. The count stops at 200,000 files or 2 seconds and then reads "≥ …" (cached 5 minutes).
+    - Apps: `EstimatedSize` from the Uninstall registry keys, matched by name (exact, or a prefix at a word boundary). Nothing is shown when there is no good match.
 - [x] **The old in-island Settings panel** is no longer reachable from the gear. Its code is still there (`IslandState::Settings`), and removing it is a follow-up.
 
 ## Verification

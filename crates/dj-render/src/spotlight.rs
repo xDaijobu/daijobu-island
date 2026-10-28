@@ -177,8 +177,26 @@ fn paint_result(
         &fill_paint(tag_ink),
     );
 
+    // The size (and a folder's file count), dim, left of the tag; it arrives lazily.
+    let mut right = tag_x;
+    if let Some(meta) = row.meta.as_deref() {
+        let mfont = fonts.font("Geist Mono", Weight::Regular, tag_size);
+        let mw = text_width(&mfont, meta, 0.0);
+        let mx = tag_x - 12.0 * s - mw;
+        draw_text(
+            canvas,
+            &mfont,
+            meta,
+            mx,
+            base(r.center_y(), tag_size),
+            0.0,
+            &fill_paint(col(t.text_dim, 0.85)),
+        );
+        right = mx;
+    }
+
     let tx = ir.right + 12.0 * s;
-    let max_w = (tag_x - tx - 14.0 * s).max(20.0 * s);
+    let max_w = (right - tx - 14.0 * s).max(20.0 * s);
     let nsize = 13.5 * s;
     let dsize = 11.0 * s;
     let reg = fonts.font(&t.font_label, Weight::Medium, nsize);
@@ -342,6 +360,8 @@ mod tests {
                 selected: i == 2,
                 hovered: i == 3,
                 matched: vec![0, 1, 2],
+                target: format!("t{i}"),
+                meta: [None, Some("48 KB".to_string()), Some("{2026}".to_string())][i % 3].clone(),
             })
             .collect()
     }

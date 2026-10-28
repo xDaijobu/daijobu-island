@@ -2,16 +2,16 @@
 //! Spotlight index and icon workers. The app owns these and routes `Event::Popup` here.
 
 use crate::storage;
-use dj_core::spotlight::{Entry, EntryKind};
+use dj_core::spotlight::{self as spot, Entry, EntryKind, SizeInfo};
 use dj_render::{IconCache, PopupRenderer};
 use dj_win::launcher::{self, IconBitmap};
 use dj_win::popup::{self, PopupKind};
 use dj_win::{window, HWND};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// A rebuilt index older than this is refreshed when Spotlight opens.
@@ -308,6 +308,164 @@ impl IconLoader {
                 cache.insert_bgra(&key, i.w, i.h, &i.bgra);
                 any = true;
             }
+        }
+        any
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Sizes (and a folder's file count), loaded lazily on a background thread for the rows on
+// screen. The queue always holds only the latest rows: what scrolled away is dropped.
+
+/// A folder count stops here or after `FOLDER_TIME` (the size then reads "≥").
+const FOLDER_MAX_FILES: u64 = 200_000;
+const FOLDER_TIME: Duration = Duration::from_secs(2);
+/// How long a known size stays good: folders and files change, an install size doesn't.
+const FOLDER_TTL: Duration = Duration::from_secs(5 * 60);
+const FILE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+enum SizeJob {
+    File(PathBuf),
+    Folder(PathBuf),
+    App(String),
+}
+
+type SizeQueue = Arc<(Mutex<VecDeque<(String, SizeJob)>>, Condvar)>;
+
+pub struct SizeLoader {
+    queue: SizeQueue,
+    done: Receiver<(String, SizeInfo, Duration)>,
+    cache: HashMap<String, (SizeInfo, Instant, Duration)>,
+    /// Asked for and not back yet.
+    pending: HashSet<String>,
+}
+
+impl SizeLoader {
+    pub fn new(raw: isize) -> Self {
+        let queue: SizeQueue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
+        let (done_tx, done_rx) = mpsc::channel();
+        let q = Arc::clone(&queue);
+        let _ = std::thread::Builder::new()
+            .name("dj-spotlight-sizes".into())
+            .spawn(move || {
+                // The install sizes are read once, on first need.
+                let mut installed: Option<Vec<(String, u64)>> = None;
+                let never = AtomicBool::new(false);
+                loop {
+                    let (key, job) = {
+                        let (lock, cv) = &*q;
+                        let Ok(mut jobs) = lock.lock() else {
+                            return;
+                        };
+                        loop {
+                            if let Some(j) = jobs.pop_front() {
+                                break j;
+                            }
+                            jobs = match cv.wait(jobs) {
+                                Ok(j) => j,
+                                Err(_) => return,
+                            };
+                        }
+                    };
+                    let ttl = match job {
+                        SizeJob::File(_) => FILE_TTL,
+                        SizeJob::Folder(_) => FOLDER_TTL,
+                        SizeJob::App(_) => Duration::MAX,
+                    };
+                    let info = match job {
+                        SizeJob::File(p) => match std::fs::metadata(&p) {
+                            Ok(m) => SizeInfo::Known {
+                                bytes: m.len(),
+                                files: None,
+                                capped: false,
+                            },
+                            Err(_) => SizeInfo::Unknown,
+                        },
+                        SizeJob::Folder(p) => {
+                            let deadline = Instant::now() + FOLDER_TIME;
+                            let (bytes, files, capped) =
+                                launcher::folder_size(&p, FOLDER_MAX_FILES, deadline, &never);
+                            SizeInfo::Known {
+                                bytes,
+                                files: Some(files),
+                                capped,
+                            }
+                        }
+                        SizeJob::App(name) => {
+                            let list = installed.get_or_insert_with(launcher::installed_sizes);
+                            match spot::installed_size(&name, list) {
+                                Some(bytes) => SizeInfo::Known {
+                                    bytes,
+                                    files: None,
+                                    capped: false,
+                                },
+                                None => SizeInfo::Unknown,
+                            }
+                        }
+                    };
+                    if done_tx.send((key, info, ttl)).is_err() {
+                        return;
+                    }
+                    window::wake(raw);
+                }
+            });
+        Self {
+            queue,
+            done: done_rx,
+            cache: HashMap::new(),
+            pending: HashSet::new(),
+        }
+    }
+
+    /// What is known about `target`: its size, `Pending` while it loads, None if never
+    /// asked for (or expired).
+    pub fn get(&self, target: &str) -> Option<SizeInfo> {
+        if let Some((info, at, ttl)) = self.cache.get(target) {
+            if at.elapsed() < *ttl {
+                return Some(*info);
+            }
+        }
+        self.pending.contains(target).then_some(SizeInfo::Pending)
+    }
+
+    /// The rows now on screen `(kind, target, name)`: those without a fresh size are
+    /// queued, in order, replacing whatever was still waiting (rows that scrolled away
+    /// or were typed away are dropped).
+    pub fn want(&mut self, rows: &[(EntryKind, String, String)]) {
+        let (lock, cv) = &*self.queue;
+        let Ok(mut jobs) = lock.lock() else {
+            return;
+        };
+        for (key, _) in jobs.drain(..) {
+            self.pending.remove(&key);
+        }
+        for (kind, target, name) in rows {
+            let fresh = self
+                .cache
+                .get(target)
+                .is_some_and(|(_, at, ttl)| at.elapsed() < *ttl);
+            if fresh || self.pending.contains(target) {
+                continue;
+            }
+            let job = match kind {
+                EntryKind::App => SizeJob::App(name.clone()),
+                EntryKind::Folder => SizeJob::Folder(PathBuf::from(target)),
+                EntryKind::File => SizeJob::File(PathBuf::from(target)),
+            };
+            self.pending.insert(target.clone());
+            jobs.push_back((target.clone(), job));
+        }
+        cv.notify_one();
+    }
+
+    /// Takes finished sizes. True when any arrived.
+    pub fn drain(&mut self) -> bool {
+        let mut any = false;
+        while let Ok((key, info, ttl)) = self.done.try_recv() {
+            self.pending.remove(&key);
+            self.cache.insert(key, (info, Instant::now(), ttl));
+            any = true;
         }
         any
     }

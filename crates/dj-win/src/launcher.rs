@@ -26,6 +26,10 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
 };
+use windows::Win32::System::Registry::{
+    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
+    HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+};
 use windows::Win32::UI::Shell::{
     BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
     FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos, IEnumShellItems, IShellItem,
@@ -438,6 +442,153 @@ pub fn file_icon(path_or_ext: &str, size: u32) -> Option<IconBitmap> {
     }
 }
 
+// ---- sizes --------------------------------------------------------------------------
+
+/// The installed programs with an install size on record: `(display name, bytes)` from
+/// the Uninstall keys (machine 64- and 32-bit, and the user), the numbers Windows'
+/// "Installed apps" shows. Entries without `EstimatedSize` are left out.
+pub fn installed_sizes() -> Vec<(String, u64)> {
+    const UNINSTALL: PCWSTR = w!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
+    const UNINSTALL_32: PCWSTR =
+        w!(r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall");
+    let mut out = Vec::new();
+    for (root, path) in [
+        (HKEY_LOCAL_MACHINE, UNINSTALL),
+        (HKEY_LOCAL_MACHINE, UNINSTALL_32),
+        (HKEY_CURRENT_USER, UNINSTALL),
+    ] {
+        read_uninstall(root, path, &mut out);
+    }
+    out
+}
+
+fn read_uninstall(root: HKEY, path: PCWSTR, out: &mut Vec<(String, u64)>) {
+    let mut key = HKEY::default();
+    // SAFETY: a read-only open of a well-known key with a valid out-pointer; the handle
+    // is closed below.
+    if unsafe { RegOpenKeyExW(root, path, None, KEY_READ, &mut key) }.is_err() {
+        return;
+    }
+    let mut i = 0u32;
+    loop {
+        let mut name = [0u16; 256];
+        let mut len = name.len() as u32;
+        // SAFETY: `name` and `len` describe a valid buffer; the key handle is open.
+        let r = unsafe {
+            RegEnumKeyExW(
+                key,
+                i,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut len,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if r.is_err() {
+            break;
+        }
+        i += 1;
+        let sub = PCWSTR(name.as_ptr());
+        let (Some(display), Some(kb)) = (
+            reg_string(key, sub, w!("DisplayName")),
+            reg_dword(key, sub, w!("EstimatedSize")),
+        ) else {
+            continue;
+        };
+        if !display.trim().is_empty() && kb > 0 {
+            out.push((display.trim().to_string(), kb as u64 * 1024));
+        }
+    }
+    // SAFETY: the handle opened above.
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+}
+
+fn reg_string(key: HKEY, sub: PCWSTR, value: PCWSTR) -> Option<String> {
+    let mut buf = [0u16; 512];
+    let mut size = (buf.len() * 2) as u32;
+    // SAFETY: `buf`/`size` describe a valid buffer in bytes; the key handle is open and
+    // `sub` / `value` are NUL-terminated.
+    let r = unsafe {
+        RegGetValueW(
+            key,
+            sub,
+            value,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if r.is_err() {
+        return None;
+    }
+    let chars = (size as usize / 2).saturating_sub(1).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..chars]))
+}
+
+fn reg_dword(key: HKEY, sub: PCWSTR, value: PCWSTR) -> Option<u32> {
+    let mut v = 0u32;
+    let mut size = 4u32;
+    // SAFETY: `v` is a 4-byte out buffer; the key handle is open.
+    let r = unsafe {
+        RegGetValueW(
+            key,
+            sub,
+            value,
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut v as *mut u32).cast()),
+            Some(&mut size),
+        )
+    };
+    r.is_ok().then_some(v)
+}
+
+/// A folder's total size and file count, summed recursively. Stops early when
+/// `max_files` files are counted, `deadline` passes or `cancel` is set, and then says
+/// so (`capped`: both are lower bounds). Junctions and symlinks are not followed;
+/// unreadable folders are skipped.
+pub fn folder_size(
+    root: &Path,
+    max_files: u64,
+    deadline: std::time::Instant,
+    cancel: &AtomicBool,
+) -> (u64, u64, bool) {
+    const REPARSE: u32 = 0x400;
+    let (mut bytes, mut files) = (0u64, 0u64);
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            if files >= max_files
+                || cancel.load(Ordering::Relaxed)
+                || std::time::Instant::now() >= deadline
+            {
+                return (bytes, files, true);
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.file_attributes() & REPARSE != 0 {
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                bytes += meta.len();
+                files += 1;
+            }
+        }
+    }
+    (bytes, files, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +739,41 @@ mod tests {
         assert_eq!((txt.w, txt.h), (32, 32));
         assert!(txt.bgra.iter().any(|&b| b != 0));
         assert!(file_icon("<folder>", 32).is_some());
+    }
+
+    #[test]
+    fn folder_size_sums_files_recursively_and_caps() {
+        let root = std::env::temp_dir().join(format!("dj-size-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("x.bin"), [0u8; 100]).unwrap();
+        std::fs::write(root.join("a/y.bin"), [0u8; 20]).unwrap();
+        std::fs::write(root.join("a/b/z.bin"), [0u8; 3]).unwrap();
+        let far = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let cancel = AtomicBool::new(false);
+        assert_eq!(folder_size(&root, 1000, far, &cancel), (123, 3, false));
+        // The file cap: lower bounds, flagged.
+        let (_, files, capped) = folder_size(&root, 2, far, &cancel);
+        assert!(capped && files == 2);
+        // A deadline already gone, and cancel.
+        let past = std::time::Instant::now();
+        assert!(folder_size(&root, 1000, past, &cancel).2);
+        cancel.store(true, Ordering::Relaxed);
+        assert!(folder_size(&root, 1000, far, &cancel).2);
+        // A missing folder is empty, not an error.
+        let none = AtomicBool::new(false);
+        assert_eq!(
+            folder_size(&root.join("missing"), 10, far, &none),
+            (0, 0, false)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Live machine: some installed program records a size.
+    #[test]
+    fn live_installed_sizes() {
+        let sizes = installed_sizes();
+        assert!(!sizes.is_empty());
+        assert!(sizes.iter().all(|(n, b)| !n.is_empty() && *b >= 1024));
     }
 }

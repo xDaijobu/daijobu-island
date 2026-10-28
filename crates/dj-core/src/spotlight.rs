@@ -73,6 +73,98 @@ pub struct ResultRow {
     pub hovered: bool,
     /// Char indices of `name` that matched the query (drawn bold/accent).
     pub matched: Vec<usize>,
+    /// The entry's target (the app asks for its size by it).
+    pub target: String,
+    /// Size (and file count for a folder), dim at the right: "…" while it loads, None
+    /// when unknown.
+    pub meta: Option<String>,
+}
+
+/// What is known about an entry's size; the app fills it in lazily, row by row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SizeInfo {
+    /// Asked for, not known yet.
+    Pending,
+    /// Known. `files` is the file count of a folder (None for a file or an app);
+    /// `capped`: the count stopped at a limit, so both are lower bounds.
+    Known {
+        bytes: u64,
+        files: Option<u64>,
+        capped: bool,
+    },
+    /// Not available (an app with no install size on record, an unreadable path).
+    Unknown,
+}
+
+/// An app's install size from the installed programs `(display name, bytes)`: the same
+/// name (ignoring case), else the closest name that starts with the other at a word
+/// boundary ("Visual Studio Code" ~ "Microsoft Visual Studio Code" does not count, but
+/// "Steam" ~ "Steam (x64)" does). None when nothing matches well enough.
+pub fn installed_size(name: &str, installed: &[(String, u64)]) -> Option<u64> {
+    let want = name.trim().to_lowercase();
+    if want.chars().count() < 3 {
+        return None;
+    }
+    let mut best: Option<(usize, u64)> = None;
+    for (display, bytes) in installed {
+        let have = display.trim().to_lowercase();
+        if have == want {
+            return Some(*bytes);
+        }
+        let (short, long) = if have.len() < want.len() {
+            (&have, &want)
+        } else {
+            (&want, &have)
+        };
+        let boundary = long[short.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_alphanumeric());
+        if short.chars().count() >= 4 && long.starts_with(short.as_str()) && boundary {
+            let gap = long.len() - short.len();
+            if best.is_none_or(|(g, _)| gap < g) {
+                best = Some((gap, *bytes));
+            }
+        }
+    }
+    best.map(|(_, b)| b)
+}
+
+/// `1234567` → `"1,234,567"`.
+fn grouped(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The row's size text: "…", "48 KB", "1,234 files · 4.2 GB", or with `≥` when capped.
+/// None when unknown.
+pub fn size_text(info: SizeInfo) -> Option<String> {
+    match info {
+        SizeInfo::Pending => Some("\u{2026}".to_string()),
+        SizeInfo::Unknown => None,
+        SizeInfo::Known {
+            bytes,
+            files,
+            capped,
+        } => {
+            let at_least = if capped { "\u{2265} " } else { "" };
+            let size = format!("{at_least}{}", crate::sweep::format_bytes(bytes));
+            Some(match files {
+                Some(n) => {
+                    let unit = if n == 1 { "file" } else { "files" };
+                    format!("{at_least}{} {unit} \u{b7} {size}", grouped(n))
+                }
+                None => size,
+            })
+        }
+    }
 }
 
 /// Everything the Spotlight window draws.
@@ -557,6 +649,16 @@ impl Spotlight {
 
     /// Everything the window draws.
     pub fn view(&self, entries: &[Entry]) -> SpotlightView {
+        self.view_sized(entries, |_| None)
+    }
+
+    /// The view with each row's size from `size` (by entry; None: not asked for yet,
+    /// shown as nothing).
+    pub fn view_sized(
+        &self,
+        entries: &[Entry],
+        size: impl Fn(&Entry) -> Option<SizeInfo>,
+    ) -> SpotlightView {
         let panel = self.panel_rect();
         let field = self.query.view(
             Rect::new(MARGIN, MARGIN, PANEL_W, FIELD_H),
@@ -577,6 +679,8 @@ impl Spotlight {
                     selected: i == self.selected,
                     hovered: self.hover == Some(i),
                     matched: matched.clone(),
+                    target: e.target.clone(),
+                    meta: size(e).and_then(size_text),
                 })
             })
             .collect();
@@ -1042,5 +1146,82 @@ mod tests {
         let mut few = Spotlight::new();
         typed(&mut few, "app 00", &entries);
         assert_eq!(few.wheel(2.0), Action::None);
+    }
+
+    #[test]
+    fn size_text_for_each_kind() {
+        assert_eq!(size_text(SizeInfo::Pending).as_deref(), Some("\u{2026}"));
+        assert_eq!(size_text(SizeInfo::Unknown), None);
+        let file = SizeInfo::Known {
+            bytes: 48 * 1024,
+            files: None,
+            capped: false,
+        };
+        assert_eq!(size_text(file).as_deref(), Some("48 KB"));
+        let folder = SizeInfo::Known {
+            bytes: 4_509_715_660,
+            files: Some(1234),
+            capped: false,
+        };
+        assert_eq!(
+            size_text(folder).as_deref(),
+            Some("1,234 files \u{b7} 4.2 GB")
+        );
+        let one = SizeInfo::Known {
+            bytes: 10,
+            files: Some(1),
+            capped: false,
+        };
+        assert_eq!(size_text(one).as_deref(), Some("1 file \u{b7} 10 B"));
+        let big = SizeInfo::Known {
+            bytes: 13 * 1024 * 1024 * 1024,
+            files: Some(200_000),
+            capped: true,
+        };
+        assert_eq!(
+            size_text(big).as_deref(),
+            Some("\u{2265} 200,000 files \u{b7} \u{2265} 13 GB")
+        );
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1000), "1,000");
+        assert_eq!(grouped(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn rows_carry_their_target_and_size() {
+        let entries = vec![app("Chrome"), app("Chromium")];
+        let mut s = Spotlight::new();
+        s.char('c', &entries);
+        s.refresh(&entries, true);
+        let v = s.view(&entries);
+        assert!(v.rows.iter().all(|r| r.meta.is_none()));
+        assert_eq!(v.rows[0].target, "app:Chrome");
+        let v = s.view_sized(&entries, |e| {
+            (e.name == "Chrome").then_some(SizeInfo::Pending)
+        });
+        assert_eq!(v.rows[0].meta.as_deref(), Some("\u{2026}"));
+        assert_eq!(v.rows[1].meta, None);
+    }
+
+    #[test]
+    fn installed_size_matches_names() {
+        let list = vec![
+            ("Google Chrome".to_string(), 500),
+            ("Steam (x64)".to_string(), 300),
+            ("Microsoft Visual Studio Code (User)".to_string(), 400),
+            ("Microsoft Edge".to_string(), 600),
+            ("Microsoft Edge WebView2 Runtime".to_string(), 700),
+            ("Zoom".to_string(), 50),
+        ];
+        assert_eq!(installed_size("Google Chrome", &list), Some(500));
+        assert_eq!(installed_size("google chrome ", &list), Some(500));
+        assert_eq!(installed_size("Steam", &list), Some(300));
+        assert_eq!(installed_size("Microsoft Edge", &list), Some(600));
+        // Not a prefix at a word boundary: no guess.
+        assert_eq!(installed_size("Visual Studio Code", &list), None);
+        assert_eq!(installed_size("Zoo", &list), None);
+        assert_eq!(installed_size("Notepad", &list), None);
+        assert_eq!(installed_size("ab", &list), None);
     }
 }
