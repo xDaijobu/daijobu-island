@@ -5,6 +5,7 @@
 
 use dj_core::config::TerminalConfig;
 use dj_core::layout::{TERM_CLOSE, TERM_HEADER_H, TERM_TEXT};
+use dj_core::term_agents::{self as agents, Agent};
 use dj_core::term_tabs::{
     self as tabs, MenuAction, PinnedTab, Press, Release, TabBarView, TabId, TabKey, Tabs,
 };
@@ -141,6 +142,8 @@ struct Spec {
     args: Vec<String>,
     /// As configured or saved: empty is the user's home.
     cwd: String,
+    /// A coding agent started in yolo mode inside the (PowerShell) shell.
+    agent: Option<Agent>,
 }
 
 /// One tab's shell.
@@ -154,12 +157,17 @@ struct Tab {
     /// The shell ended (with its exit code, if known), or never started.
     exited: Option<Option<i32>>,
     failed: Option<String>,
+    /// The folder the shell last reported (PowerShell tabs, through the prompt hook).
+    cwd: Option<String>,
 }
 
 impl Tab {
     fn name(&self) -> String {
         if let Some(t) = self.title.as_ref() {
             return t.clone();
+        }
+        if let Some(a) = self.spec.agent {
+            return a.command().to_string();
         }
         std::path::Path::new(&self.program)
             .file_stem()
@@ -251,6 +259,7 @@ impl Terminal {
                 shell: p.shell,
                 args: p.args,
                 cwd: p.cwd,
+                agent: Agent::from_key(&p.agent),
             };
             let title = Some(p.title).filter(|t| !t.trim().is_empty());
             self.add_tab(spec, title, true);
@@ -294,12 +303,34 @@ impl Terminal {
             shell: self.config.shell.clone(),
             args: self.config.args.clone(),
             cwd: self.config.cwd.clone(),
+            agent: None,
         }
     }
 
     /// A new regular tab with the configured shell, made active. False at the limit.
     fn new_tab(&mut self) -> bool {
         self.add_tab(self.config_spec(), None, false)
+    }
+
+    /// A new regular tab running `agent` in yolo mode, in the active tab's folder (the
+    /// configured one when that is unknown or gone). The agents are npm PowerShell shims, so
+    /// the tab is the configured shell if it is PowerShell, else Windows PowerShell.
+    fn new_agent_tab(&mut self, agent: Agent) -> bool {
+        let mut spec = self.config_spec();
+        let (program, _) = dj_term::resolve_shell(&spec.shell, &spec.args);
+        if !dj_term::is_powershell(&program) {
+            spec.shell = "powershell".to_string();
+            spec.args = Vec::new();
+        }
+        if let Some(dir) = self
+            .active()
+            .and_then(|t| t.cwd.clone())
+            .filter(|d| std::path::Path::new(d).is_dir())
+        {
+            spec.cwd = dir;
+        }
+        spec.agent = Some(agent);
+        self.add_tab(spec, None, false)
     }
 
     fn add_tab(&mut self, spec: Spec, title: Option<String>, pinned: bool) -> bool {
@@ -313,6 +344,7 @@ impl Terminal {
             title,
             exited: None,
             failed: None,
+            cwd: None,
         };
         self.start(&mut tab);
         self.tabs.set_title(id, tab.name());
@@ -328,7 +360,14 @@ impl Terminal {
         } else {
             Some(PathBuf::from(tab.spec.cwd.trim()))
         };
-        let (program, args) = dj_term::resolve_shell(&tab.spec.shell, &tab.spec.args);
+        let (program, mut args) = dj_term::resolve_shell(&tab.spec.shell, &tab.spec.args);
+        // PowerShell reports its folder at every prompt, and runs the tab's agent if it has one.
+        if dj_term::is_powershell(&program) {
+            args.extend(agents::powershell_extra_args(
+                &tab.spec.args,
+                tab.spec.agent,
+            ));
+        }
         let opts = SpawnOptions {
             program: program.clone(),
             args,
@@ -416,7 +455,11 @@ impl Terminal {
                 shell: t.spec.shell.clone(),
                 args: t.spec.args.clone(),
                 cwd: t.spec.cwd.clone(),
-                agent: String::new(),
+                agent: t
+                    .spec
+                    .agent
+                    .map(|a| a.key().to_string())
+                    .unwrap_or_default(),
             })
             .collect();
         tabs::pinned_to_toml(&pinned)
@@ -611,8 +654,16 @@ impl Terminal {
                 let closed = self.tabs.close_right(id);
                 self.close_tabs(&closed)
             }
-            MenuAction::NewShell | MenuAction::NewClaude | MenuAction::NewCodex => {
+            MenuAction::NewShell => {
                 self.new_tab();
+                Outcome::Redraw
+            }
+            MenuAction::NewClaude => {
+                self.new_agent_tab(Agent::Claude);
+                Outcome::Redraw
+            }
+            MenuAction::NewCodex => {
+                self.new_agent_tab(Agent::Codex);
                 Outcome::Redraw
             }
         }
@@ -739,7 +790,7 @@ impl Terminal {
                     TermEvent::Title(t) => tab.title = Some(t).filter(|t| !t.trim().is_empty()),
                     TermEvent::ResetTitle => tab.title = None,
                     TermEvent::Bell => {}
-                    TermEvent::Cwd(_) => {}
+                    TermEvent::Cwd(dir) => tab.cwd = Some(dir),
                     TermEvent::Exited(code) => tab.exited = Some(code),
                 }
             }
@@ -1285,6 +1336,113 @@ mod tests {
         assert!(view.tabs[0].pinned);
         assert_eq!(view.tabs[0].title, "api");
         assert_eq!(spawns.borrow().opts.len(), 1);
+    }
+
+    /// Presses "+" and picks `action` from the new-tab menu.
+    fn plus(r: &mut Rig, action: MenuAction) -> Outcome {
+        let p = bar(r).plus.expect("the + button");
+        assert_eq!(
+            r.term.press(p.x + p.w / 2.0, p.y + p.h / 2.0),
+            Outcome::Redraw
+        );
+        assert_eq!(r.spawns.borrow().opts.len(), 1, "+ alone starts nothing");
+        let m = bar(r).menu.expect("the new-tab menu");
+        let row = m.items.iter().find(|it| it.action == action).expect("row");
+        r.term
+            .press(row.rect.x + 4.0, row.rect.y + row.rect.h / 2.0)
+    }
+
+    fn last_spawn(r: &Rig) -> SpawnOptions {
+        r.spawns.borrow().opts.last().cloned().expect("a spawn")
+    }
+
+    #[test]
+    fn a_powershell_tab_installs_the_folder_hook() {
+        let mut r = Rig::new();
+        r.open();
+        let o = last_spawn(&r);
+        assert!(dj_term::is_powershell(&o.program), "{}", o.program);
+        let n = o.args.len();
+        assert_eq!(o.args[n - 3..], ["-NoExit", "-Command", agents::CWD_HOOK]);
+        assert_eq!(plus(&mut r, MenuAction::NewShell), Outcome::Redraw);
+        assert_eq!(
+            last_spawn(&r).args,
+            o.args,
+            "the Terminal row is a plain tab"
+        );
+    }
+
+    #[test]
+    fn claude_from_the_plus_menu_runs_in_yolo_mode_in_the_active_tabs_folder() {
+        let mut r = Rig::new();
+        r.open();
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Cwd(dir.clone()));
+        r.term.drain();
+        assert_eq!(plus(&mut r, MenuAction::NewClaude), Outcome::Redraw);
+        let o = last_spawn(&r);
+        assert!(dj_term::is_powershell(&o.program));
+        assert_eq!(o.cwd, Some(PathBuf::from(&dir)));
+        let cmd = o.args.last().unwrap();
+        assert!(cmd.starts_with(agents::CWD_HOOK));
+        assert!(
+            cmd.ends_with("; claude --dangerously-skip-permissions"),
+            "{cmd}"
+        );
+        let tabs = bar(&r).tabs;
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs[1].active);
+        assert_eq!(tabs[1].title, "claude");
+    }
+
+    #[test]
+    fn codex_falls_back_to_the_configured_folder_when_the_reported_one_is_gone() {
+        let mut r = Rig::new();
+        r.open();
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Cwd(r"C:\no\such\folder\dj".into()));
+        r.term.drain();
+        plus(&mut r, MenuAction::NewCodex);
+        let o = last_spawn(&r);
+        assert_eq!(o.cwd, std::env::var_os("USERPROFILE").map(PathBuf::from));
+        assert!(o
+            .args
+            .last()
+            .unwrap()
+            .ends_with("; codex --dangerously-bypass-approvals-and-sandbox"));
+    }
+
+    #[test]
+    fn a_pinned_agent_tab_comes_back_as_the_same_agent() {
+        let mut r = Rig::new();
+        r.open();
+        plus(&mut r, MenuAction::NewClaude);
+        let args = last_spawn(&r).args;
+        menu(&mut r, 1, MenuAction::Pin);
+        let (pinned, errors) = tabs::parse_pinned(&r.term.take_save().expect("saved"));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].agent, "claude");
+
+        let spawns = Rc::new(RefCell::new(Spawns::default()));
+        let mut term = Terminal::new(
+            TerminalConfig::default(),
+            Box::new(FakeSpawner(Rc::clone(&spawns))),
+            Box::new(FakeClipboard(Rc::new(RefCell::new(None)))),
+            pinned,
+        );
+        term.open((8, 17), 1.0);
+        assert_eq!(spawns.borrow().opts.len(), 1);
+        assert_eq!(
+            spawns.borrow().opts[0].args,
+            args,
+            "the hook is not doubled"
+        );
     }
 
     #[test]

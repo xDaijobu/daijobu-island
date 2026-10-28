@@ -22,7 +22,7 @@
 //! and are faked (an embolden, a skew) when not; embedded Geist Mono has no italic.
 
 use crate::fonts::{Fonts, Weight};
-use crate::paint::{col, draw_text, fill_paint, fit, stroke_paint};
+use crate::paint::{col, draw_text, fill_paint, fit, stroke_paint, text_width};
 use dj_core::layout::{self, Rect as LRect};
 use dj_core::term_tabs::{self, BarHit, MenuView, TabBarView, TabSlot};
 use dj_core::terminal::{Cell, Cursor, CursorShape, Palette, Screen, SELECTION_ALPHA};
@@ -697,7 +697,24 @@ fn tab_menu(
             }
         }
         let x = row.left + MENU_PAD_X * s;
-        let label = fit(&font, item.label, tracking, row.right - x - MENU_PAD_X * s);
+        let baseline = row.center_y() + 0.35 * TEXT_SIZE * s;
+        // A hint ("yolo") sits dim at the row's right end; the label gets what is left.
+        let mut right = row.right - MENU_PAD_X * s;
+        if !item.hint.is_empty() {
+            let w = text_width(&font, item.hint, tracking);
+            right -= w;
+            draw_text(
+                canvas,
+                &font,
+                item.hint,
+                right,
+                baseline,
+                tracking,
+                &fill_paint(col(t.text_dim, 1.0)),
+            );
+            right -= MENU_PAD_X * s;
+        }
+        let label = fit(&font, item.label, tracking, right - x);
         let ink = if item.enabled {
             col(t.text, 1.0)
         } else {
@@ -708,7 +725,7 @@ fn tab_menu(
             &font,
             &label,
             x,
-            row.center_y() + 0.35 * TEXT_SIZE * s,
+            baseline,
             tracking,
             &fill_paint(ink),
         );
