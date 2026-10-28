@@ -17,7 +17,7 @@
   <img src="docs/images/app-home.png" alt="Expanded island: feature grid" width="620">
 </p>
 
-<p align="center"><sub>The current build running on Windows 11. Every feature is still locked while it gets built.</sub></p>
+<p align="center"><sub>Early app-shell screenshots. The current build also includes Music, Snap, Vitals, Timer, tiling, Terminal and Spotlight.</sub></p>
 
 ---
 
@@ -25,7 +25,7 @@
 
 ## Status
 
-Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals with Sweep, the Timer, Snap, window tiling and a terminal are in. Features get unlocked one at a time, each in its own stage. Day-to-day progress is tracked in [`task/progress.md`](task/progress.md).
+Early development. Music (YouTube Music), the volume OSD, Vitals with Sweep, Timer, Snap capture and annotations, floating screenshot previews, window tiling, a terminal with tabs, Spotlight search and a standalone Settings window are available. Features get unlocked one at a time. Day-to-day progress and outstanding manual checks are tracked in [`task/progress.md`](task/progress.md).
 
 | Stage | | |
 |---|---|---|
@@ -37,12 +37,20 @@ Early development. The app shell, Music (YouTube Music), the volume OSD, Vitals 
 | 5 | Vitals + Sweep: disk I/O, top processes, safe disk cleanup | ✅ done |
 | 6 | Timer / pomodoro | ✅ done |
 | 7a–7c | Screenshots: capture, annotate, floating preview stack | ✅ done |
-| T | Terminal: a real shell (PowerShell) inside the island | 🟡 testing |
+| T | Terminal: shell tabs, pinned tabs, Claude and Codex tabs | ✅ merged |
+| N–N2 | Notch style and reserved top space | ✅ done |
+| V | Spotlight, standalone Settings, notch size and stay behind windows | ✅ merged, live testing pending |
 | 8 | Clipboard history | locked |
 | 9–10 | Notifications, lyrics | locked |
 | 12a | Window tiling: zones, a layout picker in the island, a window picker | ✅ done |
 | 12b–12d | Scenes, restore-after-reboot, admin apps | locked |
 | 13 | File shelf, ambient sounds | locked |
+
+## Download and run
+
+Get the Windows x64 build from the [latest GitHub release](https://github.com/xDaijobu/daijobu-island/releases/latest). Extract the portable ZIP and run `daijobu.exe`; there is no installer. Quit the previous instance from the tray before replacing it with a newer build. Settings and user themes stay in `~/.daijobu/`.
+
+Requires Windows 11 with Direct3D 12. Music also needs the Microsoft Edge WebView2 Runtime. The other panels use native Win32 windows drawn with Skia.
 
 ## Where it's going
 
@@ -82,24 +90,46 @@ cargo build --release
 target\release\daijobu.exe
 ```
 
-`skia-safe` downloads a prebuilt Skia, so the first build takes well under a minute on top of the Rust compile.
+`skia-safe` uses a prebuilt Skia when available. The first build downloads dependencies and takes longer than subsequent builds.
 
 | Shortcut | Action |
 |---|---|
 | Click the island | Expand / collapse |
 | `Ctrl+Alt+H` | Hide / show |
 | `Ctrl+Alt+T` | Next theme |
+| `PrtSc` / `Ctrl+Space` | Start a screenshot (default primary / alternate shortcut) |
+| `Alt+Space` | Open / close Spotlight |
 | ``Ctrl+Alt+` `` | Open / close the terminal |
 
-The tray icon has the same controls, plus *Start with Windows*. Settings live in `~/.daijobu/config.toml`.
+The tray also offers Settings, themes, *Start with Windows* and Quit. Open Settings from the Home gear or the tray. Its General, Notch, Hotkeys, Terminal and Spotlight pages apply and save changes immediately; sliders preview while dragging and save on release. Config is stored in `~/.daijobu/config.toml`.
 
-By default the island is a notch attached to the top edge of the screen. To get the floating pill back, flip *Island style* in the Settings panel or set `[island] style = "pill"` in the config.
+By default the island is a notch attached to the top edge of the screen. Choose *Island style* in Settings to switch to the floating pill, or set `[island] style = "pill"` in the config. The Notch page also adjusts its width and height.
 
 The notch also reserves a strip as tall as itself along the top of the screen, so maximized windows (and browser tabs) start below it instead of under it. Turn it off with *Reserve top space* in Settings, or `[island] reserve_top = false`.
+
+*Stay behind windows* keeps the resting island over the wallpaper and under application windows. Opening a panel or showing the volume OSD brings it forward temporarily. Reserved top space is inactive while this setting is on.
+
+### Spotlight
+
+Press `Alt+Space` to search apps, files and folders. File-name search covers Desktop, Documents, Downloads, Pictures, Videos and Music, with limits on scan depth and entry count. File results start after two query characters. Icons, file sizes, folder file counts and available app install sizes load in the background.
+
+Enter opens a result; Ctrl+Enter selects a file or folder in Explorer. Esc closes an open menu, then clears a nonempty query, then closes Spotlight. Clicking another window also dismisses it. Settings can change the hotkey to `Ctrl+Alt+Space` or disable it; the default replaces Windows' Alt+Space window menu.
+
+Right-click a result, or use Shift+F10 / the Menu key:
+
+| Entry | Menu actions |
+|---|---|
+| File | Open, Open with…, Run as administrator for runnable files, Show in Explorer, Open in Terminal, Claude here, Codex here, Copy path, Copy file, Properties, Delete |
+| Folder | Open, Show in Explorer, Open in Terminal, Claude here, Codex here, Copy path, Copy file, Properties, Delete |
+| App | Open, Run as administrator, Copy name |
+
+Terminal and agent actions start a new island terminal tab in the folder itself or the file's parent. Delete requires a second confirmation and moves the item to the Recycle Bin. Some Spotlight interactions and menu actions still await manual acceptance; see the [Stage V report](task/stage-v-report.md).
 
 ### Terminal
 
 ``Ctrl+Alt+` `` (or the Terminal tile on Home) drops a real shell out of the notch, like VS Code's built-in terminal. It keeps running when you close the panel, so a long build carries on while you work. Clicking another window hides it. Copy and paste work as in Windows Terminal: select and press Ctrl+C (without a selection Ctrl+C stops the command), Ctrl+V to paste, right-click to copy or paste.
+
+Use the **+** menu for a new Terminal, Claude or Codex tab. Tabs can be reordered, closed and pinned; pinned tabs reopen after a restart. Claude and Codex must be installed separately. Their tabs run in **yolo mode**, bypassing approval prompts (and Codex's sandbox); pinned agent tabs restart in that mode too.
 
 ```toml
 [terminal]
@@ -116,7 +146,7 @@ Prompt icons from oh-my-posh or starship come from "Symbols Nerd Font" when it i
 
 ## How it's built
 
-- **Window:** a raw Win32 popup (`WS_EX_NOREDIRECTIONBITMAP`, tool window, topmost, never activates) with a DirectComposition visual. Clicks outside the pill fall through to whatever is underneath.
+- **Windows:** native Win32 windows with DirectComposition visuals. The island stays topmost by default, with an optional desktop layer while resting. Terminal input mode, Settings and Spotlight take keyboard focus when opened. Clicks outside the island's shape fall through to whatever is underneath.
 - **Rendering:** Skia's GPU backend on Direct3D 12, presenting through a premultiplied-alpha composition swap chain. Grain and dither are SkSL shaders.
 - **Motion:** damped springs (stiffness and damping derived from response and damping ratio) that can be interrupted mid-flight.
 - **Idle cost:** none. When nothing moves, the message loop blocks and nothing is drawn.
@@ -134,15 +164,15 @@ crates/dj-capture screen capture for Snap
 crates/dj-term    the terminal: alacritty_terminal's emulator over a Windows pseudo console
 ```
 
-More crates (capture, clipboard, tiling, …) are added as their stages start. [`AGENTS.md`](AGENTS.md) describes the conventions and the stage-by-stage workflow.
+Tile and Spotlight live in the existing crates. More crates are added as their stages start. [`AGENTS.md`](AGENTS.md) describes the conventions and the stage-by-stage workflow.
 
 ## Privacy
 
-No telemetry. When the clipboard and screenshot features land, everything stays on your machine. Clipboard history will be encrypted with Windows DPAPI and will skip anything a password manager marks as private.
+No telemetry. Screenshot capture and Spotlight file indexing run locally. Music connects to YouTube Music through its WebView2 engine. Clipboard history is planned, including Windows DPAPI encryption and exclusion of content marked private by password managers.
 
 ## Acknowledgements
 
-The island-on-Windows idea owes a lot to [WinIsland](https://github.com/WinIslandProject/WinIsland), and the cleanup features take ideas from [Mole](https://github.com/tw93/Mole). Both are GPL-3.0. Daijobu Island is an independent project and shares no code with either. And of course Apple's Dynamic Island, which started it all.
+The island-on-Windows idea owes a lot to [WinIsland](https://github.com/WinIslandProject/WinIsland), used as a reference for ideas only. Daijobu Island shares no code with that GPL-3.0 project. And of course Apple's Dynamic Island, which started it all.
 
 ## Contributing
 
