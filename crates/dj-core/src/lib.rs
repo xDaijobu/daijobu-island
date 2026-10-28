@@ -37,4 +37,5 @@ pub mod theme;
 pub mod tile;
 pub mod tile_assist;
 pub mod timer;
+pub mod tray_menu;
 pub mod vitals;

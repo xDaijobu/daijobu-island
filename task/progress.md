@@ -54,6 +54,52 @@ and [dispatch](stage-8-dispatch.md) retain ownership and validation evidence.
 Remaining target-app/hardware checks stay unverified. Taskbar/tray delay is not
 claimed fixed: direct callbacks measured 42/14/15 ms, without proving the cause of
 physical Explorer-click latency. Release verification is recorded below.
+**Taskbar/tray latency follow-up (2026-10-28):** worktree
+`xDaijobu/fix-taskbar-delay`. Tray commands now post `WM_NULL` after enqueueing
+so a callback dispatched inside idle `GetMessageW` cannot leave the command waiting
+for unrelated input or a timer. Message-only-window regression covers right-click,
+context-menu and left-click callbacks, plus ignored mouse movement. This fixes a
+queue-wake defect, not a verified cause of general Explorer taskbar latency.
+Desktop control was stopped at the user's request; physical click acceptance remains
+unverified. Independent patch review found no blocking issues. Formatting, workspace
+clippy (`-D warnings`), workspace tests and release build passed; direct execution
+also confirmed all 190 `dj-win` tests passed. Built executable:
+`C:/Users/UseR/orca/projects/daijobu-island/target/stage-t4/release/daijobu.exe`.
+User confirmed physical tray clicks responsive on 2026-10-28; generic Explorer
+context-menu latency was not separately measured.
+
+**Themed tray follow-up (2026-10-28):** user confirmed tray latency fixed and
+approved replacing the native menu. The tray now reuses the Skia popup renderer
+and native activatable tool-window infrastructure, with active-theme panel, label
+font, hairline, hover, checks and disabled states. Theme and YouTube Music use
+in-place submenu pages (click/Enter/Right to open; header/Left/Backspace/Escape to
+return). Up/Down, Tab/Shift+Tab, Home/End, initial-letter selection, Enter/Space,
+wheel scrolling, Escape dismissal, focus-loss dismissal and captured outside-click
+dismissal are wired. Every existing command and enabled/checked condition remains.
+The hidden popup/GPU renderer is reused between openings. Existing queue-wake
+changes in `window.rs` are preserved.
+Validation: `cargo fmt --all`, workspace clippy/all-targets with `-D warnings`,
+1,635 workspace tests and release-equivalent build passed. Three new core regression
+tests cover action/state preservation, disabled-row navigation, submenu return,
+wraparound and long theme-list scrolling; popup-kind round-trip includes Tray.
+Build used `--profile themed-tray --config 'profile.themed-tray.inherits="release"'`
+with the existing `target/stage-t4` cache, avoiding the running locked release exe.
+New executable:
+`C:/Users/UseR/orca/projects/daijobu-island/target/stage-t4/themed-tray/daijobu.exe`.
+No desktop input, app launch/restart/stop, commit, push or PR performed. Manual
+appearance/font checks across themes, real tray mouse/keyboard navigation,
+outside-click/Escape/focus dismissal, DPI/multi-monitor placement, first-open latency
+and live command effects remain unverified for the user's manual test.
+Independent-review follow-up: root-page Escape now restores the captured,
+identity-validated focus target only while the tray popup still owns foreground;
+submenu Escape only returns, and outside click/focus loss/actions never restore.
+Reused hidden tray windows now receive explicit physical bounds before showing,
+including same-DPI work-area height changes. A hidden-window regression verifies
+shrink/grow client sizes without showing or activating the popup. Re-ran fmt,
+workspace clippy/all-targets (`-D warnings`), all 1,636 workspace tests and the
+optimized `themed-tray` build successfully; executable path unchanged. Actual
+Escape focus restoration and cross-work-area display remain manual-only checks.
+
 **OCR is removed, not deferred.** Earlier reports/logs mentioning OCR are historical.
 
 Release gates passed on 2026-10-28: `cargo fmt --all -- --check`,

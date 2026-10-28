@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+dj-core = { path = "../dj-core" }
 # Needed by the `#[implement]` macro, which emits `::windows_core` paths.
 windows-core = "0.62"
 windows = { workspace = true, features = [

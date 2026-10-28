@@ -975,10 +975,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             return LRESULT(0);
         }
         WM_TRAY => {
-            match lp.0 as u32 & 0xFFFF {
-                WM_RBUTTONUP | WM_CONTEXTMENU => push(Event::TrayRight),
-                WM_LBUTTONUP => push(Event::TrayLeft),
-                _ => {}
+            let event = match lp.0 as u32 & 0xFFFF {
+                WM_RBUTTONUP | WM_CONTEXTMENU => Some(Event::TrayRight),
+                WM_LBUTTONUP => Some(Event::TrayLeft),
+                _ => None,
+            };
+            if let Some(event) = event {
+                push(event);
+                post_to(hwnd.0 as isize, WM_NULL);
             }
             return LRESULT(0);
         }
@@ -1067,6 +1071,47 @@ pub fn foreground() -> isize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_callbacks_post_a_wake_without_waiting_for_input_or_timers() {
+        // SAFETY: this message-only window is never shown, has no application state,
+        // and is created, queried and destroyed on this test thread.
+        unsafe {
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("DaijobuTrayWakeTest"),
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            for (message, event) in [
+                (WM_RBUTTONUP, Event::TrayRight),
+                (WM_CONTEXTMENU, Event::TrayRight),
+                (WM_LBUTTONUP, Event::TrayLeft),
+            ] {
+                assert!(pop().is_none());
+                wndproc(hwnd, WM_TRAY, WPARAM(1), LPARAM(message as isize));
+                let mut wake = MSG::default();
+                assert!(PeekMessageW(&mut wake, Some(hwnd), WM_NULL, WM_NULL, PM_REMOVE).as_bool());
+                assert_eq!(wake.message, WM_NULL);
+                assert_eq!(pop(), Some(event));
+                assert!(pop().is_none());
+            }
+            wndproc(hwnd, WM_TRAY, WPARAM(1), LPARAM(WM_MOUSEMOVE as isize));
+            let mut wake = MSG::default();
+            assert!(!PeekMessageW(&mut wake, Some(hwnd), WM_NULL, WM_NULL, PM_REMOVE).as_bool());
+            assert!(pop().is_none());
+            DestroyWindow(hwnd).unwrap();
+        }
+    }
 
     #[test]
     fn short_escape_tap_is_queued_with_its_preparation_generation() {

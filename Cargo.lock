@@ -297,6 +297,7 @@ dependencies = [
 name = "dj-win"
 version = "0.3.0"
 dependencies = [
+ "dj-core",
  "windows",
  "windows-core",
 ]

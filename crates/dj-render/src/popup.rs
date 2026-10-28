@@ -307,6 +307,142 @@ impl PopupRenderer {
         Ok(())
     }
 
+    pub fn render_tray_menu(
+        &mut self,
+        menu: &dj_core::tray_menu::Menu,
+        t: &ResolvedTokens,
+        s: f32,
+    ) -> Result<(), RenderError> {
+        use dj_core::tray_menu::{MARGIN, ROW_HEIGHT, WIDTH};
+        let chain = self.chain.as_mut().ok_or_else(missing)?;
+        let canvas = chain.back_buffer().canvas();
+        canvas.clear(Color::TRANSPARENT);
+        paint_panel(
+            canvas,
+            t,
+            s,
+            LRect {
+                x: 8.0,
+                y: 8.0,
+                w: WIDTH - 16.0,
+                h: menu.height() - 16.0,
+            },
+            10.0,
+        );
+        let font = self.fonts.font(&t.font_label, Weight::Medium, 12.0 * s);
+        let title = if menu.is_submenu() {
+            format!("‹  {}", menu.title())
+        } else {
+            menu.title().to_string()
+        };
+        draw_text(
+            canvas,
+            &font,
+            &title,
+            (MARGIN + 8.0) * s,
+            (MARGIN + 21.0) * s,
+            0.0,
+            &fill_paint(col(t.text_dim, 1.0)),
+        );
+        for (visible, (i, row)) in menu
+            .rows()
+            .iter()
+            .enumerate()
+            .skip(menu.offset)
+            .take(menu.visible_count)
+            .enumerate()
+        {
+            let y = MARGIN + ROW_HEIGHT * (visible + 1) as f32;
+            let selected = menu.selected == Some(i) && row.enabled;
+            let ink = if selected {
+                ink_on(t, t.surface2)
+            } else {
+                t.text
+            };
+            if selected {
+                canvas.draw_round_rect(
+                    dev(
+                        LRect {
+                            x: MARGIN,
+                            y,
+                            w: WIDTH - 2.0 * MARGIN,
+                            h: ROW_HEIGHT,
+                        },
+                        s,
+                    ),
+                    5.0 * s,
+                    5.0 * s,
+                    &fill_paint(col(t.surface2, 1.0)),
+                );
+            }
+            let alpha = if row.enabled { 1.0 } else { DIMMED };
+            canvas.save();
+            canvas.clip_rect(
+                dev(
+                    LRect {
+                        x: MARGIN + 28.0,
+                        y,
+                        w: WIDTH - 2.0 * MARGIN - 52.0,
+                        h: ROW_HEIGHT,
+                    },
+                    s,
+                ),
+                ClipOp::Intersect,
+                true,
+            );
+            draw_text(
+                canvas,
+                &font,
+                &row.label,
+                (MARGIN + 28.0) * s,
+                (y + 21.0) * s,
+                0.0,
+                &fill_paint(col(ink, alpha)),
+            );
+            canvas.restore();
+            if row.checked {
+                draw_text(
+                    canvas,
+                    &font,
+                    "✓",
+                    (MARGIN + 8.0) * s,
+                    (y + 21.0) * s,
+                    0.0,
+                    &fill_paint(col(t.accent, alpha)),
+                );
+            }
+            if !row.children.is_empty() {
+                draw_text(
+                    canvas,
+                    &font,
+                    "›",
+                    (WIDTH - MARGIN - 16.0) * s,
+                    (y + 21.0) * s,
+                    0.0,
+                    &fill_paint(col(ink, alpha)),
+                );
+            }
+        }
+        if menu.rows().len() > menu.visible_count {
+            let hint = format!(
+                "{}–{} / {}",
+                menu.offset + 1,
+                (menu.offset + menu.visible_count).min(menu.rows().len()),
+                menu.rows().len()
+            );
+            draw_text(
+                canvas,
+                &font,
+                &hint,
+                (MARGIN + 8.0) * s,
+                (menu.height() - 14.0) * s,
+                0.0,
+                &fill_paint(col(t.text_dim, 1.0)),
+            );
+        }
+        chain.present(&mut self.gpu.ctx)
+    }
+
     pub fn render_settings(
         &mut self,
         view: &ViewModel,
