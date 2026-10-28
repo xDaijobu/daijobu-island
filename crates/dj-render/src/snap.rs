@@ -70,6 +70,8 @@ pub struct SnapFrame {
     pub status: ThumbStatus,
     /// Saved already: the save button reads "open" (reveal in Explorer).
     pub saved: bool,
+    /// The latest screen-pin admission failed; copying/saving remains available.
+    pub pin_failed: bool,
 }
 
 impl Painter {
@@ -102,7 +104,7 @@ impl Painter {
     }
 
     /// The snap thumb: the shot (aspect-fit, r 8), `snap · 612×388`, the status, and the
-    /// copy / save buttons.
+    /// Copy, Save/Open and Pin to screen buttons.
     pub(crate) fn snap_thumb(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
         let (s, t) = (f.scale, f.tokens);
         let ox = rect.center_x() - lay::SNAP_W * s / 2.0;
@@ -138,8 +140,12 @@ impl Painter {
         let small = self.fonts.font(&t.font_label, Weight::Medium, 9.5 * s);
         let base = cap.center_y() + 0.35 * 9.5 * s;
         if let Some(info) = f.snap {
-            let label = info.status.label();
-            let ink = if info.status.is_error() {
+            let label = if info.pin_failed {
+                "pin failed"
+            } else {
+                info.status.label()
+            };
+            let ink = if info.pin_failed || info.status.is_error() {
                 t.warn
             } else {
                 t.accent
@@ -182,6 +188,11 @@ impl Painter {
         for (r, label, action) in [
             (lay::SN_COPY, "copy", dj_core::island::SnapAction::Copy),
             (lay::SN_SAVE, save, dj_core::island::SnapAction::Save),
+            (
+                lay::SN_PIN,
+                "Pin to screen",
+                dj_core::island::SnapAction::PinScreen,
+            ),
         ] {
             let br = at(r);
             let on = hover == Some(action);
@@ -195,7 +206,11 @@ impl Painter {
                 RRect::new_rect_xy(br, rad, rad),
                 &fill_paint(col(body, 1.0)),
             );
-            let tracking = 0.6 * s;
+            let tracking = if action == dj_core::island::SnapAction::PinScreen {
+                0.0
+            } else {
+                0.6 * s
+            };
             let tw = text_width(&btn, label, tracking);
             draw_text(
                 canvas,
@@ -238,6 +253,8 @@ pub struct EditScene<'a> {
     pub frames: &'a [MonitorFrame],
     /// `612 × 388` for the selection.
     pub size_text: &'a str,
+    /// Failed preparation/admission: the editor and markup remain available.
+    pub error: Option<&'a str>,
 }
 
 /// The overlay's GPU side: a swap chain the size of the virtual desktop, and the frozen
@@ -530,6 +547,76 @@ fn draw_edit(
     if let Some((p, hsv)) = e.picker() {
         draw_picker(canvas, ctx.fonts, t, &p, hsv, s);
     }
+    if let Some(error) = sc.error {
+        draw_edit_error(canvas, ctx.fonts, t, &bar, sr, mon, error);
+    }
+}
+
+/// Keep feedback on the editor's monitor, on the side of the toolbar away from the
+/// selection (below a toolbar under the selection, above one over it) so it never
+/// covers the pixels being pinned or the finish actions. Only with no room there does it
+/// take the other side. Fit long native errors to one readable, clipped line.
+fn draw_edit_error(
+    canvas: &Canvas,
+    fonts: &mut Fonts,
+    t: &ResolvedTokens,
+    bar: &Toolbar,
+    sel: Rect,
+    mon: Rect,
+    error: &str,
+) -> Rect {
+    let s = bar.scale;
+    let font = fonts.font(&t.font_label, Weight::Medium, 11.0 * s);
+    let pad = 10.0 * s;
+    let h = (28.0 * s).min(mon.height());
+    let text = format!("Pin failed: {}", error.replace(['\r', '\n'], " "));
+    let text = fit(&font, &text, 0.0, (mon.width() - 2.0 * pad).max(0.0));
+    let w = (text_width(&font, &text, 0.0) + 2.0 * pad).min(mon.width());
+    let x = bar.rect.x.min(mon.right - w).max(mon.left);
+    let above = bar.rect.y - h - ed::MARGIN * s;
+    let below = bar.rect.bottom() + ed::MARGIN * s;
+    let fits_above = above >= mon.top;
+    let fits_below = below + h <= mon.bottom;
+    // An inside toolbar sits at the selection's bottom edge, so below it leaves the selection.
+    let prefer_below = match bar.place {
+        Place::Below => true,
+        Place::Above => false,
+        Place::Inside => below >= sel.bottom() - 1.0,
+    };
+    let (away, away_fits, other, other_fits) = if prefer_below {
+        (below, fits_below, above, fits_above)
+    } else {
+        (above, fits_above, below, fits_below)
+    };
+    // The far side, else the near side (over the selection edge), else clamped.
+    let y = if away_fits || !other_fits {
+        away
+    } else {
+        other
+    };
+    let y = y.min(mon.bottom - h).max(mon.top);
+    let area = Rect::from_xywh(x, y, w, h);
+    canvas.save();
+    canvas.clip_rect(area, ClipOp::Intersect, true);
+    canvas.draw_rrect(
+        RRect::new_rect_xy(area, 7.0 * s, 7.0 * s),
+        &fill_paint(col(t.pill, 1.0)),
+    );
+    canvas.draw_rrect(
+        RRect::new_rect_xy(area.with_inset((0.5, 0.5)), 7.0 * s, 7.0 * s),
+        &stroke_paint(col(t.warn, 1.0), 1.0),
+    );
+    draw_text(
+        canvas,
+        &font,
+        &text,
+        x + pad,
+        area.center_y() + 0.35 * 11.0 * s,
+        0.0,
+        &fill_paint(col(t.text, 1.0)),
+    );
+    canvas.restore();
+    area
 }
 
 /// `612 × 388` above the selection's top-left, or inside it when there's no room (or
@@ -658,6 +745,20 @@ fn draw_toolbar(canvas: &Canvas, fonts: &mut Fonts, t: &ResolvedTokens, e: &Edit
                     label,
                     cx - tw / 2.0,
                     cy + 0.36 * 12.0 * s,
+                    0.0,
+                    &fill_paint(ink),
+                );
+            }
+            Item::Pin => {
+                let font = fonts.font(&t.font_label, Weight::Medium, 11.0 * s);
+                let label = "Pin to screen";
+                let tw = text_width(&font, label, 0.0);
+                draw_text(
+                    canvas,
+                    &font,
+                    label,
+                    cx - tw / 2.0,
+                    cy + 0.35 * 11.0 * s,
                     0.0,
                     &fill_paint(ink),
                 );
@@ -963,6 +1064,177 @@ mod tests {
         assert!(p.snap_shot.is_none());
     }
 
+    #[test]
+    fn editor_pin_label_and_error_chip_are_legible_clamped_and_themed_at_each_dpi() {
+        use dj_core::snap_edit::{Display, EditInput, Prefs};
+        let registry = ThemeRegistry::with_builtins();
+        let metrics = TextMetrics::new().unwrap();
+        for theme in ["tobacco-tape", "midnight-cassette", "paper-zine", "clean"] {
+            let t = registry.get(theme).unwrap();
+            for scale in [1.0, 1.5, 2.0] {
+                let mon = IRect::new(-640, -100, 640, 800);
+                let mut e = Editor::new(
+                    mon,
+                    mon,
+                    vec![Display { rect: mon, scale }],
+                    Prefs::default(),
+                    Rgba::from_rgb(t.accent),
+                    (0, 0),
+                );
+                let bar = e.toolbar();
+                let pin = bar.button(Item::Pin).unwrap();
+                let (x, y) = pin.center();
+                e.input(
+                    EditInput::Motion {
+                        x: x as i32,
+                        y: y as i32,
+                    },
+                    &metrics,
+                );
+                let mut fonts = Fonts::new().unwrap();
+                let mut surface = surfaces::raster_n32_premul((640, 800)).unwrap();
+                let canvas = surface.canvas();
+                canvas.clear(Color::TRANSPARENT);
+                canvas.translate((640.0, 100.0));
+                draw_toolbar(canvas, &mut fonts, t, &e, &bar);
+                let sel = frect(e.selection());
+                let error = draw_edit_error(canvas, &mut fonts, t, &bar, sel, frect(mon), "Admission failed\ncapacity exhausted: a long native error with enough detail to exceed the monitor width and require fitting into the error chip without covering the finish actions");
+                assert!(error.left >= -640.0 && error.right <= 0.0);
+                assert!(error.top >= -100.0 && error.bottom <= 700.0);
+                assert!(error.bottom <= bar.rect.y || error.top >= bar.rect.bottom());
+                assert!(!e.is_typing());
+                // Read the entire CPU surface once, then count actual glyph pixels.
+                let info = ImageInfo::new((640, 800), ColorType::BGRA8888, AlphaType::Premul, None);
+                let mut pixels = vec![0u8; 640 * 800 * 4];
+                assert!(surface.read_pixels(&info, &mut pixels, 640 * 4, (0, 0)));
+                let count_ink = |r: FRect| {
+                    let mut count = 0;
+                    for y in (r.y + 100.0 + 4.0 * scale) as usize
+                        ..(r.bottom() + 100.0 - 4.0 * scale) as usize
+                    {
+                        for x in (r.x + 640.0 + 4.0 * scale) as usize
+                            ..(r.right() + 640.0 - 4.0 * scale) as usize
+                        {
+                            let at = (y * 640 + x) * 4;
+                            if pixels[at..at + 3] == bgra(col(t.text, 1.0))[..3] {
+                                count += 1;
+                            }
+                        }
+                    }
+                    count
+                };
+                assert!(count_ink(pin) > 10, "{theme} {scale}: Pin label glyphs");
+                assert!(
+                    count_ink(FRect::new(
+                        error.left,
+                        error.top,
+                        error.width(),
+                        error.height()
+                    )) > 10,
+                    "{theme} {scale}: error glyphs"
+                );
+                assert_eq!(
+                    &pixels[0..4],
+                    &[0, 0, 0, 0],
+                    "drawing is clipped to its chrome"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn editor_error_chip_sits_on_the_far_side_of_the_toolbar_and_never_over_the_selection() {
+        use dj_core::snap_edit::{Display, Prefs};
+        let registry = ThemeRegistry::with_builtins();
+        // The monitor is (-640, -100) .. (0, 700); `Below` has room under the selection,
+        // `Above` has none, `Inside` has the selection fill the monitor.
+        let cases = [
+            (IRect::new(-500, 0, 300, 150), Place::Below),
+            (IRect::new(-500, 480, 300, 200), Place::Above),
+            (IRect::new(-640, -100, 640, 800), Place::Inside),
+        ];
+        for theme in ["tobacco-tape", "midnight-cassette", "paper-zine", "clean"] {
+            let t = registry.get(theme).unwrap();
+            for scale in [1.0, 1.5, 2.0] {
+                for (selection, place) in cases {
+                    let mon = IRect::new(-640, -100, 640, 800);
+                    let e = Editor::new(
+                        selection,
+                        mon,
+                        vec![Display { rect: mon, scale }],
+                        Prefs::default(),
+                        Rgba::from_rgb(t.accent),
+                        (0, 0),
+                    );
+                    let bar = e.toolbar();
+                    let label = format!("{theme} {scale} {place:?}");
+                    assert_eq!(bar.place, place, "{label}");
+                    let sel = frect(selection);
+                    let mut fonts = Fonts::new().unwrap();
+                    let mut surface = surfaces::raster_n32_premul((640, 800)).unwrap();
+                    let canvas = surface.canvas();
+                    canvas.clear(Color::TRANSPARENT);
+                    canvas.translate((640.0, 100.0));
+                    let chip = draw_edit_error(
+                        canvas,
+                        &mut fonts,
+                        t,
+                        &bar,
+                        sel,
+                        frect(mon),
+                        "capacity exhausted",
+                    );
+                    assert!(
+                        chip.left >= -640.0 && chip.right <= 0.0,
+                        "{label}: on monitor"
+                    );
+                    assert!(
+                        chip.top >= -100.0 && chip.bottom <= 700.0,
+                        "{label}: on monitor"
+                    );
+                    let over_bar = chip.top < bar.rect.bottom() && chip.bottom > bar.rect.y;
+                    assert!(!over_bar, "{label}: chip covers the toolbar");
+                    let over_sel = chip.left < sel.right
+                        && chip.right > sel.left
+                        && chip.top < sel.bottom
+                        && chip.bottom > sel.top;
+                    match place {
+                        Place::Below => {
+                            assert!(chip.top >= bar.rect.bottom(), "{label}: below the toolbar");
+                        }
+                        Place::Above => {
+                            assert!(chip.bottom <= bar.rect.y, "{label}: above the toolbar");
+                        }
+                        // The selection fills the monitor, so there is no outside to use.
+                        Place::Inside => {}
+                    }
+                    if place != Place::Inside {
+                        assert!(!over_sel, "{label}: chip covers the selection");
+                    }
+                    let info =
+                        ImageInfo::new((640, 800), ColorType::BGRA8888, AlphaType::Premul, None);
+                    let mut pixels = vec![0u8; 640 * 800 * 4];
+                    assert!(surface.read_pixels(&info, &mut pixels, 640 * 4, (0, 0)));
+                    let ink = bgra(col(t.text, 1.0));
+                    let mut count = 0;
+                    for y in (chip.top + 100.0 + 4.0 * scale) as usize
+                        ..(chip.bottom + 100.0 - 4.0 * scale) as usize
+                    {
+                        for x in (chip.left + 640.0 + 4.0 * scale) as usize
+                            ..(chip.right + 640.0 - 4.0 * scale) as usize
+                        {
+                            let at = (y * 640 + x) * 4;
+                            if pixels[at..at + 3] == ink[..3] {
+                                count += 1;
+                            }
+                        }
+                    }
+                    assert!(count > 10, "{label}: error glyphs readable ({count})");
+                }
+            }
+        }
+    }
+
     /// Draws the overlay onto a CPU surface (no GPU, no screen): the frame shows
     /// through inside the selection and is dimmed by about 55% outside it.
     #[test]
@@ -1075,6 +1347,7 @@ mod tests {
                 editor: &e,
                 frames: &frames,
                 size_text: "300 × 200",
+                error: None,
             }),
         };
         let mut surface = surfaces::raster_n32_premul((800, 500)).unwrap();

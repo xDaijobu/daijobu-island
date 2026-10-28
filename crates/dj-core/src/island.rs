@@ -204,6 +204,8 @@ pub enum SnapAction {
     Copy,
     /// Write it to the save folder.
     Save,
+    /// Open an independent reference without copying or saving.
+    PinScreen,
     /// Anywhere else on the thumb: it goes.
     Dismiss,
 }
@@ -840,6 +842,8 @@ impl Island {
             Some(SnapAction::Copy)
         } else if layout::SN_SAVE.contains(x, y) {
             Some(SnapAction::Save)
+        } else if layout::SN_PIN.contains(x, y) {
+            Some(SnapAction::PinScreen)
         } else {
             None
         }
@@ -1977,6 +1981,8 @@ mod tests {
         assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Copy));
         let (x, y) = view_at(w, layout::SN_SAVE);
         assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Save));
+        let (x, y) = view_at(w, layout::SN_PIN);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::PinScreen));
         assert_eq!(i.state(), IslandState::SnapThumb);
         // The shot itself is not a button.
         let (x, y) = view_at(w, layout::SN_SHOT);

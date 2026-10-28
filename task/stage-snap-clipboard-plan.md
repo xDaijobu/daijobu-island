@@ -1,9 +1,10 @@
 # Snap + Clipboard: implementation and subagent plan
 
-Date: 2026-10-28. Status: **implementation authorized; Stage 7c-2 implemented and checked**.
+Date: 2026-10-28. Status: **Stage 7c-2 merged (#29); Stage 7d verified and ready for PR**.
 The user clarified the workflow: implement, review and test before any commit/merge.
 Stage 7c-2 ownership/signatures: [dispatch](stage-7c2-dispatch.md);
 results and unperformed desktop cases: [report](stage-7c2-report.md).
+Stage 7d verification and remaining desktop cases: [report](stage-7d-report.md).
 
 The user chose Snap and Clipboard as the next work and explicitly removed OCR.
 This document prepares the work for a later multi-agent implementation. Music remains
@@ -112,7 +113,7 @@ R1 and R2 -> fixes -> validation/report/PR.
 D4 uses the frozen model and fake transport until D1/D2 are ready; it does not call
 DoDragDrop from inside its window procedure or a borrowed App method.
 
-### Stage 7d: four implementation workers, then two reviewers
+### Stage 7d: six implementation workers, then two reviewers
 
 | ID | Owned paths | Deliverable and focused verification |
 |---|---|---|
@@ -120,8 +121,10 @@ DoDragDrop from inside its window procedure or a borrowed App method.
 | P2: native windows | crates/dj-win/src/snap_pins.rs | Per-window routing and resources, no-activate creation, move/capture loss, hide/restore for Snap |
 | P3: pin drawing | crates/dj-render/src/snap_pins.rs | Image fit, theme chrome, hover/buttons/errors; synthetic rendering at 100/150/200% |
 | P4: pin controller | app/src/snap_pins.rs | Shared image lifetime, copy/save jobs, errors, capacity, renderer/window teardown; fake-platform tests |
+| P5: editor entry | app/src/snap.rs; crates/dj-core/src/snap_edit/; crates/dj-render/src/snap.rs | Non-consuming pin preparation, editor finish/error UI and latest-shot rendering |
+| P6: stack entry | app/src/previews.rs; crates/dj-core/src/snap_stack.rs; crates/dj-win/src/previews.rs; crates/dj-render/src/previews.rs | Clear Keep in stack versus Pin to screen overflow, exact-ID requests and feedback |
 
-Dependency graph: scaffold -> P1/P2/P3/P4 -> coordinator stack/editor entry points
+Dependency graph: scaffold -> P1/P2/P3/P4/P5/P6 -> coordinator app/capture entry points
 and capture integration -> R1 and R2 -> fixes -> validation/report/PR.
 P4 targets fake window/render services until P2/P3 land.
 

@@ -179,7 +179,7 @@ pub const AL_CONTINUE: Rect = Rect::new(212.0, 20.0, 88.0, 32.0);
 pub const AL_STOP: Rect = Rect::new(308.0, 20.0, 32.0, 32.0);
 
 /// Snap thumb (plan.html: 330 x 72, radius 26): the shot, its size, the copy status and
-/// the copy / save buttons.
+/// the copy / save / pin-to-screen buttons.
 pub const SNAP_W: f32 = 330.0;
 pub const SNAP_H: f32 = 72.0;
 pub const SNAP_R: f32 = 26.0;
@@ -189,6 +189,7 @@ pub const SN_SHOT: Rect = Rect::new(10.0, 12.0, 76.0, 48.0);
 pub const SN_CAPTION: Rect = Rect::new(98.0, 14.0, 218.0, 16.0);
 pub const SN_COPY: Rect = Rect::new(98.0, 38.0, 56.0, 22.0);
 pub const SN_SAVE: Rect = Rect::new(160.0, 38.0, 56.0, 22.0);
+pub const SN_PIN: Rect = Rect::new(222.0, 38.0, 94.0, 22.0);
 
 /// The small timer on Music compact while a timer runs: mono mm:ss before the VU. The
 /// title gives up this much room.
@@ -700,7 +701,7 @@ mod tests {
     fn snap_thumb_fits_the_window_and_its_parts_do_not_overlap() {
         let (w, h) = window_size();
         assert!(SNAP_W <= w && TOP_MARGIN + SNAP_H <= h);
-        let parts = [SN_SHOT, SN_CAPTION, SN_COPY, SN_SAVE];
+        let parts = [SN_SHOT, SN_CAPTION, SN_COPY, SN_SAVE, SN_PIN];
         for (i, a) in parts.iter().enumerate() {
             assert!(inside(a, SNAP_W, SNAP_H), "{a:?}");
             for b in &parts[i + 1..] {

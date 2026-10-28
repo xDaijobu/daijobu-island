@@ -11,6 +11,7 @@ use crate::snap::{
     HOTKEY_SNAP_ALT, HOTKEY_SNAP_ESC, START_DELAY_MS, TIMER_SNAP_START, TIMER_SNAP_THUMB,
     VK_ESCAPE,
 };
+use crate::snap_pins::Pins;
 use crate::storage;
 use crate::sweep::{Job, Msg, ScanId, Sweeper};
 use crate::terminal::{
@@ -33,6 +34,7 @@ use dj_core::settings::{self, SettingsAction, SettingsView};
 use dj_core::settings_ui::{self as sui, SettingsDoc, Taken};
 use dj_core::snap::{loupe_label, pixel_at, size_label, IRect, Loupe, Stamp};
 use dj_core::snap_edit::{CursorKind, EditInput, Key, KeyCode, Outcome, Rgba, TextMeasure};
+use dj_core::snap_pin::PinId;
 use dj_core::snap_stack::Stack;
 use dj_core::spotlight::{self as spot, Action as SpotAction, EntryKind, MenuAction, Spotlight};
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
@@ -103,6 +105,8 @@ struct Overlay {
     hwnd: HWND,
     /// The window visible/focused when the screen was frozen, before overlay activation.
     previous_foreground: isize,
+    /// A screen pin the user had deliberately focused; capture hid it.
+    focused_pin: Option<PinId>,
     shown: bool,
     /// Dropped before the window is destroyed.
     renderer: Option<SnapOverlay>,
@@ -110,6 +114,8 @@ struct Overlay {
     origin: (i32, i32),
     /// Input changed what it shows: draw one frame.
     dirty: bool,
+    /// A failed pin leaves the editor and markup intact, with visible feedback.
+    pin_error: Option<String>,
 }
 
 pub struct App {
@@ -180,6 +186,9 @@ pub struct App {
     snap_taken: (bool, bool),
     /// The Snap preview stack below the island.
     previews: Previews,
+    /// Independent screenshot references; their lifetime is separate from the stack.
+    pins: Pins,
+    snap_pin_failed: bool,
     /// The island window's desktop position (device px).
     win_pos: (i32, i32),
     /// Tile: window zones, the zone overlay while a move shows one, and the timers.
@@ -330,6 +339,7 @@ impl App {
             Box::new(TextClipboard { owner: raw }),
             pinned,
         );
+        let pins = Pins::new(hwnd, &tokens, config.snap.save_dir(&profile));
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -383,6 +393,8 @@ impl App {
             snap_taken: (false, false),
             reserved: None,
             previews,
+            pins,
+            snap_pin_failed: false,
             win_pos: (0, 0),
             tiler,
             tile_overlay: None,
@@ -1393,6 +1405,8 @@ impl App {
             new.start_with_windows = old.start_with_windows;
         }
         self.config = new;
+        let save_dir = self.save_target().0;
+        self.pins.set_save_dir(save_dir);
         if persist {
             storage::save_config(&self.config);
         }
@@ -1492,9 +1506,18 @@ impl App {
             return;
         }
         let previous_foreground = window::foreground();
+        // Hiding a pin that holds the keyboard hands the foreground to another window.
+        let focused_pin = self.pins.keyboard_owner();
         // The preview stack must not be in the shot: hidden, and gone from the composed
         // desktop, before the freeze. A window picker stops.
+        self.pins.begin_capture();
+        // Sample immediately after hiding pins, before slow preparation can let a
+        // user switch become the baseline for failure recovery.
+        let hidden_foreground = window::foreground();
         self.previews.hide_for_capture(Instant::now());
+        // Pins can be visible even when no preview cards are shown. Always flush
+        // composition after both owners hide, before acquiring the frozen desktop.
+        dj_win::previews::flush_composition();
         if self.assist_win.is_some() {
             // Gone from the composed desktop too, or the freeze could still show it.
             self.tiler.assist_dismiss();
@@ -1504,7 +1527,7 @@ impl App {
         let (vx, vy, vw, vh) = overlay::virtual_screen();
         if vw <= 0 || vh <= 0 {
             storage::log("snap: no virtual screen");
-            self.previews.set_allowed(self.visible, Instant::now());
+            self.abandon_snap(focused_pin, hidden_foreground);
             return;
         }
         let desktop = IRect::new(vx, vy, vw, vh);
@@ -1531,7 +1554,7 @@ impl App {
                 Ok(session) => &session.frames,
                 Err(e) => {
                     storage::log(&format!("snap: cannot capture the screen: {e}"));
-                    self.previews.set_allowed(self.visible, Instant::now());
+                    self.abandon_snap(focused_pin, hidden_foreground);
                     return;
                 }
             };
@@ -1540,7 +1563,7 @@ impl App {
             Err(e) => {
                 storage::log(&format!("snap: cannot create the overlay: {e}"));
                 self.snapper.end(End::Cancel, Instant::now());
-                self.previews.set_allowed(self.visible, Instant::now());
+                self.abandon_snap(focused_pin, hidden_foreground);
                 return;
             }
         };
@@ -1551,17 +1574,19 @@ impl App {
                     storage::log(&format!("snap: overlay renderer: {e}"));
                     overlay::destroy(hwnd);
                     self.snapper.end(End::Cancel, Instant::now());
-                    self.previews.set_allowed(self.visible, Instant::now());
+                    self.abandon_snap(focused_pin, hidden_foreground);
                     return;
                 }
             };
         self.overlay = Some(Overlay {
             hwnd,
             previous_foreground,
+            focused_pin,
             shown: false,
             renderer: Some(renderer),
             origin: (vx, vy),
             dirty: true,
+            pin_error: None,
         });
         // The island is topmost too and re-asserts it on every foreground change, so it
         // hides while the overlay is up (`visible` is the user's choice and stays).
@@ -1577,6 +1602,18 @@ impl App {
         if let Some(ov) = self.overlay.as_mut() {
             overlay::show(ov.hwnd);
             ov.shown = true;
+        }
+    }
+
+    /// Undoes [`App::begin_snap`]'s hiding when it fails before the overlay exists. A pin
+    /// that held the keyboard gets it back, unless the user moved on meanwhile.
+    fn abandon_snap(&mut self, focused_pin: Option<PinId>, hidden_foreground: isize) {
+        self.pins.end_capture();
+        self.previews.set_allowed(self.visible, Instant::now());
+        if let Some(id) = focused_pin {
+            if !window::quitting() && window::foreground() == hidden_foreground {
+                self.pins.refocus(id);
+            }
         }
     }
 
@@ -1694,6 +1731,14 @@ impl App {
             SnapInput::Wheel(n) => EditInput::Wheel(n),
             SnapInput::RightPress | SnapInput::Close => return,
         };
+        // A pin failure stays readable until the user acts again; mere motion keeps it.
+        if !matches!(ev, EditInput::Motion { .. }) {
+            if let Some(ov) = self.overlay.as_mut() {
+                if ov.pin_error.take().is_some() {
+                    ov.dirty = true;
+                }
+            }
+        }
         match self.snapper.edit(ev) {
             Outcome::Nothing => {}
             Outcome::Redraw => {
@@ -1708,6 +1753,23 @@ impl App {
             Outcome::Save => {
                 let (dir, stamp) = self.save_target();
                 self.end_snap(End::Save { dir, stamp });
+                return;
+            }
+            Outcome::Pin => {
+                let anchor = self.stack_anchor();
+                let result = self
+                    .snapper
+                    .pin_payload()
+                    .and_then(|payload| self.pins.open(payload, None, anchor));
+                match result {
+                    Ok(_) => self.end_snap(End::Cancel),
+                    Err(error) => {
+                        if let Some(ov) = self.overlay.as_mut() {
+                            ov.pin_error = Some(error);
+                            ov.dirty = true;
+                        }
+                    }
+                }
                 return;
             }
             Outcome::Cancel => {
@@ -1773,8 +1835,17 @@ impl App {
         }
         // Return focus before encoding/copying can take time, without pulling it back
         // after the user has deliberately left the overlay for another window.
-        if restore_focus {
-            window::give_back_keyboard(ov.previous_foreground);
+        // A deliberately focused reference may have been the previous foreground:
+        // restore its visibility before returning keyboard focus to it. A pin closed
+        // or hidden meanwhile does not take the keyboard back.
+        self.pins.end_capture();
+        if restore_focus && !window::quitting() {
+            match ov.focused_pin {
+                Some(id) => {
+                    self.pins.refocus(id);
+                }
+                None => window::give_back_keyboard(ov.previous_foreground),
+            }
         }
         self.last_frame = None;
         self.dirty = true;
@@ -1788,6 +1859,7 @@ impl App {
         }
         let now = Instant::now();
         if ended.taken {
+            self.snap_pin_failed = false;
             self.show_thumb();
             // The same shot (shared, not copied) becomes the stack's newest card.
             let card = self.snapper.payload().zip(
@@ -1835,12 +1907,14 @@ impl App {
                 height: shot.bitmap.height,
                 status: shot.status,
                 saved: shot.saved.is_some(),
+                pin_failed: self.snap_pin_failed,
             });
         }
     }
 
     /// Copy, save or dismiss from the thumb.
     fn snap_action(&mut self, action: SnapAction) {
+        self.snap_pin_failed = false;
         match action {
             SnapAction::Copy => {
                 if let Err(e) = self.snapper.copy() {
@@ -1863,9 +1937,20 @@ impl App {
                     Ok(path) => {
                         if let Some(bitmap) = self.snapper.shot().map(|s| s.bitmap.clone()) {
                             self.previews.mark_saved(&bitmap, &path);
+                            self.pins.mark_saved(&bitmap, &path);
                         }
                     }
                     Err(e) => storage::log(&format!("snap: save failed: {e}")),
+                }
+            }
+            SnapAction::PinScreen => {
+                if let Some(payload) = self.snapper.payload() {
+                    let saved = self.snapper.shot().and_then(|s| s.saved.clone());
+                    let anchor = self.stack_anchor();
+                    if let Err(error) = self.pins.open(payload, saved, anchor) {
+                        self.snap_pin_failed = true;
+                        storage::log(&format!("snap pin: {error}"));
+                    }
                 }
             }
             // The island has gone to its rest state already.
@@ -1873,6 +1958,17 @@ impl App {
         }
         self.update_snap_frame();
         self.dirty = true;
+    }
+
+    fn drain_pin_requests(&mut self) {
+        let anchor = self.stack_anchor();
+        for request in self.previews.take_pin_requests() {
+            let result = self
+                .pins
+                .open(request.payload, request.saved, anchor)
+                .map(|_| ());
+            self.previews.pin_result(request.id, result, Instant::now());
+        }
     }
 
     /// Pauses the thumb's countdown while hovered and keeps its one-shot timer in step.
@@ -1934,6 +2030,7 @@ impl App {
                 editor: e,
                 frames: &session.frames,
                 size_text: size.as_deref().unwrap_or_default(),
+                error: ov.pin_error.as_deref(),
             }),
         };
         let failed = match ov.renderer.as_mut().map(|r| r.render(&scene)) {
@@ -2043,6 +2140,7 @@ impl App {
         self.sync_appbar(true);
         let now = Instant::now();
         self.previews.relayout(self.stack_anchor(), now);
+        self.pins.display_changed();
         // A new scale changes the cell size, and so the shell's grid.
         let cell = self.term_cell();
         self.terminal.measure(cell, self.scale);
@@ -2768,6 +2866,7 @@ impl App {
             self.close_terminal(true);
         }
         self.visible = visible;
+        self.pins.set_allowed(visible);
         // The island stays hidden while the Snap overlay is up; it comes back after.
         window::set_visible(self.hwnd, visible && self.overlay.is_none());
         if !visible && self.snap_pending && !self.snap_start_armed {
@@ -2985,6 +3084,7 @@ impl App {
     }
 
     fn show_tray_menu(&mut self) {
+        let previous = dj_win::snap_pins::focus_target();
         let themes: Vec<(String, bool)> = self
             .registry
             .ids()
@@ -3004,6 +3104,7 @@ impl App {
                 signed_in: self.session.signed_in,
             },
             previews: self.previews.can_focus(),
+            pins: self.pins.can_focus(),
         };
         match tray::show_menu(self.hwnd, &spec) {
             Some(MenuCommand::ToggleVisible) => self.set_visible(!self.visible),
@@ -3023,6 +3124,12 @@ impl App {
             Some(MenuCommand::MusicSignOut) => self.sign_out(),
             Some(MenuCommand::MusicStop) => self.stop_engine(),
             Some(MenuCommand::SnapPreviews) => self.previews.focus_keyboard(Instant::now()),
+            Some(MenuCommand::SnapPins) => {
+                if !self.visible {
+                    self.set_visible(true);
+                }
+                self.pins.show_keyboard(previous);
+            }
             Some(MenuCommand::Settings) => self.open_settings_window(),
             Some(MenuCommand::Quit) => self.quit(),
             None => {}
@@ -3035,11 +3142,13 @@ impl App {
         }
         // Latch termination before cleanup can pump another native callback.
         window::quit();
+        self.pins.set_allowed(false);
         // Give the strip back first, or the work area stays short after we're gone.
         appbar::release(self.hwnd);
         self.reserved = None;
         self.end_snap(End::Cancel);
         self.previews.shutdown();
+        self.pins.shutdown();
         dj_win::tile::uninstall_move_hook();
         self.destroy_tile_overlay();
         self.tiler.assist_dismiss();
@@ -3293,6 +3402,7 @@ impl Handler for App {
             Event::Hotkey(_) => {}
             Event::Snap(input) => self.snap_input(input),
             Event::Previews(input) => self.previews.input(input, Instant::now()),
+            Event::SnapPin { id, input } => self.pins.input(id, input),
             Event::Assist(input) => self.assist_input(input),
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
@@ -3382,10 +3492,16 @@ impl Handler for App {
                 self.drain_art();
                 self.drain_spotlight();
                 // A card saved the thumb's shot: the thumb reads "open" too.
-                let saved = self.previews.drain(Instant::now());
+                let mut saved = self.previews.drain(Instant::now());
+                let pin_saved = self.pins.drain();
+                for (bitmap, path) in &pin_saved {
+                    self.previews.mark_saved(bitmap, path);
+                }
+                saved.extend(pin_saved);
                 if !saved.is_empty() {
                     for (bitmap, path) in &saved {
                         self.snapper.mark_saved(bitmap, path);
+                        self.pins.mark_saved(bitmap, path);
                     }
                     self.update_snap_frame();
                     self.dirty = true;
@@ -3485,6 +3601,7 @@ impl Handler for App {
         self.sync_sweep();
         self.sync_timer();
         self.sync_snap();
+        self.drain_pin_requests();
         self.sync_tile();
         self.sync_terminal();
         self.sync_layer(false);
@@ -3500,7 +3617,7 @@ impl Handler for App {
         if let Some(ov) = &self.overlay {
             return ov.dirty;
         }
-        self.island_due() || self.previews.wants_frame()
+        self.island_due() || self.previews.wants_frame() || self.pins.wants_frame()
     }
 
     fn frame(&mut self) {
@@ -3537,9 +3654,11 @@ impl Handler for App {
         // it has something new (a ring tick or a spring can come without the island).
         if theming {
             self.previews.set_tokens(self.anim.current());
+            self.pins.set_tokens(self.anim.current());
         }
         self.previews.set_anchor(self.stack_anchor(), now);
         self.previews.frame(dt, now);
+        self.pins.frame();
         if !island_due {
             if !self.wants_frame() {
                 self.last_frame = None;

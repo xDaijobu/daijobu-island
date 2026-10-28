@@ -6,6 +6,7 @@
 //! Flow: `begin` freezes and starts selecting; `start_editing` (the release) hands the
 //! selection to the annotation editor; `edit` feeds it input; `end` closes the session:
 //! cancelled, or rendered with its markup and copied (and saved).
+//! Screen pins use `pin_payload` first, then cancel cleanup only after admission.
 //!
 //! Memory: the frozen frames live only while the overlay is up (`Session`). After that
 //! only the annotated image and its PNG are kept (`Shot`), until the thumb goes. Both
@@ -275,6 +276,32 @@ impl Snapper {
             Some(e) => e.input(ev, measure),
             None => Outcome::Nothing,
         }
+    }
+
+    /// Prepare an annotated screen pin without ending the session, replacing the
+    /// last shot, encoding, copying or saving. The Pin action commits active text
+    /// before this call; admission/window failures can leave the editor open.
+    pub fn pin_payload(&self) -> Result<Payload, String> {
+        self.pin_payload_with(dj_render::render_output)
+    }
+
+    fn pin_payload_with(
+        &self,
+        render: impl FnOnce(
+            &[MonitorFrame],
+            IRect,
+            &[dj_core::snap_edit::Shape],
+        ) -> Result<Bitmap, String>,
+    ) -> Result<Payload, String> {
+        let session = self.session.as_ref().ok_or("no capture session")?;
+        let editor = session.editor.as_ref().ok_or("no annotation editor")?;
+        let bitmap = render(&session.frames, editor.selection(), editor.shapes())
+            // Never fall back to a bare crop: that could expose pixelated content.
+            .map_err(|e| format!("cannot draw the markup: {e}"))?;
+        Ok(Payload {
+            bitmap: Arc::new(bitmap),
+            png: None,
+        })
     }
 
     /// Ends the session (the frozen frames go). A copy or save renders the selection
@@ -838,6 +865,145 @@ mod tests {
         assert_eq!(saved.pixels, shot.bitmap.pixels, "the annotated image");
         assert_eq!(puts.borrow().len(), 1, "and copied");
         assert_eq!(fs::read(&path).unwrap(), puts.borrow()[0].0);
+    }
+
+    #[test]
+    fn pin_preparation_preserves_markup_session_last_shot_clipboard_and_saved_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, puts) = annotated();
+        let now = Instant::now();
+        s.end(
+            End::Save {
+                dir: dir.path().into(),
+                stamp: STAMP,
+            },
+            now,
+        );
+        let old = s.payload().unwrap();
+        let saved = s.shot().unwrap().saved.clone().unwrap();
+        let bytes = fs::read(&saved).unwrap();
+        let countdown = s.thumb_ms(now);
+        let clipboard = puts.borrow().clone();
+
+        begin(&mut s, BIG_DESK);
+        drag(&mut s, (100, 100), (400, 300));
+        assert!(s.start_editing());
+        s.edit(key(0x52, false));
+        s.edit(EditInput::Press { x: 150, y: 150 });
+        s.edit(EditInput::Release { x: 250, y: 250 });
+        s.edit(key(0x54, false));
+        s.edit(EditInput::Press { x: 300, y: 200 });
+        s.edit(EditInput::Release { x: 300, y: 200 });
+        s.edit(EditInput::Char('A'));
+        let button = s
+            .session()
+            .unwrap()
+            .editor
+            .as_ref()
+            .unwrap()
+            .toolbar()
+            .button(dj_core::snap_edit::Item::Pin)
+            .unwrap();
+        let (x, y) = button.center();
+        assert_eq!(
+            s.edit(EditInput::Press {
+                x: x as i32,
+                y: y as i32
+            }),
+            Outcome::Pin
+        );
+        s.edit(EditInput::Release {
+            x: x as i32,
+            y: y as i32,
+        });
+        let editor = s.session().unwrap().editor.as_ref().unwrap();
+        assert!(!editor.is_typing(), "Pin commits active text");
+        let shapes = editor.shapes().to_vec();
+        assert_eq!(shapes.len(), 2);
+        let selection = editor.selection();
+        let prefs = editor.prefs();
+        let payload = s.pin_payload().unwrap();
+        assert!(payload.png.is_none(), "pinning does not encode or save");
+        assert_eq!((payload.bitmap.width, payload.bitmap.height), (300, 200));
+        let red = SWATCHES[0];
+        assert_eq!(px(&payload.bitmap, 50, 100), [red.b, red.g, red.r, 255]);
+        assert_ne!(
+            *payload.bitmap,
+            crop(&s.session().unwrap().frames, selection)
+        );
+        let retry = s.pin_payload().unwrap();
+        assert_eq!(
+            *retry.bitmap, *payload.bitmap,
+            "admission may fail and retry"
+        );
+        assert!(s
+            .pin_payload_with(|_, _, _| Err("synthetic draw failure".into()))
+            .unwrap_err()
+            .contains("synthetic draw failure"));
+        let editor = s.session().unwrap().editor.as_ref().unwrap();
+        assert_eq!(editor.shapes(), shapes);
+        assert_eq!(editor.selection(), selection);
+        assert_eq!(editor.prefs(), prefs);
+        assert!(editor.can_undo(), "session history remains usable");
+        assert!(Arc::ptr_eq(&old.bitmap, &s.payload().unwrap().bitmap));
+        assert!(Arc::ptr_eq(
+            old.png.as_ref().unwrap(),
+            s.payload().unwrap().png.as_ref().unwrap()
+        ));
+        assert_eq!(s.shot().unwrap().saved.as_ref(), Some(&saved));
+        assert_eq!(s.shot().unwrap().status, ThumbStatus::Saved);
+        assert_eq!(s.thumb_ms(now), countdown);
+        assert_eq!(*puts.borrow(), clipboard);
+        assert_eq!(fs::read(&saved).unwrap(), bytes);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        // Coordinator closes only after admission succeeds, preserving changed prefs.
+        let ended = s.end(End::Cancel, now);
+        assert!(!ended.taken && ended.errors.is_empty());
+        assert_eq!(ended.prefs, Some(prefs));
+        assert!(s.session().is_none());
+        assert_eq!(*puts.borrow(), clipboard);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn pin_preparation_without_an_editor_returns_an_error_without_consuming_selection() {
+        let (mut s, puts, _) = snapper(vec![]);
+        assert!(s.pin_payload().is_err());
+        begin(&mut s, DESK);
+        drag(&mut s, (-2, 3), (2, 5));
+        assert!(s.pin_payload().is_err());
+        assert!(s.session().is_some());
+        assert!(s.shot().is_none());
+        assert!(puts.borrow().is_empty());
+        assert!(s.start_editing());
+        let payload = s.pin_payload().unwrap();
+        assert_eq!(*payload.bitmap, crop(&frames(), IRect::new(-2, 3, 4, 2)));
+        assert!(payload.png.is_none());
+        assert!(s.session().is_some());
+    }
+
+    #[test]
+    fn pin_payload_keeps_pixelated_pixels_and_committed_text() {
+        let (mut s, puts) = annotated();
+        s.edit(key(0x58, false)); // X: pixelate, in an area without the red rect.
+        s.edit(EditInput::Press { x: 270, y: 150 });
+        s.edit(EditInput::Release { x: 294, y: 174 });
+        s.edit(key(0x54, false));
+        s.edit(EditInput::Press { x: 300, y: 200 });
+        s.edit(EditInput::Release { x: 300, y: 200 });
+        s.edit(EditInput::Char('A'));
+        s.edit(key(0x1B, false)); // commit text, keeping the editor open
+        let payload = s.pin_payload().unwrap();
+        // Adjacent source gradient pixels become a flat pixelation block.
+        assert_eq!(px(&payload.bitmap, 171, 51), px(&payload.bitmap, 172, 51));
+        assert_ne!(px(&payload.bitmap, 171, 51), [1, 15, 151, 255]);
+        let plain = crop(&s.session().unwrap().frames, IRect::new(100, 100, 300, 200));
+        let text_changed =
+            (100..125).any(|y| (200..225).any(|x| px(&payload.bitmap, x, y) != px(&plain, x, y)));
+        assert!(text_changed, "committed text is part of the pin pixels");
+        assert!(s.session().is_some());
+        assert!(s.shot().is_none());
+        assert!(puts.borrow().is_empty());
     }
 
     #[test]

@@ -4,7 +4,8 @@
 //! Unlike the Snap overlay ([`crate::overlay`]) it must never take activation on its own:
 //! it appears while the user works in another app, so it is `WS_EX_NOACTIVATE`, has no
 //! taskbar or Alt-Tab entry and answers `WM_MOUSEACTIVATE` with `MA_NOACTIVATE`. Keyboard
-//! access is deliberate: only [`focus`] (called from the tray command) takes the foreground.
+//! access is deliberate: [`focus`] (called from the tray command), or an explicitly
+//! opened More menu, takes the foreground. The menu restores the previous foreground.
 //!
 //! Like the other windows, the window procedure never calls into the app. Its messages
 //! become [`Event::Previews`] on the shared queue and the app handles them outside any
@@ -18,7 +19,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW,
-    MonitorFromPoint, SetWindowRgn, HGDIOBJ, HRGN, MONITORINFO, MONITOR_DEFAULTTONEAREST, RGN_OR,
+    MonitorFromPoint, ScreenToClient, SetWindowRgn, HGDIOBJ, HRGN, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, RGN_OR,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
@@ -58,6 +60,84 @@ pub enum PreviewInput {
     /// The keyboard focus or the activation went away (`WM_KILLFOCUS`, or `WM_ACTIVATE`
     /// with `WA_INACTIVE`). One deactivation can send both, so handle it idempotently.
     FocusLost,
+}
+
+/// Overflow choices are separate from the compact row and have distinct meanings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoreAction {
+    KeepInStack,
+    PinToScreen,
+}
+
+fn more_items(kept: bool) -> [(MoreAction, &'static str); 2] {
+    [
+        (
+            MoreAction::KeepInStack,
+            if kept {
+                "Release from stack"
+            } else {
+                "Keep in stack"
+            },
+        ),
+        (MoreAction::PinToScreen, "Pin to screen"),
+    ]
+}
+
+fn more_command(id: usize) -> Option<MoreAction> {
+    match id {
+        1 => Some(MoreAction::KeepInStack),
+        2 => Some(MoreAction::PinToScreen),
+        _ => None,
+    }
+}
+
+/// The caller must clear its gesture before entering this modal menu. Native
+/// callbacks only enqueue events; the returned choice is handled by the caller.
+pub fn show_more_menu(hwnd: HWND, point: (i32, i32), kept: bool) -> Result<Option<MoreAction>> {
+    // SAFETY: called on the owning UI thread. The menu and UTF-16 buffers live
+    // through their native calls; the menu is destroyed on success and failure.
+    unsafe {
+        let menu = CreatePopupMenu()?;
+        let previous = GetForegroundWindow();
+        let result = (|| {
+            for (i, (_, label)) in more_items(kept).iter().enumerate() {
+                let text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                AppendMenuW(menu, MF_STRING, i + 1, PCWSTR(text.as_ptr()))?;
+            }
+            // Required for outside-click dismissal. Opening More is deliberate;
+            // passive preview appearance still never activates this window.
+            let _ = SetForegroundWindow(hwnd);
+            let command = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                point.0,
+                point.1,
+                None,
+                hwnd,
+                None,
+            );
+            let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+            Ok(more_command(command.0 as usize))
+        })();
+        let _ = DestroyMenu(menu);
+        // Do not take focus back from another app chosen while the menu was open.
+        if previous != hwnd && GetForegroundWindow() == hwnd && IsWindow(Some(previous)).as_bool() {
+            let _ = SetForegroundWindow(previous);
+        }
+        // Menu tracking can consume the pointer's leave/re-entry. Queue the final
+        // position after its older events so hover/countdown state catches up even
+        // when the user dismisses the menu without moving the pointer again.
+        let mut cursor = POINT::default();
+        if GetCursorPos(&mut cursor).is_ok() && ScreenToClient(hwnd, &mut cursor).as_bool() {
+            send(PreviewInput::Move {
+                x: cursor.x,
+                y: cursor.y,
+            });
+        } else {
+            send(PreviewInput::Leave);
+        }
+        result
+    }
 }
 
 thread_local! {
@@ -493,6 +573,10 @@ extern "system" fn preview_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             send(PreviewInput::CancelCapture);
             return LRESULT(0);
         }
+        WM_SYSKEYDOWN if wp.0 == 0x79 && key_down(VK_SHIFT.0) && !key_down(VK_MENU.0) => {
+            send(key_input(wp.0, key_down(VK_CONTROL.0), false, true));
+            return LRESULT(0);
+        }
         WM_KEYDOWN => {
             send(key_input(
                 wp.0,
@@ -526,6 +610,25 @@ mod tests {
 
     fn lp(x: i16, y: i16) -> isize {
         (u32::from(y as u16) << 16 | u32::from(x as u16)) as isize
+    }
+
+    #[test]
+    fn overflow_labels_and_commands_are_unambiguous() {
+        assert_eq!(
+            more_items(false),
+            [
+                (MoreAction::KeepInStack, "Keep in stack"),
+                (MoreAction::PinToScreen, "Pin to screen"),
+            ]
+        );
+        assert_eq!(
+            more_items(true)[0],
+            (MoreAction::KeepInStack, "Release from stack")
+        );
+        assert_eq!(more_command(0), None);
+        assert_eq!(more_command(1), Some(MoreAction::KeepInStack));
+        assert_eq!(more_command(2), Some(MoreAction::PinToScreen));
+        assert_eq!(more_command(3), None);
     }
 
     #[test]

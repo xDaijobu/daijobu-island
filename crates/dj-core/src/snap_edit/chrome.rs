@@ -145,6 +145,7 @@ pub enum Item {
     Redo,
     Copy,
     Save,
+    Pin,
     Close,
 }
 
@@ -168,7 +169,7 @@ pub fn groups() -> Vec<Vec<Item>> {
             .collect(),
         Size::ALL.into_iter().map(Item::Size).collect(),
         vec![Item::Undo, Item::Redo],
-        vec![Item::Copy, Item::Save, Item::Close],
+        vec![Item::Copy, Item::Save, Item::Pin, Item::Close],
     ]
 }
 
@@ -191,25 +192,34 @@ pub struct Toolbar {
     pub scale: f32,
 }
 
-fn group_w(n: usize) -> f32 {
-    n as f32 * BUTTON + (n.saturating_sub(1)) as f32 * GAP
+fn button_w(item: Item) -> f32 {
+    if item == Item::Pin {
+        112.0
+    } else {
+        BUTTON
+    }
+}
+
+fn group_w(items: &[Item]) -> f32 {
+    items.iter().map(|item| button_w(*item)).sum::<f32>()
+        + items.len().saturating_sub(1) as f32 * GAP
 }
 
 fn row_w(groups: &[Vec<Item>]) -> f32 {
-    let inner: f32 = groups.iter().map(|g| group_w(g.len())).sum();
+    let inner: f32 = groups.iter().map(|g| group_w(g)).sum();
     inner + groups.len().saturating_sub(1) as f32 * GROUP_GAP
 }
 
 /// Lays the toolbar out for selection `sel` on monitor `mon` (the one holding most of
 /// the selection) at `scale`. It goes under the selection, left-aligned with it; above
 /// if there's no room; else inside the selection's bottom edge. It is clamped to the
-/// monitor and wraps to two rows (split between groups) if one row is too wide.
+/// monitor, wrapping between groups (and within a group on narrow displays).
 pub fn toolbar(sel: IRect, mon: IRect, scale: f32) -> Toolbar {
     let s = scale;
     let gs = groups();
     let one = row_w(&gs) + 2.0 * PAD;
-    let rows_of: Vec<&[Vec<Item>]> = if one * s <= mon.w as f32 {
-        vec![&gs[..]]
+    let rows_of: Vec<Vec<Vec<Item>>> = if one * s <= mon.w as f32 {
+        vec![gs]
     } else {
         // The split between groups that gives the narrowest toolbar.
         let k = (1..gs.len())
@@ -219,7 +229,38 @@ pub fn toolbar(sel: IRect, mon: IRect, scale: f32) -> Toolbar {
                 wa.total_cmp(&wb)
             })
             .unwrap_or(1);
-        vec![&gs[..k], &gs[k..]]
+        let two = vec![gs[..k].to_vec(), gs[k..].to_vec()];
+        if two
+            .iter()
+            .all(|r| (row_w(r) + 2.0 * PAD) * s <= mon.w as f32)
+        {
+            two
+        } else {
+            let available = (mon.w as f32 / s - 2.0 * PAD).max(0.0);
+            let mut rows = Vec::new();
+            let mut row = Vec::new();
+            for group in gs {
+                let mut chunk = Vec::new();
+                for item in group {
+                    if !chunk.is_empty() && group_w(&chunk) + GAP + button_w(item) > available {
+                        if !row.is_empty() {
+                            rows.push(std::mem::take(&mut row));
+                        }
+                        rows.push(vec![std::mem::take(&mut chunk)]);
+                    }
+                    chunk.push(item);
+                }
+                let gap = if row.is_empty() { 0.0 } else { GROUP_GAP };
+                if !row.is_empty() && row_w(&row) + gap + group_w(&chunk) > available {
+                    rows.push(std::mem::take(&mut row));
+                }
+                row.push(chunk);
+            }
+            if !row.is_empty() {
+                rows.push(row);
+            }
+            rows
+        }
     };
     let w = (rows_of.iter().map(|r| row_w(r)).fold(0.0_f32, f32::max) + 2.0 * PAD) * s;
     let n = rows_of.len() as f32;
@@ -266,11 +307,11 @@ pub fn toolbar(sel: IRect, mon: IRect, scale: f32) -> Toolbar {
                     FRect::new(
                         (x + bx * s).round(),
                         by.round(),
-                        (BUTTON * s).round(),
+                        (button_w(*item) * s).round(),
                         (BUTTON * s).round(),
                     ),
                 ));
-                bx += BUTTON;
+                bx += button_w(*item);
             }
             bx += GROUP_GAP;
         }
@@ -533,10 +574,13 @@ mod tests {
         assert_eq!(bar.place, Place::Below);
         assert_eq!(bar.rows, 1);
         assert_eq!((bar.rect.x, bar.rect.y), (200.0, 308.0));
-        // 26 buttons, 21 gaps of 4, 4 group gaps of 9, 5 px padding.
-        assert_eq!(bar.rect.w, 26.0 * 26.0 + 21.0 * 4.0 + 4.0 * 9.0 + 10.0);
+        // 26 icon buttons plus the labelled Pin action, 22 gaps and 4 group gaps.
+        assert_eq!(
+            bar.rect.w,
+            26.0 * 26.0 + 112.0 + 22.0 * 4.0 + 4.0 * 9.0 + 10.0
+        );
         assert_eq!(bar.rect.h, 36.0);
-        assert_eq!(bar.buttons.len(), 26);
+        assert_eq!(bar.buttons.len(), 27);
         assert_eq!(bar.rules.len(), 4);
         assert_eq!(
             bar.buttons[0],
@@ -545,7 +589,7 @@ mod tests {
                 FRect::new(205.0, 313.0, 26.0, 26.0)
             )
         );
-        assert_eq!(bar.buttons[25].0, Item::Close);
+        assert_eq!(bar.buttons[26].0, Item::Close);
         // No room below: above.
         let low = IRect::new(200, 800, 300, 260);
         let bar = toolbar(low, MAIN, 1.0);
@@ -574,7 +618,7 @@ mod tests {
         assert_eq!(bar.rows, 2);
         assert!(bar.rect.w <= 640.0);
         assert_eq!(bar.rect.h, 10.0 + 2.0 * 26.0 + 4.0);
-        assert_eq!(bar.buttons.len(), 26);
+        assert_eq!(bar.buttons.len(), 27);
         // Order is kept: the second row starts where the first stopped.
         let first_row_y = bar.buttons[0].1.y;
         let split = bar
@@ -582,7 +626,7 @@ mod tests {
             .iter()
             .position(|(_, r)| r.y > first_row_y)
             .unwrap();
-        assert!(split > 0 && split < 26);
+        assert!(split > 0 && split < 27);
         assert_eq!(bar.buttons[split].1.x, bar.buttons[0].1.x);
         // No button overlaps another.
         for (i, (_, a)) in bar.buttons.iter().enumerate() {
@@ -614,8 +658,44 @@ mod tests {
         assert_eq!(order[18], Item::Size(Size::S));
         assert_eq!(
             &order[21..],
-            &[Item::Undo, Item::Redo, Item::Copy, Item::Save, Item::Close]
+            &[
+                Item::Undo,
+                Item::Redo,
+                Item::Copy,
+                Item::Save,
+                Item::Pin,
+                Item::Close
+            ]
         );
+    }
+
+    #[test]
+    fn pin_finish_action_wraps_and_stays_reachable_on_negative_monitors_at_each_dpi() {
+        for scale in [1.0, 1.5, 2.0] {
+            for width in [640, 1024, 1920] {
+                let mon = IRect::new(-width, -100, width, 800);
+                let bar = toolbar(mon, mon, scale);
+                assert!(bar.rect.x >= mon.x as f32);
+                assert!(bar.rect.y >= mon.y as f32);
+                assert!(bar.rect.right() <= mon.right() as f32);
+                assert!(bar.rect.bottom() <= mon.bottom() as f32);
+                let pin = bar.button(Item::Pin).unwrap();
+                assert_eq!(pin.w, 112.0 * scale);
+                assert_eq!(bar.item_at(pin.center().0, pin.center().1), Some(Item::Pin));
+                for (i, (_, a)) in bar.buttons.iter().enumerate() {
+                    assert!(a.x >= bar.rect.x && a.right() <= bar.rect.right());
+                    assert!(a.y >= bar.rect.y && a.bottom() <= bar.rect.bottom());
+                    for (_, b) in &bar.buttons[i + 1..] {
+                        assert!(
+                            a.right() <= b.x
+                                || b.right() <= a.x
+                                || a.bottom() <= b.y
+                                || b.bottom() <= a.y
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

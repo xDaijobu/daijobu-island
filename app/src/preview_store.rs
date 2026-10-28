@@ -44,7 +44,7 @@ const NO_IMAGE: &str = "no image";
 
 /// Encodes a bitmap as PNG. The real one is `dj_capture::png::encode`; the tests plug
 /// in fakes (and gates) through `Store::with_parts`.
-type Encoder = Arc<dyn Fn(&Bitmap) -> Result<Vec<u8>, String> + Send + Sync>;
+pub(crate) type Encoder = Arc<dyn Fn(&Bitmap) -> Result<Vec<u8>, String> + Send + Sync>;
 
 /// One card's image: the final annotated pixels and, once encoded, their PNG. Both are
 /// shared with the thumb's shot (`Snapper::payload`).
@@ -142,8 +142,9 @@ struct Done {
     /// The image the job was about. A PNG is cached only into a payload that still
     /// holds this very image, so a stale job can never land on a different card.
     bitmap: Arc<Bitmap>,
-    /// A PNG the worker made, to cache in the payload (so later copies and saves do
-    /// not encode again), whether or not the job as a whole succeeded.
+    /// The PNG used or made by the worker, retained until drain even if its source
+    /// payload was removed. Cache it only when the matching payload has no PNG,
+    /// whether or not the job as a whole succeeded.
     png: Option<Arc<[u8]>>,
 }
 
@@ -180,7 +181,7 @@ impl Store {
         Self::with_parts(wake, Arc::new(dj_capture::png::encode), QUEUE)
     }
 
-    fn with_parts(wake: Box<dyn Fn() + Send>, encoder: Encoder, queue: usize) -> Store {
+    pub(crate) fn with_parts(wake: Box<dyn Fn() + Send>, encoder: Encoder, queue: usize) -> Store {
         Store {
             payloads: HashMap::new(),
             wake: Some(wake),
@@ -476,7 +477,8 @@ fn run(job: Job, encode: &Encoder) -> Done {
             stamp,
         } => {
             // A PNG made here goes back to the store even if the write then fails, so
-            // the retry does not encode again.
+            // the retry does not encode again. Keep a supplied PNG alive until drain
+            // too: pending pin holds identify that exact allocation by its pointer.
             let mut made = None;
             let written = match &png {
                 Some(png) => write_new(&dir, stamp, png),
@@ -493,7 +495,7 @@ fn run(job: Job, encode: &Encoder) -> Done {
             Done {
                 reply: Reply { id, kind },
                 bitmap,
-                png: made,
+                png: png.or(made),
             }
         }
     }
@@ -741,6 +743,80 @@ mod tests {
         assert_eq!(fs::read(path).unwrap(), b"\x89PNG exact bytes");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "it already had its PNG");
         assert!(store.drain().is_empty(), "each reply is handed out once");
+    }
+
+    #[test]
+    fn a_cached_save_retains_its_png_until_drain_after_the_source_is_removed() {
+        for fail_write in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = if fail_write {
+                let blocker = dir.path().join("taken");
+                fs::write(&blocker, b"keep").unwrap();
+                blocker.join("sub")
+            } else {
+                dir.path().join("saved")
+            };
+            let (encoder, calls) = fake_encoder();
+            let (ready_tx, ready) = mpsc::channel();
+            let mut store = Store::with_parts(
+                Box::new(move || {
+                    let _ = ready_tx.send(());
+                }),
+                encoder,
+                QUEUE,
+            );
+            let source = payload(5, 3, Some(b"original cached PNG"));
+            let png = Arc::downgrade(source.png.as_ref().unwrap());
+            store.insert(1, source);
+            assert!(store.save(1, target, STAMP));
+            store.remove(1);
+            ready.recv_timeout(WAIT).expect("save reply was queued");
+            assert!(store.get(1).is_none());
+            assert!(
+                png.upgrade().is_some(),
+                "the undrained reply retains the original PNG allocation"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "reuse the supplied PNG");
+
+            let replies = store.drain();
+            assert_eq!(replies.len(), 1);
+            assert_eq!(replies[0].id, 1);
+            if fail_write {
+                assert!(matches!(replies[0].kind, ReplyKind::SaveFailed(_)));
+                assert_eq!(fs::read(dir.path().join("taken")).unwrap(), b"keep");
+            } else {
+                assert_eq!(
+                    fs::read(saved(&replies[0].kind)).unwrap(),
+                    b"original cached PNG"
+                );
+            }
+            assert!(png.upgrade().is_none(), "drain releases the removed PNG");
+            assert!(
+                store.get(1).is_none(),
+                "drain never restores a removed payload"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cached_save_never_caches_its_png_into_a_replacement_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let (encoder, calls) = fake_encoder();
+        let (mut store, _) = store_with(encoder);
+        store.insert(1, payload(3, 3, Some(b"original cached PNG")));
+        assert!(store.save(1, dir.path().into(), STAMP));
+        store.remove(1);
+        store.insert(1, payload(9, 9, None));
+        let replies = collect(&mut store, 1);
+        assert_eq!(
+            fs::read(saved(&replies[0].kind)).unwrap(),
+            b"original cached PNG"
+        );
+        assert!(
+            store.get(1).unwrap().png.is_none(),
+            "source identity must match"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

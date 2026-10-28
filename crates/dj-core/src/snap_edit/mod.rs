@@ -135,6 +135,8 @@ pub enum Outcome {
     Copy,
     /// The same, plus a save.
     Save,
+    /// Prepare the annotated selection for a screen pin; close only on success.
+    Pin,
     Cancel,
 }
 
@@ -963,6 +965,10 @@ impl Editor {
             Item::Save => {
                 self.commit_text();
                 Outcome::Save
+            }
+            Item::Pin => {
+                self.commit_text();
+                Outcome::Pin
             }
             Item::Close => Outcome::Cancel,
         }
@@ -1900,6 +1906,7 @@ mod tests {
         let mut e = editor(Tool::Arrow);
         assert_eq!(button(&mut e, Item::Copy), Outcome::Copy);
         assert_eq!(button(&mut e, Item::Save), Outcome::Save);
+        assert_eq!(button(&mut e, Item::Pin), Outcome::Pin);
         assert_eq!(button(&mut e, Item::Close), Outcome::Cancel);
         assert_eq!(key(&mut e, Key::plain(KeyCode::Enter)), Outcome::Copy);
         // The undo/redo buttons.
@@ -1914,6 +1921,28 @@ mod tests {
         e.input(EditInput::Motion { x: px, y: py }, &M);
         assert_eq!(click(&mut e, px, py), Outcome::Nothing);
         assert_eq!(e.shapes().len(), 1);
+    }
+
+    #[test]
+    fn pin_commits_active_text_and_keeps_the_editor_and_history_usable() {
+        let mut e = editor(Tool::Text);
+        click(&mut e, 200, 200);
+        typed(&mut e, "reference");
+        assert!(e.is_typing());
+        assert_eq!(button(&mut e, Item::Pin), Outcome::Pin);
+        assert!(!e.is_typing());
+        assert_eq!(text_of(&e, 0), "reference");
+        assert_eq!(e.history.undo_len(), 1);
+        assert_eq!(button(&mut e, Item::Pin), Outcome::Pin, "retry is allowed");
+        assert_eq!(e.history.undo_len(), 1);
+        assert_eq!(key(&mut e, Key::ctrl(letter('Z'))), Outcome::Redraw);
+        assert!(e.shapes().is_empty());
+        assert_eq!(key(&mut e, Key::ctrl(letter('Y'))), Outcome::Redraw);
+        assert_eq!(text_of(&e, 0), "reference");
+        assert_eq!(key(&mut e, Key::ctrl(letter('C'))), Outcome::Copy);
+        assert_eq!(key(&mut e, Key::ctrl(letter('S'))), Outcome::Save);
+        assert_eq!(key(&mut e, Key::plain(letter('P'))), Outcome::Redraw);
+        assert_eq!(e.tool(), Tool::Pen, "existing shortcuts are unchanged");
     }
 
     #[test]

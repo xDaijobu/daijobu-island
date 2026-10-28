@@ -18,6 +18,7 @@ const CMD_MUSIC_SIGNOUT: usize = 5;
 const CMD_MUSIC_STOP: usize = 6;
 const CMD_SNAP_PREVIEWS: usize = 7;
 const CMD_SETTINGS: usize = 8;
+const CMD_SNAP_PINS: usize = 9;
 const CMD_THEME_BASE: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub enum MenuCommand {
     MusicStop,
     /// Give the Snap preview stack the keyboard (deliberate keyboard access).
     SnapPreviews,
+    /// Reveal pinned screenshots and give one deliberate keyboard focus.
+    SnapPins,
     /// Open the Settings window.
     Settings,
     Quit,
@@ -43,6 +46,7 @@ pub struct MenuSpec<'a> {
     /// The Snap preview stack has cards to focus; "Focus Snap previews" is greyed out
     /// otherwise.
     pub previews: bool,
+    pub pins: bool,
 }
 
 /// Which YouTube Music items can be used right now.
@@ -165,6 +169,12 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
             CMD_SNAP_PREVIEWS,
             "Focus Snap previews",
         );
+        append(
+            menu,
+            grey(spec.pins),
+            CMD_SNAP_PINS,
+            "Show pinned screenshots",
+        );
         let flags = if spec.autostart {
             MF_STRING | MF_CHECKED
         } else {
@@ -202,6 +212,7 @@ fn command_for(id: usize) -> Option<MenuCommand> {
         CMD_MUSIC_SIGNOUT => Some(MenuCommand::MusicSignOut),
         CMD_MUSIC_STOP => Some(MenuCommand::MusicStop),
         CMD_SNAP_PREVIEWS => Some(MenuCommand::SnapPreviews),
+        CMD_SNAP_PINS => Some(MenuCommand::SnapPins),
         CMD_SETTINGS => Some(MenuCommand::Settings),
         CMD_QUIT => Some(MenuCommand::Quit),
         n if n >= CMD_THEME_BASE => Some(MenuCommand::Theme(n - CMD_THEME_BASE)),
@@ -233,10 +244,11 @@ mod tests {
         );
         assert_eq!(command_for(CMD_QUIT), Some(MenuCommand::Quit));
         assert_eq!(command_for(CMD_SETTINGS), Some(MenuCommand::Settings));
+        assert_eq!(command_for(CMD_SNAP_PINS), Some(MenuCommand::SnapPins));
         assert_eq!(command_for(CMD_THEME_BASE), Some(MenuCommand::Theme(0)));
         assert_eq!(command_for(CMD_THEME_BASE + 3), Some(MenuCommand::Theme(3)));
         // An id in the gap between the fixed commands and the themes is nothing.
-        assert_eq!(command_for(CMD_SETTINGS + 1), None);
+        assert_eq!(command_for(CMD_SNAP_PINS + 1), None);
         assert_eq!(command_for(CMD_THEME_BASE - 1), None);
     }
 

@@ -405,7 +405,7 @@ pub fn draw_toolbar_icon(canvas: &Canvas, item: Item, cx: f32, cy: f32, size: f3
             line(canvas, (-5.5, -5.5), (5.5, 5.5), paint);
             line(canvas, (5.5, -5.5), (-5.5, 5.5), paint);
         }
-        Item::Swatch(_) | Item::Custom | Item::Size(_) => {}
+        Item::Swatch(_) | Item::Custom | Item::Size(_) | Item::Pin => {}
     }
     canvas.restore();
 }
