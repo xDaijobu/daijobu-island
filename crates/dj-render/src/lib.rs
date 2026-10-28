@@ -6,6 +6,7 @@
 //! (`assist::AssistSurface`, its own topmost window with the open windows as cards; the live
 //! thumbnails are composed on top by Windows).
 
+mod agent_icons;
 mod assist;
 mod fonts;
 mod fx;
@@ -23,6 +24,7 @@ mod snap;
 mod spotlight;
 mod sweep;
 mod terminal;
+mod terminal_shortcuts;
 mod tile;
 mod timer;
 mod vitals;

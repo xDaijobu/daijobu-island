@@ -17,6 +17,7 @@ use dj_core::layout::{self, Rect as LRect};
 use dj_core::music::NowPlaying;
 use dj_core::settings::SettingsView;
 use dj_core::sweep::{format_bytes, Estimate, SweepView};
+use dj_core::terminal_shortcuts::{self, Shortcut};
 use dj_core::theme::ResolvedTokens;
 use dj_core::timer::TimerView;
 use dj_core::vitals::{ProcUsage, Vitals};
@@ -55,6 +56,8 @@ pub struct Frame<'a> {
     pub tile: Option<crate::tile::TilePanel<'a>>,
     /// The terminal panel's content, drawn while `view.layers.terminal` is up.
     pub terminal: Option<crate::terminal::TerminalPanel<'a>>,
+    /// Running tabs beside the idle clock, without keeping the terminal panel open.
+    pub terminal_shortcuts: &'a [Shortcut],
     /// Pill or notch (config `[island] style`): the shape of the island's body.
     pub island_style: IslandStyle,
 }
@@ -320,12 +323,19 @@ impl Painter {
 
     fn idle(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
         let (s, t) = (f.scale, f.tokens);
+        let body = LRect::new(
+            rect.left / s,
+            rect.top / s,
+            rect.width() / s,
+            rect.height() / s,
+        );
+        let clock = terminal_shortcuts::clock_rect(body, f.terminal_shortcuts.len());
         let text = format!("{:02}:{:02}", f.clock.0, f.clock.1);
         let font = self.fonts.font(&t.font_label, Weight::Medium, 13.0 * s);
         let tw = text_width(&font, &text, 0.0);
         let (lamp_r, gap) = (3.2 * s, 9.0 * s);
         let group = lamp_r * 2.0 + gap + tw;
-        let x0 = rect.center_x() - group / 2.0;
+        let x0 = (clock.x + clock.w / 2.0) * s - group / 2.0;
         let cy = rect.center_y();
         // The lamp shows health when the config asks for it and the band is a warn band.
         let lamp = match f.vitals.health() {
@@ -342,6 +352,14 @@ impl Painter {
             cy + 0.35 * 13.0 * s,
             0.0,
             &fill_paint(col(t.text, 1.0)),
+        );
+        crate::terminal_shortcuts::paint(
+            canvas,
+            t,
+            body,
+            f.terminal_shortcuts,
+            f.view.terminal_shortcut_hover,
+            s,
         );
     }
 

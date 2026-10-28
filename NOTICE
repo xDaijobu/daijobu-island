@@ -9,6 +9,10 @@ Bundled third-party assets:
   SIL Open Font License 1.1, see assets/fonts/OFL-Geist.txt.
 - Doto font, Copyright 2024 The Doto Project Authors.
   SIL Open Font License 1.1, see assets/fonts/OFL-Doto.txt.
+- Claude and OpenAI logo vectors from Simple Icons v15.0.0 (OpenAI identifies Codex).
+  CC0 1.0 Universal, see assets/icons/LICENSE-Simple-Icons.txt.
+  Sources: https://github.com/simple-icons/simple-icons/tree/15.0.0/icons
+  Brand names and marks belong to their respective owners.
 
 Third-party code linked into the binary:
 

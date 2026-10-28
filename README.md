@@ -131,6 +131,8 @@ Terminal and agent actions start a new island terminal tab in the folder itself 
 
 Use the **+** menu for a new Terminal, Claude or Codex tab. Tabs can be reordered, closed and pinned; pinned tabs reopen after a restart. Claude and Codex must be installed separately. Their tabs run in **yolo mode**, bypassing approval prompts (and Codex's sandbox); pinned agent tabs restart in that mode too.
 
+When the island shows its idle clock, running terminal tabs appear beside it as shortcuts. Click an icon to reopen that exact tab. Claude and Codex use the same agent logos as the **+** menu; plain shells use the terminal icon. The notch widens to fit the shortcuts and returns to its configured width when the sessions close. These shortcuts track the island's own terminal sessions, including shells at a prompt after an agent exits.
+
 ```toml
 [terminal]
 shell = ""              # "" = PowerShell 7 if installed, else Windows PowerShell; or "cmd", "wsl", a path

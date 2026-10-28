@@ -11,6 +11,8 @@ use crate::layout::{self, Rect};
 use crate::osd::{Osd, OsdView, Volume};
 use crate::settings::{self, SettingsAction, SettingsHit};
 use crate::spring::{Spring, SpringSpec};
+use crate::term_tabs::TabId;
+use crate::terminal_shortcuts;
 use crate::theme::ResolvedTokens;
 use crate::timer::PRESETS;
 
@@ -150,6 +152,8 @@ pub enum ClickOutcome {
     Home,
     /// The gear on Home: the island collapsed, and the app opens the Settings window.
     OpenSettings,
+    /// A running terminal tab beside the idle clock; select it without spawning a tab.
+    TerminalShortcut(TabId),
     /// A locked tile was clicked (index into `FEATURES`): shake + "coming soon".
     Locked(usize),
     /// An available tile was clicked (index into `FEATURES`). The app opens its view;
@@ -239,6 +243,7 @@ pub struct IslandView {
     pub snap_hover: Option<SnapAction>,
     /// The pointer is over the gear in the Home header.
     pub gear_hover: bool,
+    pub terminal_shortcut_hover: Option<TabId>,
 }
 
 pub struct Island {
@@ -267,6 +272,8 @@ pub struct Island {
     expanding: bool,
     /// The resting (Idle) size `(w, h)` in logical px; radius is `h / 2`.
     idle: (f32, f32),
+    terminal_shortcuts: Vec<TabId>,
+    terminal_shortcut_hover: Option<TabId>,
     /// Latched while the island is out of a rest state (or showing the OSD) and until its
     /// pill springs have come back to rest; see `wants_front`.
     front: bool,
@@ -296,6 +303,8 @@ impl Island {
             dragging: false,
             expanding: true,
             idle: (layout::IDLE_W, layout::IDLE_H),
+            terminal_shortcuts: Vec::new(),
+            terminal_shortcut_hover: None,
             front: false,
         }
     }
@@ -314,6 +323,7 @@ impl Island {
     pub fn set_idle_size(&mut self, w: f32, h: f32) {
         let old_r = self.idle.1 / 2.0;
         self.idle = (w, h);
+        let w = terminal_shortcuts::idle_width(w, self.terminal_shortcuts.len());
         if self.state == IslandState::Idle && !self.osd.is_visible() {
             self.expanding = w * h > self.w.target * self.h.target;
             self.w.target = w;
@@ -325,6 +335,31 @@ impl Island {
 
     pub fn state(&self) -> IslandState {
         self.state
+    }
+
+    /// Session order changed. Only Idle widens; other content retains its own geometry.
+    pub fn set_terminal_shortcuts(&mut self, mut ids: Vec<TabId>, tokens: &ResolvedTokens) -> bool {
+        ids.truncate(crate::term_tabs::MAX_TABS);
+        if ids == self.terminal_shortcuts {
+            return false;
+        }
+        self.terminal_shortcuts = ids;
+        self.terminal_shortcut_hover = None;
+        if self.state == IslandState::Idle {
+            self.sync_pill(tokens);
+        }
+        true
+    }
+
+    fn terminal_shortcut_at(&self, x: f32, y: f32) -> Option<TabId> {
+        if self.state != IslandState::Idle
+            || self.layers[IslandState::Idle.layer()].value < 0.95
+            || self.osd.is_visible()
+        {
+            return None;
+        }
+        let index = terminal_shortcuts::hit(self.pill_rect(), self.terminal_shortcuts.len(), x, y)?;
+        self.terminal_shortcuts.get(index).copied()
     }
 
     pub fn music_ui(&self) -> MusicUi {
@@ -491,7 +526,11 @@ impl Island {
     /// `base_size`, with the configured idle size.
     fn state_size(&self, state: IslandState) -> (f32, f32, f32) {
         match state {
-            IslandState::Idle => (self.idle.0, self.idle.1, self.idle.1 / 2.0),
+            IslandState::Idle => (
+                terminal_shortcuts::idle_width(self.idle.0, self.terminal_shortcuts.len()),
+                self.idle.1,
+                self.idle.1 / 2.0,
+            ),
             _ => Self::base_size(state),
         }
     }
@@ -669,6 +708,9 @@ impl Island {
         }
         if !self.pill_rect().contains(x, y) {
             return ClickOutcome::Ignored;
+        }
+        if let Some(id) = self.terminal_shortcut_at(x, y) {
+            return ClickOutcome::TerminalShortcut(id);
         }
         match self.state {
             IslandState::Idle => {
@@ -873,7 +915,10 @@ impl Island {
         let gear = self.gear_at(x, y);
         let gear_changed = gear != self.gear_hover;
         self.gear_hover = gear;
-        changed || button_changed || gear_changed
+        let shortcut = self.terminal_shortcut_at(x, y);
+        let shortcut_changed = shortcut != self.terminal_shortcut_hover;
+        self.terminal_shortcut_hover = shortcut;
+        changed || button_changed || gear_changed || shortcut_changed
     }
 
     /// The pointer left the window. True when something hovered needs a redraw.
@@ -881,7 +926,8 @@ impl Island {
         self.snap_pointer = false;
         let button = self.snap_hover.take().is_some();
         let gear = std::mem::take(&mut self.gear_hover);
-        self.hover.take().is_some() || button || gear
+        let shortcut = self.terminal_shortcut_hover.take().is_some();
+        self.hover.take().is_some() || button || gear || shortcut
     }
 
     pub fn step(&mut self, dt: f32, tokens: &ResolvedTokens) {
@@ -959,6 +1005,7 @@ impl Island {
             osd: self.osd.view(),
             snap_hover: self.snap_hover,
             gear_hover: self.gear_hover,
+            terminal_shortcut_hover: self.terminal_shortcut_hover,
         }
     }
 }
@@ -1014,6 +1061,73 @@ mod tests {
             level,
             muted: false,
         }
+    }
+
+    #[test]
+    fn running_terminal_shortcuts_resize_idle_and_restore_the_configured_size() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_idle_size(96.0, 24.0);
+        assert!(i.set_terminal_shortcuts((1..=12).collect(), &t));
+        settle(&mut i, &t);
+        assert_eq!(i.pill_rect().w, terminal_shortcuts::idle_width(96.0, 12));
+        assert_eq!(i.pill_rect().h, 24.0);
+        assert!(!i.set_terminal_shortcuts((1..=12).collect(), &t));
+        assert!(
+            !i.is_animating(),
+            "unchanged sessions do not create idle frames"
+        );
+        i.set_idle_size(240.0, 44.0);
+        settle(&mut i, &t);
+        assert_eq!(i.pill_rect().w, terminal_shortcuts::idle_width(240.0, 12));
+        i.set_terminal_shortcuts(vec![], &t);
+        settle(&mut i, &t);
+        assert_eq!((i.pill_rect().w, i.pill_rect().h), (240.0, 44.0));
+    }
+
+    #[test]
+    fn shortcut_hits_follow_ids_and_leave_the_clock_as_the_home_toggle() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_terminal_shortcuts(vec![17, 29], &t);
+        settle(&mut i, &t);
+        let slot = terminal_shortcuts::buttons(i.pill_rect(), 2)[1];
+        let (x, y) = (slot.x + slot.w / 2.0, slot.y + slot.h / 2.0);
+        assert!(i.hover(x, y));
+        assert_eq!(i.view().terminal_shortcut_hover, Some(29));
+        assert_eq!(i.click(x, y, &t), ClickOutcome::TerminalShortcut(29));
+        i.set_terminal_shortcuts(vec![29, 17], &t);
+        assert_eq!(i.view().terminal_shortcut_hover, None);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::TerminalShortcut(17));
+        i.hover(x, y);
+        assert!(i.clear_hover());
+        let clock = terminal_shortcuts::clock_rect(i.pill_rect(), 2);
+        assert_eq!(
+            i.click(clock.x + clock.w / 2.0, y, &t),
+            ClickOutcome::Expanded
+        );
+        assert_eq!(i.terminal_shortcut_at(x, y), None);
+    }
+
+    #[test]
+    fn shortcuts_do_not_steal_osd_or_fading_content_clicks() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_terminal_shortcuts(vec![11], &t);
+        settle(&mut i, &t);
+        i.open_terminal(&t);
+        settle(&mut i, &t);
+        i.collapse(&t);
+        let slot = terminal_shortcuts::buttons(i.pill_rect(), 1)[0];
+        assert_eq!(i.terminal_shortcut_at(slot.x + 1.0, slot.y + 1.0), None);
+        settle(&mut i, &t);
+        let slot = terminal_shortcuts::buttons(i.pill_rect(), 1)[0];
+        assert_eq!(i.terminal_shortcut_at(slot.x + 1.0, slot.y + 1.0), Some(11));
+        i.show_osd(vol(0.5), &t);
+        assert_eq!(i.terminal_shortcut_at(slot.x + 1.0, slot.y + 1.0), None);
+        i.set_terminal_shortcuts(vec![], &t);
+        settle_pinned(&mut i, &t);
+        assert_eq!(i.pill_rect().w, layout::OSD_W);
     }
 
     #[test]

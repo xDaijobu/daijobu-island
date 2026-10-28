@@ -696,7 +696,26 @@ fn tab_menu(
                 );
             }
         }
-        let x = row.left + MENU_PAD_X * s;
+        let mut x = row.left + MENU_PAD_X * s;
+        let ink = if item.enabled {
+            col(t.text, 1.0)
+        } else {
+            col(t.text_dim, MENU_DISABLED_ALPHA)
+        };
+        let agent = match item.action {
+            dj_core::term_tabs::MenuAction::NewShell => Some(None),
+            dj_core::term_tabs::MenuAction::NewClaude => {
+                Some(Some(dj_core::term_agents::Agent::Claude))
+            }
+            dj_core::term_tabs::MenuAction::NewCodex => {
+                Some(Some(dj_core::term_agents::Agent::Codex))
+            }
+            _ => None,
+        };
+        if let Some(agent) = agent {
+            crate::agent_icons::draw(canvas, agent, x + 7.0 * s, row.center_y(), 14.0 * s, ink);
+            x += 22.0 * s;
+        }
         let baseline = row.center_y() + 0.35 * TEXT_SIZE * s;
         // A hint ("yolo") sits dim at the row's right end; the label gets what is left.
         let mut right = row.right - MENU_PAD_X * s;
@@ -715,11 +734,6 @@ fn tab_menu(
             right -= MENU_PAD_X * s;
         }
         let label = fit(&font, item.label, tracking, right - x);
-        let ink = if item.enabled {
-            col(t.text, 1.0)
-        } else {
-            col(t.text_dim, MENU_DISABLED_ALPHA)
-        };
         draw_text(
             canvas,
             &font,
@@ -3201,6 +3215,44 @@ mod tests {
             }
         }
         sc
+    }
+
+    #[test]
+    fn new_tab_menu_keeps_logos_labels_and_yolo_hints_in_separate_columns() {
+        let mut model = term_tabs::Tabs::new();
+        model.add("shell".into(), false);
+        let plus = model.view().plus.unwrap();
+        model.press(plus.x + plus.w / 2.0, plus.y + plus.h / 2.0);
+        let v = model.view();
+        let menu = v.menu.as_ref().unwrap();
+        for t in themes() {
+            for s in SCALES {
+                let (shot, g) = render_tabs(&t, &v, s);
+                for item in &menu.items {
+                    let r = item.rect;
+                    let icon = g.rect(LRect::new(r.x + MENU_PAD_X, r.y + 5.0, 14.0, 16.0));
+                    let label = g.rect(LRect::new(r.x + MENU_PAD_X + 22.0, r.y + 5.0, 50.0, 16.0));
+                    assert!(
+                        shot.count_in(icon, bgra(t.text), 60) > 5,
+                        "{} {s}: logo",
+                        t.name
+                    );
+                    assert!(
+                        shot.count_in(label, bgra(t.text), 60) > 5,
+                        "{} {s}: label",
+                        t.name
+                    );
+                    if !item.hint.is_empty() {
+                        let hint = g.rect(LRect::new(r.x + r.w - 38.0, r.y + 5.0, 28.0, 16.0));
+                        assert!(
+                            shot.count_in(hint, bgra(t.text_dim), 70) > 3,
+                            "{} {s}: yolo hint",
+                            t.name
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

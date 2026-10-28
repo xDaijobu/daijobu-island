@@ -10,6 +10,7 @@ use dj_core::term_tabs::{
     self as tabs, MenuAction, PinnedTab, Press, Release, TabBarView, TabId, TabKey, Tabs,
 };
 use dj_core::terminal::{self as term, KeyAction, Modes, Mods, Palette, Screen, WheelAccum};
+use dj_core::terminal_shortcuts::Shortcut;
 use dj_term::{SpawnOptions, TermEvent};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -256,6 +257,40 @@ impl Terminal {
 
     pub fn config(&self) -> &TerminalConfig {
         &self.config
+    }
+
+    /// Live terminal tabs in display order. The shell stays live after an agent returns
+    /// to its prompt; failed starts and exited shells have no shortcut.
+    pub fn shortcuts(&self) -> Vec<Shortcut> {
+        self.tabs
+            .ids()
+            .into_iter()
+            .filter_map(|id| {
+                let tab = self.sessions.get(&id)?;
+                (tab.session.is_some() && tab.exited.is_none()).then_some(Shortcut {
+                    id,
+                    agent: tab.spec.agent,
+                    active: self.tabs.active() == Some(id),
+                    activity: self.tabs.has_activity(id),
+                })
+            })
+            .collect()
+    }
+
+    /// Select an existing live session. In particular, this never restores, restarts or
+    /// creates a shell in response to a stale shortcut.
+    pub fn activate_shortcut(&mut self, id: TabId) -> bool {
+        if !self
+            .sessions
+            .get(&id)
+            .is_some_and(|t| t.session.is_some() && t.exited.is_none())
+        {
+            return false;
+        }
+        self.on_hide();
+        self.skip_char = false;
+        self.tabs.activate(id);
+        true
     }
 
     /// New `[terminal]` settings (from the Settings window). Tabs opened from now on use
@@ -1043,6 +1078,100 @@ mod tests {
     fn palette() -> Palette {
         let reg = ThemeRegistry::with_builtins();
         term::palette(reg.get(DEFAULT_THEME).unwrap())
+    }
+
+    #[test]
+    fn shortcuts_track_live_tabs_in_display_order_and_select_without_spawning() {
+        let mut r = Rig::new();
+        assert!(r.term.shortcuts().is_empty());
+        r.open();
+        let first = r.term.active_id().unwrap();
+        let first_shell = r.shell();
+        r.term.new_agent_tab(Agent::Claude);
+        let claude = r.term.active_id().unwrap();
+        r.term.new_agent_tab(Agent::Codex);
+        let codex = r.term.active_id().unwrap();
+        r.term.tabs.set_pinned(codex, true);
+        first_shell.borrow_mut().woke = true;
+        r.term.drain();
+        assert_eq!(
+            r.term.shortcuts(),
+            vec![
+                Shortcut {
+                    id: codex,
+                    agent: Some(Agent::Codex),
+                    active: true,
+                    activity: false
+                },
+                Shortcut {
+                    id: first,
+                    agent: None,
+                    active: false,
+                    activity: true
+                },
+                Shortcut {
+                    id: claude,
+                    agent: Some(Agent::Claude),
+                    active: false,
+                    activity: false
+                },
+            ]
+        );
+        r.term.on_hide();
+        assert!(r.term.activate_shortcut(first));
+        assert_eq!(r.term.active_id(), Some(first));
+        assert!(!r.term.shortcuts()[1].activity);
+        assert_eq!(r.spawns.borrow().opts.len(), 3);
+        assert!(!r.term.activate_shortcut(u64::MAX));
+        assert_eq!(r.term.active_id(), Some(first));
+        r.term.close_tab(claude);
+        assert!(!r.term.activate_shortcut(claude));
+        assert_eq!(r.term.shortcuts().len(), 2);
+        assert_eq!(r.spawns.borrow().opts.len(), 3);
+    }
+
+    #[test]
+    fn failed_and_exited_shells_have_no_shortcuts_and_retries_restore_them() {
+        let mut r = Rig::new();
+        r.spawns.borrow_mut().fail = true;
+        r.open();
+        let id = r.term.active_id().unwrap();
+        assert!(r.term.shortcuts().is_empty());
+        assert!(!r.term.activate_shortcut(id));
+        assert_eq!(r.spawns.borrow().opts.len(), 1);
+        r.spawns.borrow_mut().fail = false;
+        r.term.key(VK_RETURN, NONE);
+        assert_eq!(r.term.shortcuts()[0].id, id);
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Exited(Some(0)));
+        assert!(r.term.drain());
+        assert!(r.term.shortcuts().is_empty());
+        assert!(!r.term.activate_shortcut(id));
+        r.term.key(VK_RETURN, NONE);
+        assert_eq!(r.term.shortcuts()[0].id, id);
+        r.term.close_tab(id);
+        assert!(r.term.shortcuts().is_empty());
+    }
+
+    #[test]
+    fn pinned_agents_get_shortcuts_only_after_their_shells_start() {
+        let mut r = Rig::new();
+        r.term.restore = vec![PinnedTab {
+            title: "my agent".into(),
+            shell: "powershell".into(),
+            args: vec![],
+            cwd: String::new(),
+            agent: "claude".into(),
+        }];
+        assert!(r.term.shortcuts().is_empty());
+        r.open();
+        let shortcuts = r.term.shortcuts();
+        assert_eq!(shortcuts.len(), 1);
+        assert_eq!(shortcuts[0].agent, Some(Agent::Claude));
+        assert!(r.term.activate_shortcut(shortcuts[0].id));
+        assert_eq!(r.spawns.borrow().opts.len(), 1);
     }
 
     #[test]
