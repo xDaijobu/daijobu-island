@@ -781,3 +781,5 @@ Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim,
 - 2026-10-28: Terminal pin restore follow-up complete: pins start in the background with idle shortcuts; latest reported folders/names persist. 1215 tests, fmt, clippy and release pass. Live restart restored both pins without focus change or duplicate processes. [Brief](stage-terminal-restore-brief.md) � [Report](stage-terminal-restore-report.md).
 
 - 2026-10-28: Terminal wheel follow-up complete: forward wheel events with cell coordinates to mouse-tracking applications, honor alternate-screen scrolling and preserve shell history. 1223 tests, fmt, clippy, release and desktop smoke pass. [Brief](stage-terminal-wheel-brief.md) / [Report](stage-terminal-wheel-report.md).
+
+- 2026-10-28: Terminal rename complete: context-menu editing, automatic-title reset and pinned custom-title persistence. User confirmed the restarted build works. fmt/clippy/release pass; 1230 tests pass with one existing ConPTY host test excluded after recorded failures. [Brief](stage-terminal-rename-brief.md) / [Report](stage-terminal-rename-report.md).

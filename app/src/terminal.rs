@@ -5,6 +5,7 @@
 
 use dj_core::config::TerminalConfig;
 use dj_core::layout::{TERM_CLOSE, TERM_HEADER_H, TERM_TEXT};
+use dj_core::line_edit::LineEdit;
 use dj_core::term_agents::{self as agents, Agent};
 use dj_core::term_tabs::{
     self as tabs, MenuAction, PinnedTab, Press, Release, TabBarView, TabId, TabKey, Tabs,
@@ -155,6 +156,7 @@ struct Tab {
     program: String,
     /// The shell's own title, or the saved name of a restored pinned tab.
     title: Option<String>,
+    custom_title: Option<String>,
     /// The shell ended (with its exit code, if known), or never started.
     exited: Option<Option<i32>>,
     failed: Option<String>,
@@ -164,6 +166,13 @@ struct Tab {
 
 impl Tab {
     fn name(&self) -> String {
+        if let Some(t) = self.custom_title.as_ref() {
+            return t.clone();
+        }
+        self.automatic_name()
+    }
+
+    fn automatic_name(&self) -> String {
         if let Some(t) = self.title.as_ref() {
             return t.clone();
         }
@@ -202,6 +211,12 @@ fn is_exe_path(title: &str) -> bool {
     p.is_absolute() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
 }
 
+struct Rename {
+    id: TabId,
+    edit: LineEdit,
+    selected: bool,
+}
+
 pub struct Terminal {
     config: TerminalConfig,
     spawner: Box<dyn Spawner>,
@@ -226,6 +241,7 @@ pub struct Terminal {
     close_hover: bool,
     /// A touchpad's small wheel steps add up to whole lines.
     wheel: WheelAccum,
+    rename: Option<Rename>,
 }
 
 impl Terminal {
@@ -252,6 +268,7 @@ impl Terminal {
             focused: false,
             close_hover: false,
             wheel: WheelAccum::default(),
+            rename: None,
         }
     }
 
@@ -336,7 +353,13 @@ impl Terminal {
                 agent: Agent::from_key(&p.agent),
             };
             let title = Some(p.title).filter(|t| !t.trim().is_empty());
-            self.add_tab(spec, title, true);
+            if self.add_tab(spec, title, true) {
+                let id = self.tabs.active().expect("added tab is active");
+                if let Some(tab) = self.sessions.get_mut(&id) {
+                    tab.custom_title = Some(p.custom_title).filter(|t| !t.trim().is_empty());
+                    self.tabs.set_title(id, tab.name());
+                }
+            }
         }
     }
 
@@ -362,6 +385,7 @@ impl Terminal {
 
     /// The panel is going away: a press or a drag in progress, and the menu, end.
     pub fn on_hide(&mut self) {
+        self.rename = None;
         self.tabs.cancel();
         self.tabs.close_menu();
         self.tabs.clear_hover();
@@ -423,6 +447,7 @@ impl Terminal {
             session: None,
             program: String::new(),
             title,
+            custom_title: None,
             exited: None,
             failed: None,
             cwd: None,
@@ -532,7 +557,7 @@ impl Terminal {
             .filter(|id| self.tabs.is_pinned(*id))
             .filter_map(|id| self.sessions.get(&id))
             .map(|t| PinnedTab {
-                title: t.name(),
+                title: t.automatic_name(),
                 shell: t.spec.shell.clone(),
                 args: t.spec.args.clone(),
                 cwd: t.cwd.clone().unwrap_or_else(|| t.spec.cwd.clone()),
@@ -541,6 +566,7 @@ impl Terminal {
                     .agent
                     .map(|a| a.key().to_string())
                     .unwrap_or_default(),
+                custom_title: t.custom_title.clone().unwrap_or_default(),
             })
             .collect();
         tabs::pinned_to_toml(&pinned)
@@ -591,6 +617,9 @@ impl Terminal {
     pub fn key(&mut self, vk: u16, mods: Mods) -> Outcome {
         // A char only ever follows its own key, so a new key ends any skip.
         self.skip_char = false;
+        if self.rename.is_some() {
+            return self.rename_key(vk, mods);
+        }
         if let Some(k) = tabs::shortcut(vk, mods.ctrl, mods.shift, mods.alt) {
             // Ctrl+Shift+T and its kin make a control char too: it must not follow.
             self.skip_char = true;
@@ -638,6 +667,16 @@ impl Terminal {
         if std::mem::take(&mut self.skip_char) {
             return Outcome::None;
         }
+        if let Some(rename) = self.rename.as_mut() {
+            if !mods.ctrl && !mods.alt && !ch.is_control() {
+                if rename.selected {
+                    rename.edit.clear();
+                    rename.selected = false;
+                }
+                rename.edit.insert_char(ch);
+            }
+            return Outcome::Redraw;
+        }
         if self.active().is_none_or(|t| t.exited.is_some()) {
             return Outcome::None;
         }
@@ -656,6 +695,68 @@ impl Terminal {
         s.select_clear();
         s.scroll_to_bottom();
         s.write(bytes);
+    }
+
+    fn finish_rename(&mut self, apply: bool) -> Outcome {
+        if let Some(rename) = self.rename.take().filter(|_| apply) {
+            if let Some(tab) = self.sessions.get_mut(&rename.id) {
+                let name = rename.edit.text().trim();
+                let name = (!name.is_empty()).then(|| name.to_string());
+                if name != tab.custom_title {
+                    tab.custom_title = name;
+                    self.tabs.set_title(rename.id, tab.name());
+                    self.save |= self.tabs.is_pinned(rename.id);
+                }
+            }
+        }
+        Outcome::Redraw
+    }
+
+    fn rename_key(&mut self, vk: u16, mods: Mods) -> Outcome {
+        // Editing is modal: no terminal/tab shortcut can escape into the shell.
+        self.skip_char = vk == VK_RETURN || vk == 0x1b || vk == 0x08 || mods.ctrl;
+        match vk {
+            VK_RETURN => return self.finish_rename(true),
+            0x1b => return self.finish_rename(false),
+            _ => {}
+        }
+        let rename = self.rename.as_mut().expect("rename is open");
+        if mods.ctrl && vk == 0x41 {
+            rename.selected = true;
+        } else if mods.ctrl && vk == 0x56 {
+            if let Some(text) = self.clipboard.get() {
+                if rename.selected {
+                    rename.edit.clear();
+                    rename.selected = false;
+                }
+                rename.edit.insert_str(&text);
+            }
+        } else if mods.ctrl && matches!(vk, 0x43 | 0x58) {
+            if rename.selected {
+                self.clipboard.set(rename.edit.text());
+                if vk == 0x58 {
+                    rename.edit.clear();
+                    rename.selected = false;
+                }
+            }
+        } else if !mods.alt {
+            if rename.selected && matches!(vk, 0x08 | 0x2e) {
+                rename.edit.clear();
+                rename.selected = false;
+            } else if matches!(vk, 0x23..=0x27) {
+                if rename.selected && vk == 0x25 {
+                    rename.edit.home();
+                } else if rename.selected && vk == 0x27 {
+                    rename.edit.end();
+                } else {
+                    rename.edit.key(vk, mods.ctrl, mods.shift);
+                }
+                rename.selected = false;
+            } else {
+                rename.edit.key(vk, mods.ctrl, mods.shift);
+            }
+        }
+        Outcome::Redraw
     }
 
     fn copy(&mut self) -> Outcome {
@@ -696,6 +797,15 @@ impl Terminal {
     /// The left button went down at a panel-local point: the panel's close button, the
     /// tab bar (or the open tab menu), or the start of a selection.
     pub fn press(&mut self, x: f32, y: f32) -> Outcome {
+        if self.rename.is_some() {
+            if tabs::RENAME_SAVE.contains(x, y) {
+                return self.finish_rename(true);
+            }
+            if tabs::RENAME_CANCEL.contains(x, y) || !tabs::RENAME_DIALOG.contains(x, y) {
+                return self.finish_rename(false);
+            }
+            return Outcome::Redraw;
+        }
         self.pointer = (x, y);
         if self.tabs.menu_open() || Self::in_header(y) {
             if !self.tabs.menu_open() && TERM_CLOSE.contains(x, y) {
@@ -721,6 +831,20 @@ impl Terminal {
 
     fn menu_action(&mut self, action: MenuAction, id: TabId) -> Outcome {
         match action {
+            MenuAction::Rename => {
+                if let Some(tab) = self.sessions.get(&id) {
+                    let mut edit = LineEdit::new();
+                    edit.set_text(&tab.name());
+                    self.tabs.cancel();
+                    self.selecting = false;
+                    self.rename = Some(Rename {
+                        id,
+                        edit,
+                        selected: true,
+                    });
+                }
+                Outcome::Redraw
+            }
             MenuAction::Pin | MenuAction::Unpin => {
                 self.tabs.set_pinned(id, action == MenuAction::Pin);
                 self.save = true;
@@ -752,6 +876,9 @@ impl Terminal {
 
     /// A double click selects the word under the pointer.
     pub fn double_click(&mut self, x: f32, y: f32) -> Outcome {
+        if self.rename.is_some() {
+            return Outcome::None;
+        }
         if Self::in_header(y) || self.tabs.menu_open() {
             return Outcome::None;
         }
@@ -767,6 +894,9 @@ impl Terminal {
     }
 
     pub fn drag(&mut self, x: f32, y: f32) -> Outcome {
+        if self.rename.is_some() {
+            return Outcome::None;
+        }
         self.pointer = (x, y);
         if self.tabs.drag(x, y) {
             return Outcome::Redraw;
@@ -787,6 +917,9 @@ impl Terminal {
 
     /// The left button went up (where the pointer last was).
     pub fn release(&mut self) -> Outcome {
+        if self.rename.is_some() {
+            return Outcome::None;
+        }
         self.selecting = false;
         let before = self.pinned_order();
         let (x, y) = self.pointer;
@@ -804,6 +937,9 @@ impl Terminal {
 
     /// Right click: on a tab, its menu; elsewhere, copies a selection or pastes.
     pub fn right_click(&mut self, x: f32, y: f32) -> Outcome {
+        if self.rename.is_some() {
+            return Outcome::None;
+        }
         if Self::in_header(y) || self.tabs.menu_open() {
             return if self.tabs.open_menu(x, y) {
                 Outcome::Redraw
@@ -824,6 +960,9 @@ impl Terminal {
 
     /// Middle click: closes the regular tab under the pointer.
     pub fn middle_click(&mut self, x: f32, y: f32) -> Outcome {
+        if self.rename.is_some() {
+            return Outcome::None;
+        }
         match self.tabs.middle_click(x, y) {
             Some(id) => self.close_tab(id),
             None => Outcome::None,
@@ -831,7 +970,7 @@ impl Terminal {
     }
 
     pub fn wheel(&mut self, delta: i32, x: f32, y: f32) -> Outcome {
-        if self.tabs.menu_open() || Self::in_header(y) {
+        if self.rename.is_some() || self.tabs.menu_open() || Self::in_header(y) {
             return Outcome::None;
         }
         let Some((col, row, _)) = self.cell_at(x, y) else {
@@ -910,12 +1049,19 @@ impl Terminal {
             Some(s) => s.screen(palette, self.focused),
             None => Screen::blank(self.grid.0 as usize, self.grid.1 as usize, palette),
         };
+        let mut tabs = self.tabs.view();
+        tabs.rename = self.rename.as_ref().map(|r| tabs::RenameView {
+            field: r
+                .edit
+                .view(tabs::RENAME_FIELD, self.focused, "Automatic title"),
+            selected: r.selected,
+        });
         View {
             title: tab.map_or_else(|| "terminal".to_string(), Tab::name),
             screen,
             notice: tab.and_then(Tab::notice),
             close_hover: self.close_hover,
-            tabs: self.tabs.view(),
+            tabs,
         }
     }
 
@@ -1184,6 +1330,7 @@ mod tests {
             args: vec![],
             cwd: String::new(),
             agent: "claude".into(),
+            custom_title: String::new(),
         }];
         assert!(r.term.shortcuts().is_empty());
         r.open();
@@ -1550,6 +1697,150 @@ mod tests {
         assert_eq!(spawns.borrow().opts.len(), 1, "no duplicate on first open");
     }
 
+    fn rename_to(r: &mut Rig, index: usize, title: &str) {
+        assert_eq!(menu(r, index, MenuAction::Rename), Outcome::Redraw);
+        r.type_key(0x08, Some('\u{8}'), NONE);
+        for ch in title.chars() {
+            r.term.char(ch, NONE);
+        }
+        r.type_key(VK_RETURN, Some('\r'), NONE);
+    }
+
+    #[test]
+    fn rename_targets_the_background_tab_without_sending_input_or_spawning() {
+        let mut r = Rig::new();
+        r.open();
+        let first = r.shell();
+        r.term.key(VK_T, CTRL_SHIFT);
+        let active = r.term.active_id();
+        rename_to(&mut r, 0, "API server");
+        assert_eq!(bar(&r).tabs[0].title, "API server");
+        assert_eq!(r.term.active_id(), active);
+        assert!(first.borrow().writes.is_empty());
+        assert!(
+            r.writes().is_empty(),
+            "Enter's WM_CHAR never reaches the active shell"
+        );
+        assert_eq!(r.spawns.borrow().opts.len(), 2);
+        assert!(
+            r.term.take_save().is_none(),
+            "unpinned rename isn't persisted"
+        );
+    }
+
+    #[test]
+    fn custom_title_survives_shell_titles_and_empty_name_restores_automatic_title() {
+        let mut r = Rig::new();
+        r.open();
+        rename_to(&mut r, 0, "Backend");
+        r.shell().borrow_mut().events.extend([
+            TermEvent::Title("running tests".into()),
+            TermEvent::ResetTitle,
+            TermEvent::Title("automatic title".into()),
+        ]);
+        r.term.drain();
+        assert_eq!(bar(&r).tabs[0].title, "Backend");
+        rename_to(&mut r, 0, "   ");
+        assert_eq!(bar(&r).tabs[0].title, "automatic title");
+        assert!(r.writes().is_empty());
+    }
+
+    #[test]
+    fn pinned_custom_title_round_trips_and_remains_after_a_shell_restart() {
+        let mut r = Rig::new();
+        r.open();
+        menu(&mut r, 0, MenuAction::Pin);
+        r.term.take_save();
+        rename_to(&mut r, 0, "My project");
+        let (pins, errors) = tabs::parse_pinned(&r.term.take_save().expect("rename saved"));
+        assert!(errors.is_empty());
+        assert_eq!(pins[0].custom_title, "My project");
+        r.term.shutdown();
+        r.term.tabs = Tabs::new();
+        r.term.restore = pins;
+        r.term.restore_pinned((8, 17), 1.0);
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Title("app replaces title".into()));
+        r.term.drain();
+        assert_eq!(bar(&r).tabs[0].title, "My project");
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Exited(Some(0)));
+        r.term.drain();
+        r.type_key(VK_RETURN, Some('\r'), NONE);
+        assert_eq!(bar(&r).tabs[0].title, "My project");
+        assert_eq!(r.spawns.borrow().opts.len(), 3);
+    }
+
+    #[test]
+    fn rename_cancel_and_modal_mouse_input_leave_the_shell_untouched() {
+        let mut r = Rig::new();
+        r.open();
+        let original = bar(&r).tabs[0].title.clone();
+        for cancel in [0, 1, 2, 3] {
+            menu(&mut r, 0, MenuAction::Rename);
+            r.term.char('x', NONE);
+            r.term.key(VK_T, CTRL_SHIFT);
+            r.term.wheel(120, TERM_TEXT.x, TERM_TEXT.y + 5.0);
+            r.term.right_click(TERM_TEXT.x, TERM_TEXT.y + 5.0);
+            r.term.double_click(TERM_TEXT.x, TERM_TEXT.y + 5.0);
+            match cancel {
+                0 => {
+                    r.type_key(0x1b, Some('\u{1b}'), NONE);
+                }
+                1 => {
+                    r.term
+                        .press(tabs::RENAME_CANCEL.x + 1.0, tabs::RENAME_CANCEL.y + 1.0);
+                }
+                2 => {
+                    r.term.press(TERM_TEXT.x, TERM_TEXT.y + 1.0);
+                }
+                _ => r.term.on_hide(),
+            }
+            assert_eq!(bar(&r).tabs[0].title, original);
+            assert!(r.term.view(&palette()).tabs.rename.is_none());
+            assert!(r.writes().is_empty());
+            assert_eq!(r.shell().borrow().scrolled, 0);
+            assert_eq!(r.spawns.borrow().opts.len(), 1);
+        }
+    }
+
+    #[test]
+    fn rename_edits_unicode_and_pastes_plain_text_without_pasting_to_the_shell() {
+        let mut r = Rig::new();
+        r.open();
+        menu(&mut r, 0, MenuAction::Rename);
+        *r.clip.borrow_mut() = Some("cafe\n日".into());
+        r.type_key(0x56, Some('\u{16}'), CTRL);
+        r.term.key(0x25, NONE);
+        r.term.char('é', NONE);
+        r.term.key(0x23, NONE);
+        r.term.char('!', NONE);
+        r.term
+            .press(tabs::RENAME_SAVE.x + 1.0, tabs::RENAME_SAVE.y + 1.0);
+        assert_eq!(bar(&r).tabs[0].title, "cafe é日!");
+        assert!(r.writes().is_empty());
+    }
+
+    #[test]
+    fn renaming_an_exited_tab_does_not_restart_its_process() {
+        let mut r = Rig::new();
+        r.open();
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Exited(Some(0)));
+        r.term.drain();
+        rename_to(&mut r, 0, "finished");
+        assert_eq!(bar(&r).tabs[0].title, "finished");
+        assert!(bar(&r).tabs[0].exited);
+        assert_eq!(r.spawns.borrow().opts.len(), 1);
+        assert!(r.writes().is_empty());
+    }
+
     #[test]
     fn startup_without_pins_does_not_spawn_a_default_shell() {
         let mut r = Rig::new();
@@ -1614,6 +1905,7 @@ mod tests {
                 args: vec![],
                 cwd: String::new(),
                 agent: String::new(),
+                custom_title: String::new(),
             })
             .to_vec();
         r.spawns.borrow_mut().fail = true;
