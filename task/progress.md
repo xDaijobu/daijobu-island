@@ -31,7 +31,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | T | **Terminal**: a real shell (PowerShell) inside the island, like VS Code's integrated terminal; drops from the notch on Ctrl+Alt+`, keeps running when closed | ✅ done (T, T2 tabs, T3 agent tabs) | `xDaijobu/stage-t-terminal` | user-requested · coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 1084 tests · PR #20 · [`stage-t-plan.md`](stage-t-plan.md) · [`stage-t-report.md`](stage-t-report.md) · [`stage-t3-plan.md`](stage-t3-plan.md) · [`stage-t3-report.md`](stage-t3-report.md) |
 | V | **Spotlight, Settings window, stay behind and notch size** | ✅ code complete, live acceptance pending | `xDaijobu/stage-v-notch` | 1196 tests · user requested PR + merge before remaining live checks · [`stage-v-plan.md`](stage-v-plan.md) · [`stage-v-report.md`](stage-v-report.md) |
 | T4 | **Terminal shortcuts by the idle clock and agent logos** | ✅ code complete, live checks pending | `xDaijobu/stage-t4-terminal-shortcuts` | user-requested · 1207 tests · [`stage-t4-brief.md`](stage-t4-brief.md) · [`stage-t4-report.md`](stage-t4-report.md) |
-| 8 | Clipboard history: search, pin, persistence and paste | Complete; native gaps documented | `stage-8-clipboard` | independent review, 1,633 tests, clippy/fmt/release and native smoke passed; [report](stage-8-report.md) |
+| 8 | Clipboard history: search, pin, persistence and paste | Complete; native gaps documented | `master` (`82bb4be`) | PR #31 merged; independent review, 1,633 tests, clippy/fmt/release and native smoke passed; [report](stage-8-report.md) |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
 | 11 | dj CLI | dropped | — | built 2026-10-27 and dropped by the user (PR #19 closed): their "CLI" meant a terminal in the island. Its Home tile is now Terminal (Stage T) |
@@ -43,15 +43,27 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 
 The order of stages 2+ can still change. Only one stage runs at a time.
 
-**Current work (2026-10-28):** Stage 7c-2 and 7d have merged; Stage 7d is in
-`master` at `282899d` (PR #30), and its old worktree was removed. Stage 8 Clipboard
-is complete in `stage-8-clipboard`, with independent review, 1,633 tests and native
-synthetic paste/privacy/DPAPI/restart smoke passed. The
-[coordination plan](stage-snap-clipboard-plan.md) and current
-[dispatch](stage-8-dispatch.md) record ownership and validation. The coordinator
-has completed review, workspace/release checks and native evidence. Remaining native
-target-app/hardware coverage and unresolved physical tray-click latency are documented.
+**Release v0.3.0 (2026-10-28):** version/docs-only release after Stage 8 merged
+at `82bb4be` (PR #31); Stage 8's worktree was removed. Includes terminal shortcuts/logos,
+pinned-tab restart and saved folders, application wheel scrolling, tab rename,
+Snap panel preservation, copy-only drag-out, screen pins and opt-in encrypted
+Clipboard history with exact-target paste. No dependency upgrades or feature edits.
+Stage 8 passed independent review, 1,633 tests and native synthetic
+paste/privacy/DPAPI/restart smoke. The [coordination plan](stage-snap-clipboard-plan.md)
+and [dispatch](stage-8-dispatch.md) retain ownership and validation evidence.
+Remaining target-app/hardware checks stay unverified. Taskbar/tray delay is not
+claimed fixed: direct callbacks measured 42/14/15 ms, without proving the cause of
+physical Explorer-click latency. Release verification is recorded below.
 **OCR is removed, not deferred.** Earlier reports/logs mentioning OCR are historical.
+
+Release gates passed on 2026-10-28: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`,
+`cargo test --workspace --locked` (1,633 passed; zero failed/ignored/filtered), and
+`cargo build --release --locked --target-dir C:/Users/UseR/orca/projects/daijobu-island/target/stage-t4`.
+Per-crate tests: app 293, capture 8, clip 82, core 758, render 171, sweep 35,
+term 71, vitals 26, win 189; music/doc tests zero. Version-only release does not
+repeat the Stage 8 clipboard-changing native suite. Portable packaging includes
+font/icon licenses and the three imported non-system Visual C++ runtime DLLs.
 
 ---
 

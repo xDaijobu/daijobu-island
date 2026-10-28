@@ -191,7 +191,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "daijobu"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dj-capture",
  "dj-clip",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "dj-capture"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dj-core",
  "windows",
@@ -225,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "dj-clip"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dj-core",
  "png",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "dj-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "dj-music"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dj-core",
  "dj-win",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "dj-render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dj-core",
  "skia-safe",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "dj-sweep"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dj-core",
  "serde_json",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "dj-term"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "alacritty_terminal",
  "dj-core",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "dj-vitals"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dj-core",
  "windows",
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "dj-win"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "windows",
  "windows-core",
