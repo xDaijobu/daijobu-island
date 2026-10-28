@@ -679,10 +679,11 @@ impl Spotlight {
 
     /// A typed char.
     pub fn char(&mut self, c: char, entries: &[Entry]) -> Action {
-        self.menu = None;
         if !self.query.insert_char(c) {
             return Action::None;
         }
+        // Only accepted text reranks and closes the menu. WM_CHAR also delivers the
+        // Enter used to arm Delete; ignoring it must preserve that confirmation.
         self.rerank(entries, false);
         Action::Redraw
     }
@@ -1665,6 +1666,28 @@ mod tests {
             s.press(mx, my, &entries),
             Action::Menu(MenuAction::Delete, entries[0].clone())
         );
+    }
+
+    #[test]
+    fn keyboard_delete_confirmation_survives_the_enter_character() {
+        let entries = vec![file("budget.xlsx")];
+        let mut s = searched("budget", &entries);
+        s.key(VK_APPS, false, false, &entries);
+        // Up wraps from Open to Delete.
+        s.key(VK_UP, false, false, &entries);
+        assert_eq!(s.key(VK_RETURN, false, false, &entries), Action::Redraw);
+        // Win32 translates that same Enter key into WM_CHAR after WM_KEYDOWN.
+        assert_eq!(s.char('\r', &entries), Action::None);
+        let menu = s.view(&entries).menu.expect("confirmation stays open");
+        assert!(menu.items.iter().any(|item| {
+            item.action == MenuAction::Delete && item.label == "Click again to delete"
+        }));
+        assert_eq!(s.query(), "budget");
+        assert_eq!(
+            s.key(VK_RETURN, false, false, &entries),
+            Action::Menu(MenuAction::Delete, entries[0].clone())
+        );
+        assert!(!s.menu_open());
     }
 
     #[test]

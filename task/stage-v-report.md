@@ -1,6 +1,6 @@
 # Stage V report: Stay behind, Settings window, Spotlight
 
-Plan: `task/stage-v-plan.md`. Branch `xDaijobu/stage-v-notch` (not pushed, no PR yet).
+Plan: `task/stage-v-plan.md`. Branch `xDaijobu/stage-v-notch`, targeting `master`.
 
 ## Built
 
@@ -41,9 +41,21 @@ Plan: `task/stage-v-plan.md`. Branch `xDaijobu/stage-v-notch` (not pushed, no PR
 
 ## Verification
 
+- `cargo fmt --all -- --check` passes.
 - `cargo clippy --workspace --all-targets -- -D warnings` is clean.
-- `cargo test --workspace`: **1177 passed**, 0 failed. Worker tests cover the Settings model, ranking, line edit, layer bookkeeping, the file scan, live app enumeration and icons, and the painters on a CPU raster.
+- `cargo test --workspace`: **1196 passed**, 0 failed (coordinator re-check, 2026-10-28). Tests cover the Settings model, ranking, line edit, layer bookkeeping, the file scan, live app enumeration and icons, the context menu, and the painters on a CPU raster.
 - `cargo build --release` passes.
+
+### Coordinator review, 2026-10-28
+
+- Fixed keyboard Delete confirmation: Windows delivers both a key event and a carriage-return character for Enter. The ignored character used to dismiss the confirmation menu before a second Enter could confirm. Only accepted search text now closes the menu through reranking.
+- Added a regression test reproducing that exact event sequence. It failed before the fix and passes afterward; no real files are recycled by the test.
+- Posted the Spotlight hotkey to the already-running release application: the popup became visible at `(1356, 38)` with size `728 × 460`. It lost foreground during the follow-up query/menu check while the PC was in use, so that check does **not** establish visual or action acceptance.
+- The user requested a PR and merge before the remaining manual checks, followed by removal of the Stage V worktree. Menu actions that launch applications, elevate, write to the clipboard or recycle files remain unverified live.
+
+### How to run
+
+Build with `cargo build --release`, then start `target/release/daijobu.exe`. Press Alt+Space, type a query, and right-click a result (or use Shift+F10 / the Menu key). Check file, folder and app menus separately. Open Settings from the Home gear or tray; changes apply immediately.
 
 ## Live (coordinator, 2026-10-28, 3440×1440 monitor)
 
