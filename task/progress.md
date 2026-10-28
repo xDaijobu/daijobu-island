@@ -1,6 +1,6 @@
 # Daijobu Island — Progress
 
-How we work: **one stage at a time.** Each stage runs in its own Orca worktree, with a Claude Sonnet 5.5 agent spawned there. When a stage is done, its status and log are updated here.
+How we work: **one stage at a time.** Each stage runs in its own Orca worktree. When the user requests parallel workers, the coordinator freezes interfaces and assigns non-overlapping file ownership before dispatch. When a stage is done, its status and log are updated here.
 
 Spec and design: [`docs/plan.html`](../docs/plan.html) · README: [`README.md`](../README.md) · Repo: https://github.com/xDaijobu/daijobu-island
 
@@ -23,15 +23,15 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
 | 7b | **Snap annotations**: Lightshot-style editor on release (8 tools, select/move, text re-edit, HSV picker, undo/redo) | ✅ merged, live test pending | `xDaijobu/stage-7b-work` | Opus 5.5 agent (headless) · merged at the user's request before the live test · [`stage-7b-report.md`](stage-7b-report.md) |
 | 7c | Snap stack: floating previews, countdown, keep-in-stack pin, multi-select, copy/save | ✅ | `xDaijobu/stage-7c-snap-stack` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 541 tests · live test with the user · [`stage-7c-report.md`](stage-7c-report.md) · no OLE in this stage |
-| 7c-2 | Snap stack: multi-file OLE drag-out | locked | — | after 7c; separate implementation and live target-app checks |
-| 7d | Snap: standalone pin-to-screen + OCR | locked | — | moved out of 7b; distinct from keeping a stack card |
+| 7c-2 | Snap stack: multi-file OLE drag-out | ⬜ planned, not dispatched | — | next; [brief](stage-7c2-brief.md), four implementation workers + two reviewers |
+| 7d | Snap: standalone pin-to-screen | ⬜ planned, not dispatched | — | after 7c-2; [brief](stage-7d-brief.md); OCR removed |
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
 | N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
 | N2 | **Reserve top space**: the notch registers a top AppBar so maximized windows (Chrome tabs) start below it (Settings switch, default on) | ✅ | `xDaijobu/stage-n2-appbar` | user-requested · built by the coordinator · live-checked by the coordinator |
 | T | **Terminal**: a real shell (PowerShell) inside the island, like VS Code's integrated terminal; drops from the notch on Ctrl+Alt+`, keeps running when closed | ✅ done (T, T2 tabs, T3 agent tabs) | `xDaijobu/stage-t-terminal` | user-requested · coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 1084 tests · PR #20 · [`stage-t-plan.md`](stage-t-plan.md) · [`stage-t-report.md`](stage-t-report.md) · [`stage-t3-plan.md`](stage-t3-plan.md) · [`stage-t3-report.md`](stage-t3-report.md) |
 | V | **Spotlight, Settings window, stay behind and notch size** | ✅ code complete, live acceptance pending | `xDaijobu/stage-v-notch` | 1196 tests · user requested PR + merge before remaining live checks · [`stage-v-plan.md`](stage-v-plan.md) · [`stage-v-report.md`](stage-v-report.md) |
 | T4 | **Terminal shortcuts by the idle clock and agent logos** | ✅ code complete, live checks pending | `xDaijobu/stage-t4-terminal-shortcuts` | user-requested · 1207 tests · [`stage-t4-brief.md`](stage-t4-brief.md) · [`stage-t4-report.md`](stage-t4-report.md) |
-| 8 | Clipboard history | 🔒 | — | |
+| 8 | Clipboard history: search, pin, persistence and paste | ⬜ planned, 🔒 in app | — | after 7d; [brief](stage-8-brief.md), six implementation workers + two reviewers |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
 | 11 | dj CLI | dropped | — | built 2026-10-27 and dropped by the user (PR #19 closed): their "CLI" meant a terminal in the island. Its Home tile is now Terminal (Stage T) |
@@ -42,6 +42,12 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 13 | Shelf, Ambient, glance extras | 🔒 | — | |
 
 The order of stages 2+ can still change. Only one stage runs at a time.
+
+**Next work (2026-10-28):** the user selected Snap and Clipboard and asked for a plan
+before spawning many subagents. Order: **7c-2 → 7d → 8**. The
+[coordination plan](stage-snap-clipboard-plan.md) contains file ownership, dependencies,
+dispatch prompts and validation. No implementation workers have been dispatched.
+**OCR is removed, not deferred.** Earlier reports/logs mentioning OCR are historical.
 
 ---
 
@@ -288,7 +294,7 @@ Headless: fmt, clippy and test only, `CARGO_BUILD_JOBS=2`. Don't run the exe and
 
 **Goal:** a Lightshot-style screenshot that never leaves the island's look. Press PrtSc, drag a region (or click a window), release, and paste. The image is already on the clipboard, and the island shows what you took.
 
-Snap is split into **7a** core (this one), **7b** annotations, **7c** the preview stack, **7c-2** OLE drag-out, and **7d** standalone pin-to-screen + OCR. Later-stage features stay out of this stage.
+Snap is split into **7a** core (this one), **7b** annotations, **7c** the preview stack, **7c-2** OLE drag-out, and **7d** standalone pin-to-screen. OCR was removed on 2026-10-28. Later-stage features stay out of this stage.
 
 ### Scope
 - [x] **Unlock Snap** in the feature registry (5 of 12 ready). Clicking the tile starts a snap (the island collapses first, so it isn't in the shot).
@@ -343,7 +349,7 @@ Press PrtSc. The screen freezes under a dimmed overlay, the loupe follows the cu
 
 **Goal:** Lightshot-style markup before the shot leaves the overlay. Press PrtSc, drag a region and release: the selection stays and a toolbar appears. Draw an arrow, box a button, type a note, pixelate a password, number the steps, undo a mistake, then press Ctrl+C. The pasted image has the markup, and the island shows the thumb as before.
 
-Pin and OCR move to a new Stage 7d. The Snap stack stays 7c.
+Standalone pin-to-screen moves to Stage 7d. The Snap stack stays 7c. OCR was removed on 2026-10-28.
 
 ### Scope
 - [x] **Flow (replaces 7a's copy on release).** The overlay has two phases:
@@ -446,7 +452,7 @@ Headless, as in 7a: fmt, clippy, test and release only. Don't run the exe, don't
 - [x] **Floating previews:** a separate native Win32/DComp surface below the island, not another island activity and not another AppBar. Cards are 124×80 logical px with r 12, aspect-fit annotated thumbnails, a 16 px countdown ring, a selected mark and visible action labels. Newest first; gap 10 px. Four/five cards may fan/overlap at rest; hovering or selecting spreads them into individually reachable cards. Follow the theme and spring tokens; do not copy the mockup's fake browser drag behavior.
 - [x] **Placement/input:** follow the island's current lower edge with a 12 logical px gap, clamp to its monitor's usable bounds, handle DPI/negative desktop coordinates and reflow on display changes. Never cover island controls. Size the stack swap chain once for its maximum layout at the current DPI, not per animation frame. Only actual cards/action bar receive input; transparent gaps and shadows are click-through. Appearance does not steal keyboard focus or add an Alt-Tab/taskbar entry. Provide deliberate keyboard access to card actions without new global shortcuts; do not rely on color alone for selection/status.
 - [x] **Countdown:** `[snap] preview_seconds = 10`; valid integer range 3–60, otherwise default 10. No new Settings row. Store remaining duration using injected monotonic time in `dj-core`; resume the remainder, never reset it. Hover pauses the relevant card; any selected card pauses the whole stack while batch actions are available. Pin pauses that card indefinitely for this app session. Unpin/deselect resumes only when all other pause reasons end. No time accrues while the stack is hidden or a capture overlay is active.
-- [x] **Pin means keep in stack**, not a draggable full-size reference window. It does not persist across restart. Standalone pin-to-screen and OCR stay in 7d.
+- [x] **Pin means keep in stack**, not a draggable full-size reference window. It does not persist across restart. Standalone pin-to-screen stays in 7d; OCR was removed on 2026-10-28.
 - [x] **Selection/actions:** clicking card body toggles its selection without clearing other cards. Per-card buttons: `Copy`, `Save` (then `Open`), `Pin`/`Unpin`, `Dismiss`. Buttons do not also toggle selection. With a selection show count, `Select all`, `Clear selection`, `Save selected`, `Dismiss selected`; single-selection `Copy` is allowed, but no misleading multi-image clipboard copy. Batch save keeps cards and selection, records per-item paths/errors and never silently discards failures. Dismiss only releases previews, including pinned ones explicitly chosen by the user.
 - [x] **Payload/storage:** reuse the final flattened BGRA/PNG from 7b and existing no-overwrite save/reveal paths. Do not recapture, retain full frozen desktops, or introduce a clipboard database. No automatic disk writes merely to display/pin a card. Re-saving an already saved card uses its existing path; if the file disappeared, report it and permit saving again. File/clipboard failures stay visible on the affected card and are logged; they never report success or dismiss the card.
 - [x] **Bounded retention:** at most 5 cards and 256 MiB of retained full-resolution BGRA + PNG payloads for the stack, counted once if shared with the thumb. Evict oldest unpinned, unselected, unhovered, non-busy cards only when needed. If protected cards or an oversized incoming shot prevent admission, keep existing cards, preserve the new shot's normal clipboard/save/6 s thumb flow, and show `Preview stack full`. Never evict a pinned/selected card silently. Identify items by stable IDs, not changing display indices.
@@ -471,15 +477,69 @@ Use [`stage-7c-brief.md`](stage-7c-brief.md). Implementation runs in its own wor
 - 2026-10-26: built in `xDaijobu/stage-7c-snap-stack` after the Kilo handover: the coordinator (Opus 5.5) wrote the seam contract ([`stage-7c-plan.md`](stage-7c-plan.md)) and ran four Sonnet 5.5 workers in parallel worktrees (core, native window, render, payload store), then wrote the controller and the app wiring itself. Deviations: no fan or hover lift; no drop shadow and the focus ring sits inside the card, because the window region that keeps gaps click-through also clips what shows. fmt, clippy `-D warnings`, 541 workspace tests (after the wiring review fixes) and the release build pass on a worktree-local target. **Live test pending** (report lists the five sequences and the coordinates to drive them).
 - 2026-10-26: a Sonnet 5.5 review of the wiring found no high-severity bug; its medium/low findings (tick re-armed on every input, hover/focus kept across a rebuild, no retry after a lost device, stale focus loss, hidden buttons tappable, thumb/card saved state) were fixed with tests. **Live test passed**: the user ran the 9-step checklist on the release build (cards, countdown pause/resume, card buttons, multi-select bar, exclusion from the next capture, click-through, stack full, tray keyboard access, theme/panel) and confirmed it works as specified ("ok mantap ud sesuai").
 
-## Stage 7c-2: Snap stack OLE drag-out (deferred)
+## Stage 7c-2: Snap stack OLE drag-out (planned)
 
-**Gate:** only after 7c passes its own acceptance; write a separate brief before dispatch. Not part of the current implementation contract.
+**Status:** ready for later dispatch; no implementation started.
+Contract: [stage-7c2-brief.md](stage-7c2-brief.md).
+Worker ownership and dependencies: [coordination plan](stage-snap-clipboard-plan.md).
 
-- Native `DoDragDrop` with `IDataObject` + `IDropSource`; use Windows' `IDragSourceHelper` for the thumbnail/count ghost rather than implementing that helper interface ourselves.
-- Multiple real PNG files via `CF_HDROP`; single-image drags also offer registered `PNG` and `CF_DIB`. Those image formats cannot represent a bundle: never advertise several images as one or silently pick the first for multi-select.
-- Materialize files through the existing collision-safe save path only when explicitly dragging/saving. Keep files after cancellation, drop or preview expiry; a target may read them later. Never delete user-saved PNGs as drag cleanup.
-- Copy-only effects; cancellation/rejected drops retain cards and selection. Handle COM apartment, reference counting, `FORMATETC`/`STGMEDIUM` ownership, reentrancy and all error paths in platform code. No UI-thread state borrows held across `DoDragDrop`'s nested message loop.
-- Require headless format/ownership tests plus actual single/multi-file and cancel/reject checks in Explorer, Discord and a browser file-upload target. Never upload/post/send to a service just to test a drop. Record target versions/results; unsupported formats must be reported honestly.
+- [ ] Body drag with native threshold; single card or selected group, thumbnail/count ghost.
+- [ ] Copy-only OLE transport: CF_HDROP for real PNG files, plus PNG/CF_DIB for a single image.
+- [ ] Async all-or-nothing preparation, collision-safe saves and stable file lifetime.
+- [ ] Reentrant dispatcher with no App borrow held through DoDragDrop; cancellation and
+  release-before-ready never start a delayed drag.
+- [ ] Confirmed copy drops dismiss only dragged unpinned cards; cancel/reject keeps cards,
+  selection and countdown remainder.
+- [ ] Format/ownership/state tests, standard workspace checks and local target-app tests.
+
+Acceptance: drag one and several annotated synthetic shots into Explorer and a local
+browser file input; verify exact pixels, copy-only behaviour, cancel/reject, DPI and
+countdowns. Report untested target apps honestly; never send/upload test attachments.
+
+## Stage 7d: Snap pin-to-screen (planned)
+
+**Status:** after 7c-2; no implementation started. OCR is explicitly removed.
+Contract: [stage-7d-brief.md](stage-7d-brief.md).
+
+- [ ] Separate Keep in stack and Pin to screen actions; editor pin does not copy/save.
+- [ ] Independent movable native reference windows, Copy/Save/Open/Close, no activation
+  on creation, and tray recovery.
+- [ ] Stable IDs and shared annotated payloads; source-card expiry does not close pins.
+- [ ] Session lifetime, eight-window / 256 MiB limits, no silent eviction or disk writes.
+- [ ] Monitor/DPI placement, hide/show, capture exclusion and exact restoration after
+  capture/cancel/error; preserve the existing Terminal/panel Snap behaviour.
+- [ ] Synthetic model/render/lifecycle checks, workspace checks and desktop acceptance.
+
+Acceptance: pin/move two annotated shots, dismiss their source cards, copy/save from
+the pins, then Snap with Terminal open; references are excluded and restored while
+the open panel remains available. Confirm independent Close and capacity feedback.
+
+## Stage 8: Clipboard history (planned)
+
+**Status:** after 7d; Clipboard remains locked in the running app.
+Contract: [stage-8-brief.md](stage-8-brief.md).
+
+- [ ] Ctrl+Alt+V / Home / tray entry, first-use Enable history, Pause/Resume and Clear.
+- [ ] Event-driven capture of text, links, colours, supported images and file lists;
+  privacy flags, source exclusions, bounded reads and self-replay suppression.
+- [ ] Search/filter, pin/unpin, delete, list navigation and in-panel previews.
+- [ ] SQLite + user-scoped DPAPI before writes; restart persistence, 500 unpinned /
+  30 days, 100 pins and 512 MiB encrypted payload limits.
+- [ ] Exact-target paste / plain-text paste, internal Terminal paste routing and
+  copy-only fallback when automatic paste cannot be sent.
+- [ ] Reuse 7c-2 image/file drag transport; exported files survive history deletion.
+- [ ] Synthetic clipboard/storage/focus/format tests, workspace checks, desktop
+  acceptance and feature unlock only after integration.
+
+Acceptance: copy synthetic supported types, search and paste into disposable local
+targets, pin and restart, verify privacy exclusions, clear/prune and error recovery,
+then check Snap integration and an idle UI. Do not test paste in real agent terminals.
+
+### Planning log
+
+- 2026-10-28: user chose Snap and Clipboard next, removed OCR, and requested the plan
+  before later subagent dispatch. Four / four / six implementation roles plus two
+  reusable reviewers are defined. This is planning only; no Rust or runtime changes.
 
 ---
 

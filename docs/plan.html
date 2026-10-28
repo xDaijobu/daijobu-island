@@ -85,6 +85,9 @@
   .clipitem.on{background:var(--s2)}
   .clipitem .ty{width:26px;height:26px;border-radius:7px;background:var(--s1);display:grid;place-items:center;font:600 10px var(--mono);color:var(--acc);flex:none;background-size:cover}
   .clipitem .tx{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .refpin{position:absolute;z-index:190;left:26%;top:150px;width:280px;padding:8px;border:1px solid var(--s2);border-radius:14px;background:var(--pill);color:var(--t1);box-shadow:0 12px 28px #0005;touch-action:none;cursor:move}
+  .refpin img{display:block;width:100%;border-radius:8px;pointer-events:none;margin-top:7px}
+  .refpin button{font:500 10px var(--mono);padding:3px 6px;border:0;border-radius:5px;background:var(--s2);color:var(--t1);cursor:pointer}
   /* capture mode (render gambar README) */
   body.cap header{padding:0} body.cap .wrap{max-width:none;padding:0}
   body.cap .topbar,body.cap h1,body.cap .lead,body.cap header p,body.cap .themegrid,body.cap section,body.cap footer,body.cap .ctrls,body.cap .hint{display:none!important}
@@ -228,7 +231,7 @@
       <div class="dragghost" id="dragghost"><b id="dragn">1</b></div>
       <div class="zones" id="zones" style="grid-template-columns:1.2fr 1fr;grid-template-rows:1fr 1fr"><div style="grid-row:1/3">1</div><div class="hot">2</div><div>3</div></div>
       <div class="snapov" id="snapov"><div class="sel"><span class="sz">612 × 388</span><div class="loupe"></div>
-        <div class="tools"><span class="on">↗</span><span>▢</span><span>✎</span><span>▬</span><span>T</span><span>▦</span><span>①</span><span style="width:auto;padding:0 8px;color:var(--t2)">|</span><span>⧉</span><span>⤓</span><span>📌</span><span>OCR</span></div></div></div>
+        <div class="tools"><span class="on">↗</span><span>▢</span><span>✎</span><span>▬</span><span>T</span><span>▦</span><span>①</span><span style="width:auto;padding:0 8px;color:var(--t2)">|</span><span>⧉</span><span>⤓</span><span title="Pin to screen">📌</span></div></div></div>
       <div class="hint tiny">klik island = expand / collapse · <span class="kbd">T</span> = ganti theme · <span class="kbd">S</span> = ambil SS · <span class="kbd">V</span> = clipboard</div>
       <div class="island grain scan" id="island"><div class="content" id="content"></div></div>
       <div class="ctrls" id="ctrls"></div>
@@ -312,9 +315,9 @@
     <tr><td>Battery</td><td class="m">GetSystemPowerStatus + RegisterPowerSettingNotification</td><td>mudah</td><td>tidak</td><td>1</td></tr>
     <tr><td>Vitals</td><td class="m">GetSystemTimes · GlobalMemoryStatusEx · GetDiskFreeSpaceExW · GetIfTable2 · NtQuerySystemInformation</td><td>sedang</td><td>tidak</td><td>1→3</td></tr>
     <tr><td>Sweep</td><td class="m">walk paralel (jwalk/rayon) · IFileOperation (recycle) · GetFinalPathNameByHandleW</td><td>sedang</td><td>tidak</td><td>3</td></tr>
-    <tr><td>Snap (screenshot)</td><td class="m">Windows.Graphics.Capture · DXGI Duplication · Windows.Media.Ocr · CF_DIB/PNG</td><td>sedang</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Snap (screenshot)</td><td class="m">DXGI Duplication · GDI fallback · CF_DIB/PNG · native reference windows</td><td>sedang</td><td>tidak</td><td>2</td></tr>
     <tr><td>Snap stack (drag-out)</td><td class="m">OLE DoDragDrop · IDataObject (CF_HDROP + PNG + CF_DIB) · IDragSourceHelper</td><td>sedang</td><td>tidak</td><td>2</td></tr>
-    <tr><td>Clipboard history</td><td class="m">AddClipboardFormatListener · SQLite + DPAPI · SendInput · WH_KEYBOARD_LL (opsi Win+V)</td><td>sedang</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Clipboard history</td><td class="m">AddClipboardFormatListener · SQLite + DPAPI · checked-target SendInput · Ctrl+Alt+V</td><td>sedang</td><td>tidak</td><td>2</td></tr>
     <tr><td>dj CLI</td><td class="m">named pipe (ACL khusus user) + exe kecil</td><td>mudah</td><td>tidak</td><td>2</td></tr>
     <tr><td>Tile dan Scenes</td><td class="m">SetWinEventHook(MOVESIZE*) · SetWindowPos · DWMWA_EXTENDED_FRAME_BOUNDS · EnumDisplayMonitors</td><td>sedang</td><td>tidak</td><td>3</td></tr>
     <tr><td>Boot Scene + admin</td><td class="m">ITaskService (RunLevel Highest) · CreateProcess · IApplicationActivationManager · WM_QUERYENDSESSION</td><td>sedang</td><td>tidak (UAC sekali)</td><td>3</td></tr>
@@ -334,11 +337,12 @@
       <li><code>PrtSc</code> atau hotkey: layar di-freeze, terus muncul overlay Skia fullscreen (render stack-nya sama)</li>
       <li>Seleksi area dengan snap ke window, loupe (pembesar) yang nampilin koordinat dan hex warna, plus label ukuran</li>
       <li>Anotasi: panah, kotak, pen, highlighter, teks, blur/pixelate, nomor step, undo</li>
-      <li>Aksi: copy (PNG + <code>CF_DIB</code>), save, <b>pin</b> (window kecil ngambang), <b>OCR</b> (<code>Windows.Media.Ocr</code>, offline)</li>
+      <li>Aksi: copy (PNG + <code>CF_DIB</code>), save, <b>Pin to screen</b> (window referensi yang bisa dipindah, dengan Copy/Save/Close). Pin dari editor tidak otomatis mengubah clipboard</li>
       <li><b>Snap stack</b>: habis capture, preview <b>ngambang di bawah island</b> selama 10 detik (bisa diatur). Ring countdown-nya berhenti waktu di-hover atau dipilih, dan bisa di-pin biar gak ilang</li>
       <li>SS yang banyak bakal numpuk dan nge-kipas. Klik buat <b>select</b> (bisa beberapa), ada "pilih semua", terus <b>drag & drop sekaligus</b> ke Discord, Explorer, browser, Figma, dan lain-lain</li>
-      <li>Upload opsional (Imgur atau server sendiri). Default-nya <b>lokal</b></li>
-      <li>Capture: <code>Windows.Graphics.Capture</code> (aman di HDR dan multi-monitor), fallback ke DXGI Duplication lalu GDI</li>
+      <li><b>Keep in stack</b> menahan preview di stack; <b>Pin to screen</b> membuat referensi independen sampai app ditutup. Maksimum 8 referensi / 256 MiB; menutupnya tidak menghapus file yang disimpan</li>
+      <li>Capture yang ada memakai DXGI Duplication dengan fallback GDI. Preview dan reference pin disembunyikan sebelum freeze lalu dipulihkan; panel Terminal yang sedang terbuka tetap ikut tertangkap</li>
+      <li>Scope berikutnya tetap <b>lokal</b>: tidak ada upload atau recording. OCR dibuang atas permintaan user (2026-10-28)</li>
     </ul></div>
     <div class="card"><span class="tag a">F3</span><h3 style="margin-top:10px">🪟 Tile: split window dan Scenes</h3><ul>
       <li>Drag window ke island, island melebar jadi picker layout, terus drop. Atau <span class="kbd">Shift</span>+drag buat munculin zona di layar</li>
@@ -386,19 +390,20 @@
   <div class="grid g2" style="margin-top:16px">
     <div class="card"><span class="tag a">F2</span><h3 style="margin-top:10px">📋 Clipboard history (ala Win+V)</h3><ul>
       <li>Tekan <span class="kbd">V</span> di mockup buat coba. Isinya teks, link, warna, file, dan <b>gambar</b></li>
-      <li><b>Gambar dari mana aja</b>: copy image di browser, Figma, Paint, Photoshop, Snipping Tool, atau hasil Snap. Semua disimpan sebagai PNG, lengkap dengan thumbnail, ukuran, dan asal app-nya. Hover buat liat preview besar, dan gambar bisa di-<b>paste sebagai gambar</b> atau di-<b>drag keluar sebagai file</b></li>
-      <li>Ada pencarian dan filter tipe. <span class="kbd">1‥9</span> buat paste cepat, ada pin, dan <span class="kbd">⇧</span>+<span class="kbd">↵</span> buat paste sebagai plain text</li>
-      <li>Hotkey default <span class="kbd">Ctrl</span>+<span class="kbd">⇧</span>+<span class="kbd">V</span>. Ada <b>opsi ambil alih</b> <span class="kbd">Win</span>+<span class="kbd">V</span> lewat keyboard hook, dan clipboard history bawaan Windows tetap jalan</li>
-      <li>Paste: isi clipboard di-set, fokus dibalikin ke window sebelumnya, lalu <code>SendInput(Ctrl+V)</code></li>
-      <li>Format: <code>CF_UNICODETEXT</code>, <code>CF_HTML</code>, RTF, PNG/<code>CF_DIB</code>, <code>CF_HDROP</code></li>
-      <li><b>Privasi</b>: item yang ditandai <code>ExcludeClipboardContentFromMonitorProcessing</code> atau <code>CanIncludeInClipboardHistory=0</code> (password manager) di-skip. Data disimpan di SQLite + DPAPI, dengan batas 500 item / 30 hari. Item yang di-pin gak kena batas</li>
+      <li><b>Gambar standar dari aplikasi lain</b>: PNG atau DIB/DIBV5 yang didukung, termasuk hasil Snap. Thumbnail, ukuran dan asal app tampil di history. Preview tetap di dalam panel; gambar bisa di-paste atau di-<b>drag keluar sebagai file</b>. Format proprietary dilaporkan jika tidak didukung</li>
+      <li>Pencarian, filter All/Text/Images/Files/Pinned, pin/unpin dan delete. <span class="kbd">Alt</span>+<span class="kbd">1‥9</span> untuk slot terlihat; angka biasa tetap masuk ke search. <span class="kbd">↵</span> paste, <span class="kbd">⇧↵</span> plain text, <span class="kbd">Ctrl+C</span> copy</li>
+      <li>Hotkey default <span class="kbd">Ctrl</span>+<span class="kbd">Alt</span>+<span class="kbd">V</span>, juga tersedia dari Home/tray. <b>Win+V tetap milik Windows</b>; Ctrl+Shift+V tetap bisa dipakai Terminal/editor</li>
+      <li>Paste mengembalikan fokus ke target yang dicatat saat panel dibuka, memverifikasi target, lalu mengirim Ctrl+V. Untuk Terminal island, pakai jalur paste tab tersebut. Jika target tidak valid, item tetap di-copy dan ada feedback untuk paste manual</li>
+      <li>Format: <code>CF_UNICODETEXT</code> dengan alternatif <code>HTML Format</code>/RTF, PNG/<code>CF_DIBV5</code>/<code>CF_DIB</code>, dan <code>CF_HDROP</code> copy-only. Link/warna adalah turunan teks; tidak ada fetch URL atau OCR</li>
+      <li><b>Privasi</b>: cek <code>ExcludeClipboardContentFromMonitorProcessing</code>, <code>CanIncludeInClipboardHistory=0</code>, dan app exclusion sebelum membaca payload. Enable history saat pertama dibuka; Pause/Resume dan Clear selalu tersedia</li>
+      <li>SQLite + DPAPI per-user: isi, preview, path, metadata asal dan thumbnail dienkripsi sebelum ditulis. Batas 500 item biasa / 30 hari; pin bertahan setelah restart dengan maksimal 100 pin. Budget payload terenkripsi 512 MiB; item pin tidak diam-diam digusur</li>
     </ul></div>
     <div class="card"><span class="tag a">F2</span><h3 style="margin-top:10px">🫳 Drag-out: bikin ini nyata di Windows</h3><ul>
       <li>Card preview digambar di window DComp kecil terpisah di bawah island (render stack-nya sama), dengan hit-test seukuran card-nya</li>
       <li>Drag pakai OLE <code>DoDragDrop</code> dengan <code>IDataObject</code> + <code>IDropSource</code> sendiri (<code>#[implement]</code> di windows-rs)</li>
       <li>Data yang dikirim: <code>CF_HDROP</code> (file PNG asli di <code>Pictures/daijobu/</code>, beberapa file sekaligus kalau multi-select), plus PNG + <code>CF_DIB</code> buat app yang cuma nerima gambar</li>
       <li>Selama drag, tumpukan thumbnail + badge jumlah ditampilin lewat <code>IDragSourceHelper</code></li>
-      <li>Setelah di-drop, card otomatis hilang. Riwayat SS tetap bisa dibuka lagi dari clipboard history</li>
+      <li>Setelah copy drop dikonfirmasi, hanya card yang tidak di-keep dalam stack yang hilang. Cancel/reject menjaga card, selection dan sisa countdown; PNG yang sudah dibuat tetap ada untuk target yang membacanya belakangan</li>
     </ul></div>
   </div>
 
@@ -487,6 +492,20 @@
   </table></div>
   <p style="font-size:13px">Semua ukuran dikali DPI scale. Tepi pill di-snap ke device pixel biar pola dither dan scanline gak goyang. Grain selalu 1 device-px.</p>
   <p style="font-size:13px"><b style="color:var(--t1)">Style island: notch atau pill.</b> Default-nya <code>notch</code>: bodinya nempel ke tepi atas layar ala notch iPhone 13 / MacBook (atas rata di y = 0, bahu cekung 8 px di sambungannya, sudut bawah bulat), dan pas expand dia tumbuh ke bawah/samping tapi tetap nempel. Warnanya ikut <code>pill</code> dari theme. <code>pill</code> itu gaya lama: kapsul ngambang 6 px di bawah tepi layar. Diatur lewat <code>[island] style</code> di <code>~/.daijobu/config.toml</code> atau baris ISLAND STYLE di panel Settings (klik = toggle, langsung ke-apply dan ke-save). Rect pill, konten, dan hit testing tetap sama, yang beda cuma body yang digambar. Tetap overlay biasa, gak pakai AppBar atau strip layar yang di-reserve.</p>
+</div></section>
+
+<!-- ===================== SNAP + CLIPBOARD DELIVERY ===================== -->
+<section id="snap-clipboard-delivery"><div class="wrap">
+  <div class="label">next · 2026-10-28 · planned</div>
+  <h2>Snap → pin ke layar → Clipboard</h2>
+  <p>Scope yang dipilih user untuk implementasi berikutnya. <b>OCR dibuang, bukan ditunda.</b> Saat ini baru plan; worker implementasi belum di-spawn. Satu stage selesai dan di-merge sebelum stage berikutnya dimulai.</p>
+  <div class="grid g3">
+    <div class="card"><span class="tag a">7c-2 · 4 workers + 2 reviewers</span><h3>Drag screenshot</h3><p>Single/multi-select ke aplikasi lain, PNG asli beranotasi, ghost dengan jumlah, copy-only, cancel yang aman. Transport OLE dipakai ulang Clipboard.</p><a href="../task/stage-7c2-brief.md">Brief dan acceptance →</a></div>
+    <div class="card"><span class="tag a">7d · 4 workers + 2 reviewers</span><h3>Pin to screen</h3><p>Window referensi independen, bisa dipindah dan Copy/Save/Close. Terpisah dari Keep in stack; disembunyikan saat freeze dan dipulihkan setelah capture.</p><a href="../task/stage-7d-brief.md">Brief dan acceptance →</a></div>
+    <div class="card"><span class="tag a">8 · 6 workers + 2 reviewers</span><h3>Clipboard history</h3><p>Teks/link/warna/gambar/file, search/filter, pin yang bertahan saat restart, preview, exact-target paste dan storage SQLite + DPAPI.</p><a href="../task/stage-8-brief.md">Brief dan acceptance →</a></div>
+  </div>
+  <p style="margin-top:16px"><a href="../task/stage-snap-clipboard-plan.md">Plan koordinasi lengkap →</a> berisi kontrak interface, pemilik file, urutan dependensi, prompt dispatch dan checklist pengujian. Maksimal satu coordinator + delapan subagent; build dijadwalkan terpisah.</p>
+  <p class="tiny">Clipboard panel: 400 × 360 logical px, lima row 44 px, search/filter dan preview di panel. Mockup di atas memakai data contoh; bukan clipboard komputer.</p>
 </div></section>
 
 <!-- ===================== THEME ENGINE ===================== -->
@@ -578,8 +597,8 @@ style = "segment"   <span class="c"># segment | bar | dot | block | reel</span><
 │  ├─ <span class="k">dj-vitals</span>   <span class="c">cpu/mem/disk/net/battery/proc, health score</span>
 │  ├─ <span class="k">dj-sweep</span>    <span class="c">clean, purge, bigfiles, guard, recycle, oplog</span>
 │  ├─ <span class="k">dj-notify</span>   <span class="c">listener (fase 2, butuh sparse pkg)</span>
-│  ├─ <span class="k">dj-capture</span>  <span class="c">WGC capture, overlay snap, anotasi, OCR</span>
-│  ├─ <span class="k">dj-clip</span>     <span class="c">clipboard history (SQLite+DPAPI), OLE drag-out</span>
+│  ├─ <span class="k">dj-capture</span>  <span class="c">DXGI/GDI capture, PNG/DIB; overlay dan anotasi di app/core/render</span>
+│  ├─ <span class="k">dj-clip</span>     <span class="c">planned Stage 8: clipboard monitor + SQLite/DPAPI; reuse OLE dari dj-win</span>
 │  ├─ <span class="k">dj-tile</span>     <span class="c">zona, layout, scenes, boot scene, task scheduler</span>
 │  └─ <span class="k">dj-ipc</span>      <span class="c">named pipe API + binary `dj` CLI</span>
 ├─ helper/       <span class="c">dj-elevated.exe (launch + place app admin)</span>
@@ -678,7 +697,7 @@ band: 85+ <span class="k">daijobu</span> · 65+ ok · 45+ hmm · &lt;45 <span st
     <li>Sparse MSIX dan signing, lalu notifikasi Windows</li>
     <li>Window settings (digambar Skia juga), split bubble</li>
     <li>Semua theme bawaan, theme picker, auto-switch rules, import/export <code>.toml</code></li>
-    <li><b>Snap</b>: capture, overlay seleksi, anotasi, copy/save/pin, OCR</li>
+    <li><b>Snap</b>: capture, overlay seleksi, anotasi, copy/save, keep in stack dan pin to screen</li>
     <li><b>Snap stack</b>: preview ngambang, countdown, multi-select, drag & drop OLE (banyak file sekaligus)</li>
     <li><b>Clipboard history</b>: ala Win+V, dengan pencarian, pin, dan privasi</li>
     <li><b>dj CLI</b> / API named pipe</li></ul></div>
@@ -831,7 +850,7 @@ const S={
   shelf:{w:360,h:96,r:28,label:'shelf'},
   ambient:{w:400,h:166,r:32,label:'ambient'},
   dev:{w:300,h:36,r:18,label:'dj cli'},
-  clip:{w:400,h:282,r:30,label:'clipboard'},
+  clip:{w:400,h:360,r:30,label:'clipboard'},
 };
 const expandOf={media:'mediaX',timer:'mediaX',idle:'vitals',split:'mediaX',dev:'vitals'};
 let cur='media',prevCompact='media';
@@ -872,7 +891,7 @@ const V={
   split:()=>`<div class="row" style="height:100%;padding:0 10px 0 6px;gap:8px"><div class="art" style="width:24px;height:24px;background-image:url(${artURL})"></div>${vu(4,8)}<span style="flex:1"></span><span class="tiny">focus</span><span class="dotnum" style="font-size:16px;color:var(--acc)" id="tclock">15:32</span></div>`,
   snap:()=>`<div class="row" style="height:100%;padding:0 12px 0 10px;gap:12px"><div class="art" style="width:76px;height:48px;border-radius:8px;background-image:url(${wallURL});border:1px solid var(--s2)"></div>
      <div style="flex:1;min-width:0"><div class="row" style="gap:6px"><span class="tiny">snap · 612×388</span><span style="flex:1"></span><span class="tiny" style="color:var(--acc)">✓ di clipboard</span></div>
-     <div class="row" style="gap:5px;margin-top:8px">${['copy','save','edit','pin','ocr'].map((a,i)=>`<span style="font:500 10px var(--mono);letter-spacing:.06em;padding:4px 7px;border-radius:7px;${i==4?'background:var(--acc);color:var(--pill)':'background:var(--s2)'}">${a}</span>`).join('')}</div></div></div>`,
+     <div class="row" style="gap:5px;margin-top:8px">${['copy','save','pin to screen'].map((a,i)=>`<span style="font:500 10px var(--mono);letter-spacing:.06em;padding:4px 7px;border-radius:7px;${i==2?'background:var(--acc);color:var(--pill)':'background:var(--s2)'}">${a}</span>`).join('')}</div></div></div>`,
   tile:()=>{const L=[['1fr 1fr','1fr',[['1','1']]],['1.5fr 1fr','1fr',[]],['1fr 1fr 1fr','1fr',[]],['1.4fr 1fr','1fr 1fr',['1/3']],['1fr 1fr','1fr 1fr',[]],['1.6fr 1fr','1fr 1fr 1fr',['1/4']]];
      const n=[2,2,3,3,4,4];
      return `<div style="padding:16px 20px"><div class="row" style="justify-content:space-between"><span class="tiny">tile · drop window ke zona</span><span class="tiny">monitor 1 · 2560×1440</span></div>
@@ -886,11 +905,12 @@ const V={
      <div class="file" style="border-style:dashed;background:transparent"><span style="font:400 18px var(--mono);color:var(--t2)">+</span><span class="tiny" style="font-size:8.5px">drop</span></div></div>`,
   ambient:()=>`<div style="padding:16px 20px"><div class="row" style="justify-content:space-between"><span class="tiny">ambient mixer</span><span class="tiny"><span class="lamp" style="display:inline-block;margin-right:6px"></span>lofi radio · 87.7 tanuki fm</span></div>
      <div class="row" style="justify-content:space-around;margin-top:14px">${[['rain',.7,'☂'],['café',.4,'☕'],['fire',.25,'🔥'],['noise',.15,'≋'],['radio',.55,'📻']].map(([n,v,ic])=>`<div style="text-align:center;width:54px"><div class="fader"><b style="height:${v*100}%"></b><u style="bottom:calc(${v*100}% - 4px)"></u></div><div style="margin-top:8px;font-size:12px">${ic}</div><div class="tiny" style="margin-top:2px">${n}</div></div>`).join('')}</div></div>`,
-  clip:()=>`<div style="padding:14px 16px">
-     <div class="row" style="gap:8px"><div style="flex:1;height:30px;border-radius:9px;background:var(--s1);border:1px solid var(--s2);display:flex;align-items:center;padding:0 10px;gap:8px"><span class="tiny">⌕</span><span style="font:400 12px var(--sans);color:var(--t2)">cari clipboard…</span></div>
-       ${['all','txt','img','link'].map((t,i)=>`<span style="font:500 10px var(--mono);padding:5px 7px;border-radius:7px;${i==0?'background:var(--acc);color:var(--pill)':'background:var(--s2)'}">${t}</span>`).join('')}</div>
-     <div style="margin-top:8px">${CLIP.slice(0,6).map((c,i)=>`<div class="clipitem ${i==0?'on':''}"><span class="tiny" style="width:10px">${i+1}</span><span class="ty" style="${c.img?`background-image:url(${c.img});width:52px;height:32px;border:1px solid var(--s2)`:c.color?`background:${c.color}`:''}">${c.img||c.color?'':c.t}</span><span class="tx">${c.x}${c.d?`<br><span class="tiny">${c.d}</span>`:''}</span>${c.pin?'<span style="font-size:10px">📌</span>':''}<span class="tiny">${c.ago}</span></div>`).join('')}</div>
-     <div class="row" style="margin-top:6px;gap:12px"><span class="tiny">↵ paste</span><span class="tiny">1‥9 cepat</span><span class="tiny">ctrl+p pin</span><span class="tiny">⇧↵ plain</span><span style="flex:1"></span><span class="tiny">win+v / ctrl+⇧+v</span></div></div>`,
+  clip:()=>`<div style="padding:12px 16px">
+     <div class="row" style="justify-content:space-between;margin-bottom:8px"><span class="tiny">clipboard · example history</span><span class="tiny">ctrl+alt+v</span></div>
+     <div style="height:30px;border-radius:9px;background:var(--s1);border:1px solid var(--s2);display:flex;align-items:center;padding:0 10px;gap:8px"><span class="tiny">⌕</span><span style="font:400 12px var(--sans);color:var(--t2)">search clipboard…</span></div>
+     <div class="row" style="gap:6px;margin-top:7px">${['all','text','images','files','pinned'].map((t,i)=>`<span style="font:500 10px var(--mono);padding:4px 7px;border-radius:7px;${i==0?'background:var(--acc);color:var(--pill)':'background:var(--s2)'}">${t}</span>`).join('')}</div>
+     <div style="margin-top:6px;height:220px;overflow:hidden">${CLIP.slice(0,5).map((c,i)=>`<div class="clipitem ${i==0?'on':''}" style="height:44px;box-sizing:border-box"><span class="tiny" style="width:10px">${i+1}</span><span class="ty" style="${c.img?`background-image:url(${c.img});width:52px;height:32px;border:1px solid var(--s2)`:c.color?`background:${c.color}`:''}">${c.img||c.color?'':c.t}</span><span class="tx">${c.x}${c.d?`<br><span class="tiny">${c.d}</span>`:''}</span>${c.pin?'<span style="font-size:10px">📌</span>':''}<span class="tiny">${c.ago}</span></div>`).join('')}</div>
+     <div class="row" style="margin-top:6px;gap:9px"><span class="tiny">↵ paste</span><span class="tiny">alt+1‥9</span><span class="tiny">⇧↵ plain</span><span style="flex:1"></span><span class="tiny">pause</span><span class="tiny">clear</span></div></div>`,
   dev:()=>`<div class="row" style="height:100%;padding:0 14px;gap:10px"><div class="lamp"></div><span class="tiny">deploy</span><div class="bar" style="flex:1"><b id="devbar" style="width:40%"></b></div><span style="font:500 11px var(--mono)" id="devp">40%</span></div>`,
 };
 function render(force){const c=content;c.innerHTML=V[cur]();}
@@ -944,15 +964,15 @@ function addShot(){
   const id=++shotN,url=shotURL(id);
   const el=document.createElement('div');el.className='shot';el.draggable=true;el.style.backgroundImage=`url(${url})`;
   el.innerHTML=`<span class="ck"></span><svg class="cd ring" width="16" height="16"><circle cx="8" cy="8" r="6" stroke="rgba(0,0,0,.45)" stroke-width="2.5" fill="none"/><circle cx="8" cy="8" r="6" stroke="var(--hi)" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>
-    <div class="act"><span data-a="copy">copy</span><span data-a="edit">edit</span><span data-a="pin">pin</span><span data-a="x">✕</span></div>`;
+    <div class="act"><span data-a="copy">copy</span><span data-a="screen" title="Pin to screen">↗</span><span data-a="pin" title="Keep in stack">keep</span><span data-a="x">✕</span></div>`;
   const sh={id,url,el,left:LIFE,sel:false,pin:false,hover:false};SHOTS.push(sh);shots.prepend(el);
   CLIP.unshift({t:'IMG',x:`snap-${String(id).padStart(3,'0')}.png`,d:'612×388 · snap',ago:'now',img:url});
   el.onmouseenter=()=>sh.hover=true;el.onmouseleave=()=>sh.hover=false;
   el.onclick=e=>{const a=e.target.dataset.a;e.stopPropagation();
     if(a==='x')return kill(sh);
-    if(a==='pin'){sh.pin=!sh.pin;e.target.textContent=sh.pin?'📌':'pin';return}
+    if(a==='pin'){sh.pin=!sh.pin;e.target.textContent=sh.pin?'📌':'keep';e.target.title=sh.pin?'Release from stack':'Keep in stack';return}
     if(a==='copy')return toast(stage,'✓ di-copy ke clipboard');
-    if(a==='edit')return go('snap');
+    if(a==='screen')return showReference(sh);
     sh.sel=!sh.sel;syncSel()};
   el.ondragstart=e=>{if(!sh.sel){SHOTS.forEach(s=>s.sel=false);sh.sel=true;syncSel()}
     const sel=SHOTS.filter(s=>s.sel);sel.forEach(s=>s.el.classList.add('drag'));
@@ -964,6 +984,20 @@ function addShot(){
   layoutShots();
 }
 function kill(sh){if(!sh)return;SHOTS=SHOTS.filter(s=>s!==sh);sh.el.classList.add('out');setTimeout(()=>sh.el.remove(),300);syncSel()}
+function showReference(sh){
+  const existing=stage.querySelector('[data-reference="'+sh.id+'"]');
+  if(existing){stage.appendChild(existing);return}
+  if(stage.querySelectorAll('.refpin').length>=8)return toast(stage,'Screen pins full');
+  const el=document.createElement('div');el.className='refpin grain';el.dataset.reference=sh.id;
+  el.innerHTML='<div class="row" style="gap:5px"><span class="tiny" style="flex:1">reference · example</span><button data-action="copy">Copy</button><button data-action="save">Save</button><button data-action="close">Close</button></div><img alt="Pinned example screenshot">';
+  el.querySelector('img').src=sh.url;
+  el.onclick=e=>{e.stopPropagation();const action=e.target.dataset.action;if(action==='close')el.remove();else if(action)toast(stage,action+' · mockup only')};
+  let drag=null;
+  el.onpointerdown=e=>{if(e.target.closest('button'))return;e.stopPropagation();drag={x:e.clientX,y:e.clientY,left:el.offsetLeft,top:el.offsetTop};el.setPointerCapture(e.pointerId)};
+  el.onpointermove=e=>{if(!drag)return;el.style.left=Math.max(0,Math.min(stage.clientWidth-el.offsetWidth,drag.left+e.clientX-drag.x))+'px';el.style.top=Math.max(0,Math.min(stage.clientHeight-el.offsetHeight,drag.top+e.clientY-drag.y))+'px'};
+  el.onpointerup=el.onpointercancel=el.onlostpointercapture=()=>drag=null;
+  stage.appendChild(el);
+}
 function layoutShots(){const fan=SHOTS.length>3&&!shots.classList.contains('multi');shots.style.gap=fan?'-38px':'10px';
   SHOTS.forEach((s,i)=>{s.el.style.zIndex=100+s.id;s.el.style.rotate=fan?((i%2?1:-1)*2)+'deg':'0deg'})}
 function syncSel(){const n=SHOTS.filter(s=>s.sel).length;SHOTS.forEach(s=>s.el.classList.toggle('sel',s.sel));
@@ -980,7 +1014,7 @@ selsave.onclick=()=>{const sel=SHOTS.filter(s=>s.sel);sel.forEach(kill);toast(st
 [fw1,fw2,fw3].forEach(w=>{
   w.ondragover=e=>{e.preventDefault();w.classList.add('dropok')};w.ondragleave=()=>w.classList.remove('dropok');
   w.ondrop=e=>{e.preventDefault();w.classList.remove('dropok');const sel=SHOTS.filter(s=>s.sel);
-    toast(w,'✓ '+sel.length+' gambar di-drop');sel.forEach(kill)}});
+    toast(w,'✓ '+sel.length+' gambar di-drop');sel.filter(s=>!s.pin).forEach(kill)}});
 
 /* ---------- spring (sama dgn yg akan di dj-core) ---------- */
 const params={expand:{resp:.45,z:.75},collapse:{resp:.35,z:.95}};

@@ -1,5 +1,9 @@
 # Handover (2026-10-26, ~08:50)
 
+> Historical handover. Current scope is in [progress.md](progress.md) and the
+> [Snap/Clipboard plan](stage-snap-clipboard-plan.md). The user removed OCR on
+> 2026-10-28; the brainstorming and "next" items below are not current instructions.
+
 ## State
 - `master` is clean and up to date. Merged today:
   - #7 Stage 5 safety fixes
