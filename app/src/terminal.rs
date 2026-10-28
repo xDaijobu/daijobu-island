@@ -193,6 +193,14 @@ impl Tab {
     }
 }
 
+/// A title that is only a path to an executable says nothing: Windows titles a console with
+/// the exe that started in it (PowerShell's own path, or `cmd.exe` when Codex runs a command).
+fn is_exe_path(title: &str) -> bool {
+    let t = title.trim().trim_matches('"');
+    let p = std::path::Path::new(t);
+    p.is_absolute() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+}
+
 pub struct Terminal {
     config: TerminalConfig,
     spawner: Box<dyn Spawner>,
@@ -322,11 +330,14 @@ impl Terminal {
             spec.shell = "powershell".to_string();
             spec.args = Vec::new();
         }
-        if let Some(dir) = self
-            .active()
-            .and_then(|t| t.cwd.clone())
-            .filter(|d| std::path::Path::new(d).is_dir())
-        {
+        // The folder the active shell last reported, else the one it started in (an agent
+        // tab that has not reached a prompt yet has reported nothing).
+        if let Some(dir) = self.active().and_then(|t| {
+            [t.cwd.clone(), Some(t.spec.cwd.trim().to_string())]
+                .into_iter()
+                .flatten()
+                .find(|d| !d.is_empty() && std::path::Path::new(d).is_dir())
+        }) {
             spec.cwd = dir;
         }
         spec.agent = Some(agent);
@@ -787,7 +798,10 @@ impl Terminal {
             let news = woke || !events.is_empty();
             for ev in events {
                 match ev {
-                    TermEvent::Title(t) => tab.title = Some(t).filter(|t| !t.trim().is_empty()),
+                    // A bare exe path (how Windows titles a console) keeps the tab name.
+                    TermEvent::Title(t) => {
+                        tab.title = Some(t).filter(|t| !t.trim().is_empty() && !is_exe_path(t))
+                    }
                     TermEvent::ResetTitle => tab.title = None,
                     TermEvent::Bell => {}
                     TermEvent::Cwd(dir) => tab.cwd = Some(dir),
@@ -1415,6 +1429,55 @@ mod tests {
             .last()
             .unwrap()
             .ends_with("; codex --dangerously-bypass-approvals-and-sandbox"));
+    }
+
+    #[test]
+    fn an_agent_from_an_agent_tab_without_a_prompt_yet_uses_its_start_folder() {
+        let mut r = Rig::new();
+        r.open();
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Cwd(dir.clone()));
+        r.term.drain();
+        plus(&mut r, MenuAction::NewClaude);
+        // The Claude tab is active and has reported nothing (Claude runs, no prompt yet).
+        let p = bar(&r).plus.unwrap();
+        r.term.press(p.x + p.w / 2.0, p.y + p.h / 2.0);
+        let m = bar(&r).menu.unwrap();
+        let row = m
+            .items
+            .iter()
+            .find(|it| it.action == MenuAction::NewCodex)
+            .unwrap();
+        r.term
+            .press(row.rect.x + 4.0, row.rect.y + row.rect.h / 2.0);
+        assert_eq!(last_spawn(&r).cwd, Some(PathBuf::from(&dir)));
+    }
+
+    #[test]
+    fn a_title_that_is_only_the_shells_path_keeps_the_tab_name() {
+        let mut r = Rig::new();
+        r.open();
+        plus(&mut r, MenuAction::NewCodex);
+        for path in [
+            r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\WINDOWS\system32\cmd.exe",
+        ] {
+            r.shell()
+                .borrow_mut()
+                .events
+                .push(TermEvent::Title(path.into()));
+            r.term.drain();
+            assert_eq!(bar(&r).tabs[1].title, "codex", "{path}");
+        }
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Title("codex: refactor".into()));
+        r.term.drain();
+        assert_eq!(bar(&r).tabs[1].title, "codex: refactor");
     }
 
     #[test]

@@ -19,24 +19,27 @@ Plan: `task/stage-t3-plan.md`. Branch `xDaijobu/stage-t-terminal`, same PR as T/
 ## Verification
 
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
-- `cargo test --workspace`: 1082 passed, 0 failed. New tests:
+- `cargo test --workspace`: 1084 passed, 0 failed. New tests:
   - `term_agents`: 7.
   - The plus menu in `term_tabs`: 11.
   - The OSC scanner: 12, plus `is_powershell`.
   - One real-PowerShell test through ConPTY: the `Cwd` event arrives, and the sequence doesn't show on screen.
-  - The controller: 4 (the hook on a plain tab, Claude in the active tab's folder, Codex falling back from a deleted folder, a pinned agent restored).
+  - The controller: 6 (the active-tab start folder, an exe-path title, the hook on a plain tab, Claude in the active tab's folder, Codex falling back from a deleted folder, a pinned agent restored).
 - Spike before building: PowerShell 5.1 with the user's oh-my-posh, raw ConPTY. OSC 9;9 comes through with both terminators, and the prompt looks the same.
 - `cargo build --release` works, and the exe is running from this worktree.
 
-## Not yet verified live
+## Live test (coordinator, 2026-10-28, synthetic input and screenshots)
 
-The whole live script in the plan is still to do:
-1. The menu.
-2. Claude in the right folder with no permission prompts.
-3. Codex.
-4. A pinned Claude tab restored after a restart.
-5. Ctrl+Shift+T and the prompt looking unchanged.
-6. An agent that isn't installed.
+- [x] "+" opens the menu, and "yolo" is drawn dim on the right.
+- [x] `cd` to the project, then "+" → Claude. Claude Code starts in `~\orca\projects\daijobu-island` and shows "bypass permissions on".
+- [x] "+" → Codex. The process command line is `codex.exe --dangerously-bypass-approvals-and-sandbox` and its cwd (read from the PEB) is the project folder. Codex isn't signed in on this machine, so its own UI showed only the login screen.
+- [x] Pin the Claude tab. `terminal-tabs.toml` gets `agent = "claude"` and the folder. After a restart (WM_CLOSE, then start), Claude is back in that folder with bypass on. Closing the pinned tab removes it from the file again.
+- [x] Ctrl+Shift+T opens a plain tab, and the oh-my-posh prompt looks unchanged.
+- [ ] An agent that isn't installed: not tried.
+
+Found live and fixed (commit after `45c399c`):
+- **Codex launched from a Claude tab went to home.** The agent tab had not reached a prompt, so it hadn't reported a folder. Now the tab's start folder is used before the configured one.
+- **The Codex tab was titled `C:\WINDOWS\system32\cmd.exe`.** That is conhost titling the console after an exe Codex ran. A title that is only an absolute `.exe` path is now ignored, so the tab stays `codex`. This also helps plain PowerShell tabs, which get their own path as a title.
 
 ## Notes and known issues
 
@@ -44,4 +47,6 @@ The whole live script in the plan is still to do:
 - **User args that take over startup** (`-Command`, `-File`, …) mean no hook; an agent from such a tab starts without it too.
 - **A pinned yolo tab** starts an agent with no permission prompts on every island start, as asked.
 - **New dependency:** `polling = "3"` in `dj-term`. It was already in the lock at 3.11 through `alacritty_terminal`, and no second version was added.
+- **Claude's title starts with `✳` (U+2733)**, which the tab font lacks, so it draws as a box. Not fixed here; it's a font-fallback issue in the tab strip.
+- **Starting the island from a Claude Code session** passes `CLAUDE_CODE_*` env vars down, and Claude then warns about an inherited child-session marker. A normal start (autostart or Explorer) doesn't have them.
 - **The shell row is labelled "Terminal"**, not "PowerShell", because the configured shell may be cmd or WSL.
