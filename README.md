@@ -103,6 +103,8 @@ target\release\daijobu.exe
 
 The tray also offers Settings, themes, *Start with Windows* and Quit. Open Settings from the Home gear or the tray. Its General, Notch, Hotkeys, Terminal and Spotlight pages apply and save changes immediately; sliders preview while dragging and save on release. Config is stored in `~/.daijobu/config.toml`.
 
+Snap hotkeys capture open panels as shown, including the island terminal. Finishing or cancelling returns to the open panel; a new screenshot thumbnail waits behind it. Starting Snap from the Home tile still hides its launcher before capture.
+
 By default the island is a notch attached to the top edge of the screen. Choose *Island style* in Settings to switch to the floating pill, or set `[island] style = "pill"` in the config. The Notch page also adjusts its width and height.
 
 The notch also reserves a strip as tall as itself along the top of the screen, so maximized windows (and browser tabs) start below it instead of under it. Turn it off with *Reserve top space* in Settings, or `[island] reserve_top = false`.

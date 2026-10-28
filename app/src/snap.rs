@@ -15,10 +15,12 @@
 use crate::preview_store::Payload;
 use crate::storage;
 use dj_core::config::SnapHotkey;
+use dj_core::island::Island;
 use dj_core::snap::{
     file_name, Bitmap, Countdown, IRect, MonitorFrame, Selector, Stamp, ThumbStatus, THUMB_SECS,
 };
 use dj_core::snap_edit::{Display, EditInput, Editor, Outcome, Prefs, Rgba, TextMeasure};
+use dj_core::theme::ResolvedTokens;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,6 +39,23 @@ pub const TIMER_SNAP_THUMB: usize = 7;
 pub const TIMER_SNAP_START: usize = 8;
 /// How long after the collapse settles before the freeze (one composed frame or so).
 pub const START_DELAY_MS: u32 = 60;
+
+/// The Home tile hides its launcher; hotkeys freeze the screen exactly as it is.
+/// Returns whether a launcher collapse needs to settle before capture.
+pub fn prepare_island(island: &mut Island, from_home: bool, tokens: &ResolvedTokens) -> bool {
+    let before = island.state();
+    if from_home {
+        island.hide_snap(tokens);
+        island.collapse(tokens);
+    }
+    island.state() != before
+}
+
+/// Overlay activation is temporary. A late blur event must not dismiss a window that
+/// has already regained the foreground after capture.
+pub fn dismiss_on_focus_loss(capture_active: bool, still_foreground: bool) -> bool {
+    !capture_active && !still_foreground
+}
 
 const VK_SNAPSHOT: u32 = 0x2C;
 const VK_S: u32 = 0x53;
@@ -193,9 +212,11 @@ impl Snapper {
         cursor: (i32, i32),
         prefs: Prefs,
         accent: Rgba,
+        own_windows: &[IRect],
     ) -> Result<&Session, String> {
         let frames = self.screen.freeze()?;
-        let mut targets = self.screen.windows();
+        let mut targets = own_windows.to_vec();
+        targets.extend(self.screen.windows());
         targets.extend(frames.iter().map(|f| f.rect));
         let selector = Selector::new(desktop, targets, cursor);
         Ok(self.session.insert(Session {
@@ -454,6 +475,89 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    fn island_tokens() -> ResolvedTokens {
+        dj_core::theme::ThemeRegistry::with_builtins()
+            .get(dj_core::theme::DEFAULT_THEME)
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn hotkey_capture_keeps_every_open_island_panel_in_place() {
+        let tokens = island_tokens();
+        for open in [
+            Island::expand,
+            Island::open_terminal,
+            Island::open_vitals,
+            Island::open_music,
+            Island::open_sweep,
+            Island::open_timer,
+            Island::open_settings,
+            Island::open_tile,
+        ] {
+            let mut island = Island::new(&tokens);
+            open(&mut island, &tokens);
+            for _ in 0..1000 {
+                island.step(1.0 / 144.0, &tokens);
+            }
+            let before = island.state();
+            let size = island.pill_rect();
+            assert!(!prepare_island(&mut island, false, &tokens));
+            assert_eq!(island.state(), before);
+            assert_eq!(island.pill_rect(), size);
+            assert!(!island.is_animating());
+            // A successful copy offers its thumbnail without replacing the panel.
+            island.show_snap(&tokens);
+            assert_eq!(island.state(), before);
+            assert!(!island.is_animating());
+        }
+    }
+
+    #[test]
+    fn home_tile_capture_still_collapses_the_launcher() {
+        let tokens = island_tokens();
+        let mut island = Island::new(&tokens);
+        island.expand(&tokens);
+        assert!(prepare_island(&mut island, true, &tokens));
+        assert_eq!(island.state(), dj_core::island::IslandState::Idle);
+        assert!(!prepare_island(&mut island, true, &tokens));
+    }
+
+    #[test]
+    fn overlay_blur_and_stale_blur_keep_the_terminal_but_click_away_still_closes_it() {
+        let tokens = island_tokens();
+        let mut island = Island::new(&tokens);
+        island.open_terminal(&tokens);
+        for (capture_active, foreground) in [(true, false), (true, true), (false, true)] {
+            if dismiss_on_focus_loss(capture_active, foreground) {
+                island.collapse(&tokens);
+            }
+            assert!(island.terminal_open());
+        }
+        if dismiss_on_focus_loss(false, false) {
+            island.collapse(&tokens);
+        }
+        assert!(!island.terminal_open());
+    }
+
+    #[test]
+    fn the_island_panel_is_a_selectable_window_in_the_frozen_screen() {
+        let own_panel = IRect::new(-20, 4, 30, 20);
+        let (mut snapper, puts, _) = snapper(vec![DESK]);
+        snapper
+            .begin(DESK, (0, 10), Prefs::default(), SWATCHES[3], &[own_panel])
+            .unwrap();
+        let selector = &mut snapper.session_mut().unwrap().selector;
+        assert_eq!(selector.hover(), Some(own_panel));
+        selector.press(0, 10);
+        assert_eq!(selector.release(), Some(own_panel));
+        snapper.end(End::Cancel, Instant::now());
+        assert!(
+            puts.borrow().is_empty(),
+            "cancelling never writes the clipboard"
+        );
+    }
+
     /// Two synthetic monitors, the second left of the first at negative x; pixel (x, y)
     /// of a monitor is [seed, x, y, 255] (wrapping at 256).
     fn layout(primary: (i32, i32), left_w: i32) -> Vec<MonitorFrame> {
@@ -547,7 +651,7 @@ mod tests {
     }
 
     fn begin(s: &mut Snapper, desktop: IRect) {
-        s.begin(desktop, (0, 0), Prefs::default(), SWATCHES[3])
+        s.begin(desktop, (0, 0), Prefs::default(), SWATCHES[3], &[])
             .unwrap();
     }
 
@@ -775,7 +879,7 @@ mod tests {
         // Only once: the session is gone.
         assert_eq!(s.end(End::Cancel, Instant::now()), Ended::default());
         // The next snap starts from them; no change means nothing to write.
-        s.begin(BIG_DESK, (0, 0), want, SWATCHES[3]).unwrap();
+        s.begin(BIG_DESK, (0, 0), want, SWATCHES[3], &[]).unwrap();
         drag(&mut s, (100, 100), (400, 300));
         s.start_editing();
         assert_eq!(s.session().unwrap().editor.as_ref().unwrap().prefs(), want);

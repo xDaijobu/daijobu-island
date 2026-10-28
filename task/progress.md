@@ -769,6 +769,7 @@ Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim,
 ---
 
 ## Changelog
+- 2026-10-28: Snap panel-preservation follow-up complete: hotkeys capture open island panels, preserve them through overlay focus changes and keep the new thumbnail from taking them over. 1211 tests, fmt, clippy and release build pass; live terminal Snap/cancel retained its size, keyboard mode and focus without changing the clipboard. [`stage-snap-panels-brief.md`](stage-snap-panels-brief.md) · [`stage-snap-panels-report.md`](stage-snap-panels-report.md).
 - 2026-10-28: Stage V re-checked for the requested PR/merge: fmt, clippy and 1196 workspace tests pass. Fixed Enter's character event dismissing Spotlight's keyboard Delete confirmation, with a regression test. Release build and outstanding live checks are recorded in [`stage-v-report.md`](stage-v-report.md); menu action acceptance remains pending.
 - 2026-10-25: PR #4 (Vitals) merged; stage worktrees cleaned up. **Sweep is merged into Vitals** and moved up to Stage 5 (the old Stage 12 is folded in). Stages from Timer onwards shift by one.
 - 2026-10-25: PRs #2 (Music) and #3 (OSD) merged at the user's request before live testing ("fixes can come later"). Their worktrees and branches were removed. Focus is on Stage 4.
