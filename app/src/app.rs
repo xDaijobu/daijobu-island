@@ -245,6 +245,9 @@ pub struct App {
     settings_win: Option<(PopupWin, SettingsDoc)>,
     /// The Settings window's left button is down (motion drags a slider).
     settings_pressed: bool,
+    tray_menu: Option<(PopupWin, dj_core::tray_menu::Menu)>,
+    tray_previous: Option<dj_win::snap_pins::FocusTarget>,
+    tray_pressed: Option<usize>,
     /// Spotlight: its window (kept hidden between uses), model, index and icons, the
     /// window that had the keyboard before it opened, and whether its hotkey is taken.
     spot_win: Option<PopupWin>,
@@ -459,6 +462,9 @@ impl App {
             layer: Layer::Top,
             settings_win: None,
             settings_pressed: false,
+            tray_menu: None,
+            tray_previous: None,
+            tray_pressed: None,
             spot_win: None,
             spotlight: Spotlight::new(),
             spot_index: SpotIndex::new(),
@@ -3383,7 +3389,11 @@ impl App {
     fn show_tray_menu(&mut self) {
         let prepare_started = Instant::now();
         self.remember_clipboard_target();
-        let previous = dj_win::snap_pins::focus_target();
+        if self.tray_menu.as_ref().is_some_and(|(win, _)| win.shown) {
+            self.close_tray_menu();
+            return;
+        }
+        self.tray_previous = dj_win::snap_pins::focus_target();
         let themes: Vec<(String, bool)> = self
             .registry
             .ids()
@@ -3405,14 +3415,173 @@ impl App {
             previews: self.previews.can_focus(),
             pins: self.pins.can_focus(),
         };
-        let preparation = prepare_started.elapsed();
-        let (command, timings) = tray::show_menu_timed(self.hwnd, &spec);
+        let mut menu = dj_core::tray_menu::Menu::new(&spec);
+        let (cx, cy) = overlay::cursor_pos();
+        let ((left, top, width, height), dpi) = dj_win::snap_pins::work_area_at((cx, cy));
+        let scale = dpi.max(96) as f32 / 96.0;
+        menu.visible_count = (((height as f32 / scale - 2.0 * dj_core::tray_menu::MARGIN)
+            / dj_core::tray_menu::ROW_HEIGHT) as usize)
+            .saturating_sub(2)
+            .clamp(1, menu.visible_count);
+        let w = (dj_core::tray_menu::WIDTH * scale).ceil() as i32;
+        let h = (menu.height() * scale).ceil() as i32;
+        let x = (cx - w).clamp(left, left + (width - w).max(0));
+        let y = (cy - h).clamp(top, top + (height - h).max(0));
+        let win = if let Some((mut win, _)) = self.tray_menu.take() {
+            win.set_dpi(dpi, dj_core::tray_menu::WIDTH, menu.height());
+            if let Err(e) = popup::set_bounds(win.hwnd, x, y, w, h) {
+                storage::log(&format!("tray menu bounds: {e}"));
+                self.tray_menu = Some((win, menu));
+                return;
+            }
+            win
+        } else {
+            let Some(win) = PopupWin::create(
+                PopupKind::Tray,
+                x,
+                y,
+                dj_core::tray_menu::WIDTH,
+                menu.height(),
+                scale,
+            ) else {
+                return;
+            };
+            win
+        };
+        self.tray_menu = Some((win, menu));
+        self.render_tray_menu();
+        if let Some((win, _)) = self.tray_menu.as_mut() {
+            popup::set_cursor(popup::Cursor::Arrow);
+            popup::show(win.hwnd);
+            win.shown = true;
+        }
         storage::log(&format!(
-            "tray menu ms: prepare={} build={} activate={}",
-            preparation.as_millis(),
-            timings.construction.as_millis(),
-            timings.activation.as_millis()
+            "themed tray menu ms: {}",
+            prepare_started.elapsed().as_millis()
         ));
+    }
+
+    fn close_tray_menu(&mut self) {
+        self.tray_pressed = None;
+        if let Some((win, _)) = self.tray_menu.as_mut() {
+            if win.shown {
+                win.shown = false;
+                popup::hide(win.hwnd);
+            }
+        }
+    }
+
+    fn render_tray_menu(&mut self) {
+        let Some((win, menu)) = self.tray_menu.as_mut() else {
+            return;
+        };
+        if !win.dirty {
+            return;
+        }
+        if let Some(renderer) = win.renderer.as_mut() {
+            if let Err(e) = renderer.render_tray_menu(menu, self.anim.current(), win.scale) {
+                storage::log(&format!("tray menu render: {e}"));
+            }
+        }
+        win.dirty = false;
+    }
+
+    fn tray_menu_input(&mut self, input: PopupInput) {
+        let Some((win, menu)) = self.tray_menu.as_mut().filter(|(win, _)| win.shown) else {
+            return;
+        };
+        let mut command = None;
+        let mut close = false;
+        let mut restore = false;
+        match input {
+            PopupInput::Close | PopupInput::FocusLost => close = true,
+            PopupInput::Key { vk: 0x1b, .. } => {
+                close = !menu.back();
+                restore = close && window::is_foreground(win.hwnd);
+            }
+            PopupInput::Key {
+                vk: 0x25 | 0x08, ..
+            } => {
+                menu.back();
+            }
+            PopupInput::Key { vk: 0x26, .. } => menu.step(false),
+            PopupInput::Key {
+                vk: 0x09, shift, ..
+            } => menu.step(!shift),
+            PopupInput::Key { vk: 0x28, .. } => menu.step(true),
+            PopupInput::Key { vk: 0x24, .. } => {
+                if let Some(i) = menu.rows().iter().position(|r| r.enabled) {
+                    menu.select(i);
+                }
+            }
+            PopupInput::Key { vk: 0x23, .. } => {
+                if let Some(i) = menu.rows().iter().rposition(|r| r.enabled) {
+                    menu.select(i);
+                }
+            }
+            PopupInput::Key { vk: 0x27, .. } => {
+                if menu
+                    .selected
+                    .is_some_and(|i| !menu.rows()[i].children.is_empty())
+                {
+                    menu.activate();
+                }
+            }
+            PopupInput::Key {
+                vk: 0x0d | 0x20, ..
+            } => command = menu.activate(),
+            PopupInput::Char(ch) if !ch.is_control() => menu.mnemonic(ch),
+            PopupInput::Motion { x, y } => {
+                let (x, y) = win.local(x, y);
+                menu.selected = menu.hit(x, y);
+            }
+            PopupInput::Press { x, y } | PopupInput::DoubleClick { x, y } => {
+                let (x, y) = win.local(x, y);
+                if (dj_core::tray_menu::MARGIN
+                    ..dj_core::tray_menu::MARGIN + dj_core::tray_menu::ROW_HEIGHT)
+                    .contains(&y)
+                    && (dj_core::tray_menu::MARGIN
+                        ..dj_core::tray_menu::WIDTH - dj_core::tray_menu::MARGIN)
+                        .contains(&x)
+                {
+                    menu.back();
+                } else {
+                    self.tray_pressed = menu.hit(x, y);
+                    menu.selected = self.tray_pressed;
+                }
+            }
+            PopupInput::Release { x, y } => {
+                let (x, y) = win.local(x, y);
+                let hit = menu.hit(x, y);
+                if hit.is_some() && self.tray_pressed.take() == hit {
+                    menu.selected = hit;
+                    command = menu.activate();
+                } else {
+                    self.tray_pressed = None;
+                }
+            }
+            PopupInput::Wheel { lines } => {
+                for _ in 0..(lines.abs().ceil() as usize).min(12) {
+                    menu.step(lines < 0.0);
+                }
+            }
+            PopupInput::Dpi { dpi } => win.set_dpi(dpi, dj_core::tray_menu::WIDTH, menu.height()),
+            PopupInput::Leave => menu.selected = None,
+            _ => {}
+        }
+        win.dirty = true;
+        if close || command.is_some() {
+            self.close_tray_menu();
+        }
+        if restore {
+            if let Some(target) = self.tray_previous.take() {
+                dj_win::snap_pins::restore_focus(target);
+            }
+        }
+        self.tray_command(command);
+    }
+
+    fn tray_command(&mut self, command: Option<MenuCommand>) {
         match command {
             Some(MenuCommand::Clipboard) => self.open_clipboard(),
             Some(MenuCommand::ToggleVisible) => self.set_visible(!self.visible),
@@ -3436,7 +3605,7 @@ impl App {
                 if !self.visible {
                     self.set_visible(true);
                 }
-                self.pins.show_keyboard(previous);
+                self.pins.show_keyboard(self.tray_previous);
             }
             Some(MenuCommand::Settings) => self.open_settings_window(),
             Some(MenuCommand::Quit) => self.quit(),
@@ -3480,6 +3649,10 @@ impl App {
         window::unregister_hotkey(self.hwnd, HOTKEY_THEME);
         window::unregister_hotkey(self.hwnd, HOTKEY_SPOTLIGHT);
         self.close_settings_window();
+        self.close_tray_menu();
+        if let Some((win, _)) = self.tray_menu.take() {
+            win.destroy();
+        }
         if let Some(w) = self.spot_win.take() {
             w.destroy();
         }
@@ -3745,6 +3918,7 @@ impl Handler for App {
             }
             Event::Popup(PopupKind::Spotlight, input) => self.spotlight_input(input),
             Event::Popup(PopupKind::Settings, input) => self.settings_input(input),
+            Event::Popup(PopupKind::Tray, input) => self.tray_menu_input(input),
             Event::Hotkey(HOTKEY_TERMINAL) => {
                 if self.island.terminal_open() {
                     self.close_terminal(true);
@@ -4025,6 +4199,7 @@ impl Handler for App {
         self.sync_layer(false);
         self.render_spotlight();
         self.render_settings();
+        self.render_tray_menu();
     }
 
     fn wants_frame(&self) -> bool {
@@ -4065,8 +4240,12 @@ impl Handler for App {
             if let Some(w) = self.spot_win.as_mut().filter(|w| w.shown) {
                 w.dirty = true;
             }
+            if let Some((w, _)) = self.tray_menu.as_mut() {
+                w.dirty = true;
+            }
             self.render_settings();
             self.render_spotlight();
+            self.render_tray_menu();
         }
         // The preview stack follows the island's edge and its theme, and draws only when
         // it has something new (a ring tick or a spring can come without the island).

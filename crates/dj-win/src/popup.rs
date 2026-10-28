@@ -26,6 +26,7 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 pub enum PopupKind {
     Settings,
     Spotlight,
+    Tray,
 }
 
 impl PopupKind {
@@ -33,25 +34,28 @@ impl PopupKind {
         match self {
             PopupKind::Settings => w!("DaijobuSettingsWindow"),
             PopupKind::Spotlight => w!("DaijobuSpotlightWindow"),
+            PopupKind::Tray => w!("DaijobuTrayMenu"),
         }
     }
     fn title(self) -> PCWSTR {
         match self {
             PopupKind::Settings => w!("Daijobu Island Settings"),
             PopupKind::Spotlight => w!("Daijobu Island Spotlight"),
+            PopupKind::Tray => w!("Daijobu Island menu"),
         }
     }
     fn from_param(p: isize) -> Self {
-        if p == 1 {
-            PopupKind::Spotlight
-        } else {
-            PopupKind::Settings
+        match p {
+            1 => PopupKind::Spotlight,
+            2 => PopupKind::Tray,
+            _ => PopupKind::Settings,
         }
     }
     fn as_param(self) -> isize {
         match self {
             PopupKind::Settings => 0,
             PopupKind::Spotlight => 1,
+            PopupKind::Tray => 2,
         }
     }
 }
@@ -181,7 +185,9 @@ pub fn create(kind: PopupKind, x: i32, y: i32, w: i32, h: i32) -> Result<HWND> {
     HIGH_SURROGATE.with(|s| s.set(None));
     let ex = match kind {
         PopupKind::Settings => WS_EX_NOREDIRECTIONBITMAP | WS_EX_APPWINDOW,
-        PopupKind::Spotlight => WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        PopupKind::Spotlight | PopupKind::Tray => {
+            WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
+        }
     };
     // SAFETY: standard class registration and window creation; all pointers are valid
     // for the calls and the class and title names are static. Registering a class again
@@ -244,6 +250,9 @@ pub fn show(hwnd: HWND) {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
+        if PopupKind::from_param(GetWindowLongPtrW(hwnd, GWLP_USERDATA)) == PopupKind::Tray {
+            SetCapture(hwnd);
+        }
     }
 }
 
@@ -278,6 +287,11 @@ pub fn move_to(hwnd: HWND, x: i32, y: i32) {
     }
 }
 
+pub fn set_bounds(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) -> Result<()> {
+    // SAFETY: valid window handle owned by this thread; no activation or z-order change.
+    unsafe { SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) }
+}
+
 /// The client rect (device px) that drags the window, or `None` for no such area.
 pub fn set_drag_rect(hwnd: HWND, rect: Option<RECT>) {
     DRAG_RECTS.with(|d| {
@@ -294,10 +308,13 @@ pub fn clipboard_text() -> Option<String> {
     crate::clipboard::get_text(0)
 }
 
-fn send(hwnd: HWND, input: PopupInput) {
+fn kind_of(hwnd: HWND) -> PopupKind {
     // SAFETY: plain read of a window long on our own window.
-    let kind = PopupKind::from_param(unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) });
-    push_event(Event::Popup(kind, input));
+    PopupKind::from_param(unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) })
+}
+
+fn send(hwnd: HWND, input: PopupInput) {
+    push_event(Event::Popup(kind_of(hwnd), input));
 }
 
 extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -327,6 +344,18 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         WM_SETCURSOR if (lp.0 as u32 & 0xFFFF) == HTCLIENT => {
             apply_cursor(CURSOR.load(Ordering::Relaxed));
             return LRESULT(1);
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONDOWN if kind_of(hwnd) == PopupKind::Tray => {
+            let (x, y) = lparam_xy(lp);
+            let mut rect = RECT::default();
+            // SAFETY: valid window and writable client rectangle.
+            let _ = unsafe { GetClientRect(hwnd, &mut rect) };
+            if x < 0.0 || y < 0.0 || x >= rect.right as f32 || y >= rect.bottom as f32 {
+                send(hwnd, PopupInput::Close);
+            } else if msg != WM_RBUTTONDOWN {
+                send(hwnd, PopupInput::Press { x, y });
+            }
+            return LRESULT(0);
         }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
             // SAFETY: our own window; capture keeps the release coming.
@@ -368,7 +397,9 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         }
         WM_LBUTTONUP => {
             // SAFETY: releases only this thread's capture.
-            let _ = unsafe { ReleaseCapture() };
+            if kind_of(hwnd) != PopupKind::Tray {
+                let _ = unsafe { ReleaseCapture() };
+            }
             let (x, y) = lparam_xy(lp);
             send(hwnd, PopupInput::Release { x, y });
             return LRESULT(0);
@@ -412,6 +443,10 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             return LRESULT(0);
         }
         WM_CLOSE => {
+            send(hwnd, PopupInput::Close);
+            return LRESULT(0);
+        }
+        WM_CAPTURECHANGED if kind_of(hwnd) == PopupKind::Tray => {
             send(hwnd, PopupInput::Close);
             return LRESULT(0);
         }
@@ -477,8 +512,26 @@ mod tests {
     }
 
     #[test]
+    fn reused_hidden_popup_resizes_without_activation() {
+        let hwnd = create(PopupKind::Tray, 0, 0, 300, 480).unwrap();
+        // SAFETY: this test only queries its own hidden window and destroys it without showing it.
+        unsafe {
+            let foreground = GetForegroundWindow();
+            for (w, h) in [(300, 256), (300, 480)] {
+                set_bounds(hwnd, 0, 0, w, h).unwrap();
+                let mut rect = RECT::default();
+                GetClientRect(hwnd, &mut rect).unwrap();
+                assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (w, h));
+                assert!(!IsWindowVisible(hwnd).as_bool());
+                assert_eq!(GetForegroundWindow(), foreground);
+            }
+            DestroyWindow(hwnd).unwrap();
+        }
+    }
+
+    #[test]
     fn kind_param_round_trips() {
-        for k in [PopupKind::Settings, PopupKind::Spotlight] {
+        for k in [PopupKind::Settings, PopupKind::Spotlight, PopupKind::Tray] {
             assert_eq!(PopupKind::from_param(k.as_param()), k);
         }
     }
