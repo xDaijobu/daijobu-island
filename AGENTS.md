@@ -42,13 +42,14 @@ crates/dj-music/     YouTube Music engine: hidden WebView2, page bridge (`bridge
 crates/dj-vitals/    Win32 samplers for the Vitals panel: CPU, RAM, system drive, net, disk I/O, battery, uptime, top processes
 crates/dj-sweep/     Sweep (inside Vitals): category scanners, protected-path guard, clean/recycle ops, operations log
 crates/dj-capture/   Snap capture: monitor freeze (DXGI Duplication, GDI fallback), window rects, WIC PNG, clipboard (CF_DIB + PNG)
+crates/dj-term/      Terminal panel: shell sessions over `alacritty_terminal` (Apache-2.0) and ConPTY, screen snapshots
 crates/dj-core/themes/   built-in themes (TOML)
 assets/fonts/        embedded OFL fonts + licenses
 docs/                plan.html (design) and images/ (README images)
 task/                progress.md, stage briefs and reports
 ```
 
-Crates planned for later stages (`dj-media`, `dj-audio`, `dj-clip`, `dj-tile`, `dj-ipc`) are added only when their stage starts.
+Crates planned for later stages (`dj-media`, `dj-audio`, `dj-clip`) are added only when their stage starts. Tile lives in the existing crates.
 
 ## Commands
 

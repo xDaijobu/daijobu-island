@@ -1,6 +1,6 @@
 //! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel with
-//! its Sweep view, the Timer views, Settings, the Tile panel, the snap thumb and the OSD
-//! overlay, driven by springs.
+//! its Sweep view, the Timer views, Settings, the Tile panel, the Terminal panel, the snap
+//! thumb and the OSD overlay, driven by springs.
 //! Time only enters through `step(dt)`, so everything here is deterministic. The timer
 //! itself (`timer::Pomodoro`) lives in the app; the island only hears whether it is active
 //! or done. Likewise the snap thumb's countdown and its shot live in the app; the island
@@ -49,10 +49,14 @@ pub enum IslandState {
     /// towards the island or from the Home tile. Every click inside it is the app's to
     /// read (`ClickOutcome::Tile`); the app collapses it on an empty spot.
     TilePanel,
+    /// The Terminal panel: a shell in the island, the largest state. Like the Tile panel,
+    /// every click inside it is the app's to read (`ClickOutcome::Terminal`); the app
+    /// closes it (the hotkey, the ✕), and the island's `collapse` returns to the rest state.
+    Terminal,
 }
 
 /// Number of content layers (one per `IslandState`).
-const LAYERS: usize = 12;
+const LAYERS: usize = 13;
 
 impl IslandState {
     /// Index into the per-content opacity springs.
@@ -70,6 +74,7 @@ impl IslandState {
             IslandState::SnapThumb => 9,
             IslandState::Settings => 10,
             IslandState::TilePanel => 11,
+            IslandState::Terminal => 12,
         }
     }
 
@@ -177,6 +182,13 @@ pub enum ClickOutcome {
         x: f32,
         y: f32,
     },
+    /// Any click inside the Terminal panel, in panel-local px (as for `Tile`). The app
+    /// decides: the ✕ (`layout::TERM_CLOSE`) closes it, the text area starts a selection,
+    /// and the island does nothing else.
+    Terminal {
+        x: f32,
+        y: f32,
+    },
 }
 
 /// What a click on the snap thumb asks for.
@@ -205,6 +217,7 @@ pub struct Layers {
     pub snap: f32,
     pub settings: f32,
     pub tile: f32,
+    pub terminal: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -316,6 +329,7 @@ impl Island {
                 layout::TILE_PANEL_H,
                 layout::TILE_PANEL_R,
             ),
+            IslandState::Terminal => (layout::TERM_W, layout::TERM_H, layout::TERM_R),
         }
     }
 
@@ -350,7 +364,8 @@ impl Island {
     }
 
     /// Pushes new timer facts. A finished session shows the alert over the rest states;
-    /// over an open panel (Home, Music, Vitals, Sweep, Timer, Tile) it waits for the collapse.
+    /// over an open panel (Home, Music, Vitals, Sweep, Timer, Tile, Terminal) it waits for
+    /// the collapse.
     pub fn set_timer(&mut self, ui: TimerUi, tokens: &ResolvedTokens) {
         if ui == self.timer {
             return;
@@ -413,6 +428,22 @@ impl Island {
     /// The Tile panel is the island's state (it may still be growing, or covered by the OSD).
     pub fn tile_open(&self) -> bool {
         self.state == IslandState::TilePanel
+    }
+
+    /// Opens the Terminal panel from any state: the user just asked for it (the hotkey or
+    /// the Home tile), so it takes over an open panel too. Like the other panels it is not
+    /// a rest state, so `collapse` returns to the rest state below it, and facts that
+    /// arrive meanwhile wait for the collapse.
+    pub fn open_terminal(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::Terminal {
+            self.set_state(IslandState::Terminal, tokens);
+        }
+    }
+
+    /// The Terminal panel is the island's state (it may still be growing, or covered by
+    /// the OSD).
+    pub fn terminal_open(&self) -> bool {
+        self.state == IslandState::Terminal
     }
 
     /// The pill's resting size: the OSD size while it is up, else the state's size.
@@ -660,6 +691,11 @@ impl Island {
                 let (lx, ly) = Self::view_local(x, y, layout::TILE_PANEL_W);
                 ClickOutcome::Tile { x: lx, y: ly }
             }
+            // Likewise for the Terminal: the app reads the ✕ and the text area.
+            IslandState::Terminal => {
+                let (lx, ly) = Self::view_local(x, y, layout::TERM_W);
+                ClickOutcome::Terminal { x: lx, y: ly }
+            }
             IslandState::Settings => {
                 let (lx, ly) = Self::view_local(x, y, layout::SETTINGS_W);
                 match settings::hit(lx, ly) {
@@ -858,6 +894,7 @@ impl Island {
                 snap: v(9),
                 settings: v(10),
                 tile: v(11),
+                terminal: v(12),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -1628,13 +1665,14 @@ mod tests {
     fn done_over_an_open_panel_waits_for_the_collapse() {
         let t = tokens();
         type Open = fn(&mut Island, &ResolvedTokens);
-        let panels: [(IslandState, Open); 6] = [
+        let panels: [(IslandState, Open); 7] = [
             (IslandState::Home, Island::expand),
             (IslandState::MusicExpanded, Island::open_music),
             (IslandState::Vitals, Island::open_vitals),
             (IslandState::Sweep, Island::open_sweep),
             (IslandState::TimerPanel, Island::open_timer),
             (IslandState::TilePanel, Island::open_tile),
+            (IslandState::Terminal, Island::open_terminal),
         ];
         for (state, open) in panels {
             let mut i = Island::new(&t);
@@ -2076,7 +2114,7 @@ mod tests {
     fn each_state_lights_exactly_its_own_layer() {
         let t = tokens();
         type Setup = fn(&mut Island, &ResolvedTokens);
-        let states: [(IslandState, Setup); 12] = [
+        let states: [(IslandState, Setup); 13] = [
             (IslandState::Idle, |_, _| {}),
             (IslandState::Home, Island::expand),
             (IslandState::MusicCompact, |i, t| {
@@ -2091,6 +2129,7 @@ mod tests {
             (IslandState::SnapThumb, Island::show_snap),
             (IslandState::Settings, Island::open_settings),
             (IslandState::TilePanel, Island::open_tile),
+            (IslandState::Terminal, Island::open_terminal),
         ];
         assert_eq!(states.len(), LAYERS);
         for (state, setup) in states {
@@ -2112,6 +2151,7 @@ mod tests {
                 l.snap,
                 l.settings,
                 l.tile,
+                l.terminal,
             ];
             let want: [f32; LAYERS] =
                 std::array::from_fn(|n| if n == state.layer() { 1.0 } else { 0.0 });
@@ -2253,5 +2293,407 @@ mod tests {
         i.open_tile(&t);
         settle(&mut i, &t);
         assert_eq!(i.view().layers.tile, 1.0);
+    }
+
+    // ---- Terminal ----
+
+    fn terminal_index() -> usize {
+        FEATURES.iter().position(|f| f.id == "terminal").unwrap()
+    }
+
+    /// Window-logical point for panel-local `(x, y)`: the panel hangs centre-top.
+    fn term_pt(x: f32, y: f32) -> (f32, f32) {
+        let (win_w, _) = layout::window_size();
+        ((win_w - layout::TERM_W) / 2.0 + x, layout::TOP_MARGIN + y)
+    }
+
+    fn open_settled_terminal(t: &ResolvedTokens) -> Island {
+        let mut i = Island::new(t);
+        i.open_terminal(t);
+        settle(&mut i, t);
+        i
+    }
+
+    #[test]
+    fn the_terminal_opens_from_idle_at_its_size_with_its_own_layer() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        assert!(!i.terminal_open());
+        i.open_terminal(&t);
+        assert_eq!(i.state(), IslandState::Terminal);
+        assert!(i.terminal_open());
+        assert!(i.is_animating());
+        // Mid-flight both contents are partly visible: the cross-fade.
+        for _ in 0..6 {
+            i.step(1.0 / 144.0, &t);
+        }
+        let l = i.view().layers;
+        assert!(
+            l.terminal > 0.0 && l.terminal < 1.0,
+            "terminal {}",
+            l.terminal
+        );
+        assert!(l.idle > 0.0 && l.idle < 1.0, "idle {}", l.idle);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (760.0, 420.0));
+        let v = i.view();
+        assert_eq!(v.radius, 22.0 * t.radius_scale);
+        assert_eq!((v.layers.idle, v.layers.terminal), (0.0, 1.0));
+        // Its own layer, after the Tile panel's, and the springs are sized for it.
+        assert_eq!(IslandState::Terminal.layer(), 12);
+        assert_eq!(LAYERS, 13);
+        assert_eq!(
+            Island::base_size(IslandState::Terminal),
+            (layout::TERM_W, layout::TERM_H, layout::TERM_R)
+        );
+        // It is centred in the window, which it fills but for the notch shoulders.
+        let (win_w, _) = layout::window_size();
+        assert_eq!(i.pill_rect().x, (win_w - layout::TERM_W) / 2.0);
+        assert_eq!(i.pill_rect().x, layout::NOTCH_SHOULDER);
+        assert_eq!(i.pill_rect().y, layout::TOP_MARGIN);
+    }
+
+    #[test]
+    fn the_terminal_is_not_a_rest_state() {
+        assert!(!IslandState::Terminal.is_rest());
+        let t = tokens();
+        let mut i = open_settled_terminal(&t);
+        // A rest-state change (a track, a timer) does not move an open terminal.
+        i.set_music(with_track(), &t);
+        i.set_timer(RUNNING, &t);
+        assert_eq!(i.state(), IslandState::Terminal);
+        assert!(i.terminal_open());
+    }
+
+    #[test]
+    fn the_terminal_opens_from_every_rest_state_and_collapse_returns_to_it() {
+        let t = tokens();
+        type Setup = fn(&mut Island, &ResolvedTokens);
+        let cases: [(Setup, IslandState); 6] = [
+            (|_, _| {}, IslandState::Idle),
+            (
+                |i, t| i.set_music(with_track(), t),
+                IslandState::MusicCompact,
+            ),
+            (|i, t| i.set_timer(RUNNING, t), IslandState::TimerCompact),
+            (|i, t| i.set_timer(DONE, t), IslandState::TimerAlert),
+            (|i, t| i.show_snap(t), IslandState::SnapThumb),
+            (
+                |i, t| {
+                    i.set_timer(RUNNING, t);
+                    i.set_music(with_track(), t);
+                },
+                IslandState::MusicCompact,
+            ),
+        ];
+        for (setup, rest) in cases {
+            let mut i = Island::new(&t);
+            setup(&mut i, &t);
+            assert_eq!(i.state(), rest);
+            i.open_terminal(&t);
+            settle(&mut i, &t);
+            assert_eq!(i.state(), IslandState::Terminal, "from {rest:?}");
+            assert_eq!(size(&i), (layout::TERM_W, layout::TERM_H));
+            assert_eq!(i.view().layers.terminal, 1.0);
+            i.collapse(&t);
+            assert_eq!(i.state(), rest, "back to {rest:?}");
+            settle(&mut i, &t);
+            let (w, h, _) = Island::base_size(rest);
+            assert_eq!(size(&i), (w, h), "{rest:?}");
+            assert_eq!(i.view().layers.terminal, 0.0);
+            assert!(!i.terminal_open());
+        }
+    }
+
+    #[test]
+    fn the_terminal_takes_over_every_open_panel() {
+        let t = tokens();
+        type Open = fn(&mut Island, &ResolvedTokens);
+        let panels: [(IslandState, Open); 7] = [
+            (IslandState::Home, Island::expand),
+            (IslandState::MusicExpanded, Island::open_music),
+            (IslandState::Vitals, Island::open_vitals),
+            (IslandState::Sweep, Island::open_sweep),
+            (IslandState::TimerPanel, Island::open_timer),
+            (IslandState::Settings, Island::open_settings),
+            (IslandState::TilePanel, Island::open_tile),
+        ];
+        for (state, open) in panels {
+            let mut i = Island::new(&t);
+            open(&mut i, &t);
+            settle(&mut i, &t);
+            assert_eq!(i.state(), state);
+            i.open_terminal(&t);
+            assert_eq!(i.state(), IslandState::Terminal, "over {state:?}");
+            settle(&mut i, &t);
+            assert_eq!(size(&i), (layout::TERM_W, layout::TERM_H), "{state:?}");
+            let l = i.view().layers;
+            assert_eq!(
+                (l.terminal, l.home, l.tile, l.settings),
+                (1.0, 0.0, 0.0, 0.0)
+            );
+            // Not back to the panel it covered: the terminal is not a step down from it.
+            i.collapse(&t);
+            assert_eq!(i.state(), IslandState::Idle, "after {state:?}");
+        }
+    }
+
+    #[test]
+    fn the_terminal_goes_back_to_the_panels_after_it_without_leaving_a_layer_lit() {
+        let t = tokens();
+        let mut i = open_settled_terminal(&t);
+        i.open_tile(&t);
+        settle(&mut i, &t);
+        let l = i.view().layers;
+        assert_eq!((l.terminal, l.tile), (0.0, 1.0));
+        assert!(!i.terminal_open() && i.tile_open());
+        i.open_terminal(&t);
+        settle(&mut i, &t);
+        let l = i.view().layers;
+        assert_eq!((l.terminal, l.tile), (1.0, 0.0));
+        i.expand(&t);
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::HOME_W, layout::HOME_H));
+        assert_eq!(i.view().layers.terminal, 0.0);
+    }
+
+    #[test]
+    fn opening_the_terminal_again_changes_nothing() {
+        let t = tokens();
+        let mut i = open_settled_terminal(&t);
+        i.open_terminal(&t);
+        assert!(!i.is_animating());
+        assert_eq!(i.state(), IslandState::Terminal);
+        // Also while it is still growing: no restart of the springs.
+        let mut i = Island::new(&t);
+        i.open_terminal(&t);
+        for _ in 0..4 {
+            i.step(1.0 / 144.0, &t);
+        }
+        let before = i.pill_rect();
+        i.open_terminal(&t);
+        assert_eq!(i.pill_rect(), before);
+    }
+
+    #[test]
+    fn facts_arriving_under_the_terminal_wait_for_the_collapse() {
+        let t = tokens();
+        let mut i = open_settled_terminal(&t);
+        i.set_music(with_track(), &t);
+        i.set_timer(RUNNING, &t);
+        assert_eq!(i.state(), IslandState::Terminal);
+        i.set_timer(DONE, &t);
+        assert!(i.terminal_open());
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::TERM_W, layout::TERM_H));
+        assert_eq!(i.view().layers.alert, 0.0);
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        assert!(!i.terminal_open());
+        // And a fact that goes away while it is open is gone when it closes.
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_terminal(&t);
+        i.set_music(MusicUi::default(), &t);
+        assert_eq!(i.state(), IslandState::Terminal);
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn terminal_clicks_report_panel_local_coordinates_and_leave_the_panel_open() {
+        let t = tokens();
+        let mut i = open_settled_terminal(&t);
+        let (w, h) = (layout::TERM_W, layout::TERM_H);
+        for (lx, ly) in [
+            (0.0, 0.0),
+            (w - 1.0, 0.0),
+            (0.0, h - 1.0),
+            (w - 1.0, h - 1.0),
+            (w / 2.0, h / 2.0),
+        ] {
+            let (x, y) = term_pt(lx, ly);
+            assert_eq!(
+                i.click(x, y, &t),
+                ClickOutcome::Terminal { x: lx, y: ly },
+                "{lx},{ly}"
+            );
+            // Nothing else happens: closing and selecting are the app's call.
+            assert_eq!(i.state(), IslandState::Terminal);
+            assert!(!i.is_animating());
+        }
+        // The close button and the text area come out where the layout puts them.
+        let c = layout::TERM_CLOSE;
+        let (x, y) = view_at(layout::TERM_W, c);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Terminal {
+                x: c.x + c.w / 2.0,
+                y: c.y + c.h / 2.0
+            }
+        );
+        let tx = layout::TERM_TEXT;
+        let (x, y) = view_at(layout::TERM_W, tx);
+        let out = i.click(x, y, &t);
+        assert_eq!(
+            out,
+            ClickOutcome::Terminal {
+                x: tx.x + tx.w / 2.0,
+                y: tx.y + tx.h / 2.0
+            }
+        );
+        // Just outside the pill is not the panel's.
+        for (lx, ly) in [(-1.0, 10.0), (w, 10.0), (10.0, -1.0), (10.0, h)] {
+            let (x, y) = term_pt(lx, ly);
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored, "{lx},{ly}");
+        }
+        assert_eq!(i.state(), IslandState::Terminal);
+    }
+
+    #[test]
+    fn terminal_clicks_are_panel_local_even_mid_morph() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        i.open_terminal(&t);
+        // Not settled: the pill is still growing from Home, but the content is anchored
+        // centre-top.
+        i.step(1.0 / 144.0, &t);
+        assert!(i.is_animating());
+        assert!(i.pill_rect().w < layout::TERM_W);
+        let (x, y) = term_pt(200.0, 100.0);
+        assert!(i.pill_rect().contains(x, y));
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Terminal { x: 200.0, y: 100.0 }
+        );
+    }
+
+    #[test]
+    fn the_terminal_panel_has_no_home_hover_or_tile_hits() {
+        let t = tokens();
+        let mut i = open_settled_terminal(&t);
+        // Where a Home tile would be: no hover, and a click is the panel's, not a tile's.
+        let tile = layout::home_tiles()[terminal_index()];
+        let p = i.pill_rect();
+        let (x, y) = (p.x + tile.x + 5.0, p.y + tile.y + 5.0);
+        assert!(!i.hover(x, y));
+        assert_eq!(i.view().hover, None);
+        assert!(matches!(i.click(x, y, &t), ClickOutcome::Terminal { .. }));
+        // And the gear's spot in the Home header is not a Settings click.
+        let (x, y) = view_at(layout::HOME_W, layout::HOME_GEAR);
+        assert!(matches!(i.click(x, y, &t), ClickOutcome::Terminal { .. }));
+        assert_eq!(i.state(), IslandState::Terminal);
+    }
+
+    #[test]
+    fn the_osd_outranks_the_terminal_and_the_panel_returns() {
+        let t = tokens();
+        let mut i = open_settled_terminal(&t);
+        i.show_osd(vol(0.5), &t);
+        settle_pinned(&mut i, &t);
+        // The OSD covers the pill; the state stays put.
+        assert_eq!(i.state(), IslandState::Terminal);
+        assert_eq!(size(&i), (layout::OSD_W, layout::OSD_H));
+        // Where the panel's content would be: not a Terminal click.
+        let (x, y) = term_pt(380.0, 200.0);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+        let r = layout::osd_rect();
+        let bar = layout::OSD_BAR;
+        let out = i.click(r.x + bar.x + bar.w / 2.0, r.y + bar.y + bar.h / 2.0, &t);
+        assert_eq!(out, ClickOutcome::SetVolume(0.5));
+        i.release();
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Terminal);
+        assert_eq!(size(&i), (layout::TERM_W, layout::TERM_H));
+        assert_eq!(i.view().layers.terminal, 1.0);
+        assert_eq!(i.view().osd.alpha, 0.0);
+        let (x, y) = term_pt(380.0, 200.0);
+        assert!(matches!(i.click(x, y, &t), ClickOutcome::Terminal { .. }));
+    }
+
+    #[test]
+    fn the_snap_thumb_takes_over_the_terminal_and_hands_back_to_rest() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_terminal(&t);
+        settle(&mut i, &t);
+        i.show_snap(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        assert!(!i.terminal_open());
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (layout::SNAP_W, layout::SNAP_H));
+        let l = i.view().layers;
+        assert_eq!((l.terminal, l.snap), (0.0, 1.0));
+        // A click is the thumb's; the panel's old area is outside it.
+        let (x, y) = term_pt(380.0, 200.0);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+        let (x, y) = view_at(layout::SNAP_W, layout::SN_SHOT);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Snap(SnapAction::Dismiss));
+        assert_eq!(i.state(), IslandState::MusicCompact);
+    }
+
+    #[test]
+    fn a_terminal_opened_over_the_thumb_gives_it_back_on_collapse() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_snap(&t);
+        settle(&mut i, &t);
+        i.open_terminal(&t);
+        settle(&mut i, &t);
+        assert!(i.terminal_open());
+        // The thumb's countdown is the app's and keeps running under the panel.
+        assert!(i.snap_shown());
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        // If the countdown ends while the panel is open there is nothing to give back.
+        i.open_terminal(&t);
+        i.hide_snap(&t);
+        assert!(i.terminal_open());
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn the_home_terminal_tile_is_available_and_reports_open_without_shaking() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        let tile = layout::home_tiles()[terminal_index()];
+        let p = i.pill_rect();
+        let (x, y) = (p.x + tile.x + 5.0, p.y + tile.y + 5.0);
+        assert!(i.hover(x, y));
+        assert_eq!(i.view().hover, Some(terminal_index()));
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Open(terminal_index()));
+        // The app decides what opening means; the island only reports the click.
+        assert_eq!(i.state(), IslandState::Home);
+        assert!(i.view().shake.is_none() && i.view().hint.is_none());
+        i.open_terminal(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.view().layers.terminal, 1.0);
+    }
+
+    #[test]
+    fn home_keeps_its_place_in_the_wider_window() {
+        // The window is as wide as the Terminal needs, so Home is centred with room to
+        // spare; its content is anchored to the pill, and the click maths agrees.
+        let t = tokens();
+        let mut i = Island::new(&t);
+        open_home(&mut i, &t);
+        let (win_w, _) = layout::window_size();
+        assert_eq!(i.pill_rect().x, (win_w - layout::HOME_W) / 2.0);
+        let tile = layout::home_tiles()[0];
+        let (x, y) = view_at(layout::HOME_W, tile);
+        let p = i.pill_rect();
+        assert_eq!(
+            (x, y),
+            (p.x + tile.x + tile.w / 2.0, p.y + tile.y + tile.h / 2.0)
+        );
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Open(0));
+        // The gear lines up the same way.
+        let (x, y) = view_at(layout::HOME_W, layout::HOME_GEAR);
+        assert!(i.hover(x, y));
+        assert!(i.view().gear_hover);
     }
 }

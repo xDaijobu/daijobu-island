@@ -9,14 +9,15 @@ use std::collections::VecDeque;
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint, SetWindowRgn,
-    HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR,
+    ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint,
+    SetWindowRgn, HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, ReleaseCapture, SetCapture, TrackMouseEvent, UnregisterHotKey,
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, TME_LEAVE, TRACKMOUSEEVENT,
+    GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent,
+    UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, TME_LEAVE,
+    TRACKMOUSEEVENT, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -100,6 +101,56 @@ pub enum Event {
     TileMove(crate::tile::MoveEvent),
     /// Input on the Tile window picker's window (see [`crate::assist`]).
     Assist(crate::assist::AssistInput),
+    /// A key went down on the island while it has the keyboard (see [`set_keyboard`]);
+    /// auto-repeats included. `vk` is the virtual-key code and the flags are the modifier
+    /// keys as they were at that message. AltGr reads as `ctrl` and `alt` both set: the
+    /// receiver decides what that means. Sent only in keyboard mode.
+    Key {
+        vk: u16,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    },
+    /// A character typed on the island while it has the keyboard, from `WM_CHAR` or
+    /// `WM_SYSCHAR` (surrogate pairs joined; an unpaired surrogate is dropped). Control
+    /// characters come through as they are (Ctrl+C is U+0003, Enter U+000D). The flags are
+    /// as for [`Event::Key`]. Sent only in keyboard mode.
+    Char {
+        ch: char,
+        ctrl: bool,
+        alt: bool,
+    },
+    /// The wheel turned over the island while it has the keyboard. `delta` is in
+    /// `WHEEL_DELTA` units (120 per notch), positive when the wheel is rolled away from the
+    /// user (scroll up). `x` and `y` are client coordinates in device pixels. Sent only in
+    /// keyboard mode.
+    Wheel {
+        delta: i32,
+        x: i32,
+        y: i32,
+    },
+    /// Right button pressed, client coordinates in device pixels. Sent only in keyboard
+    /// mode.
+    RightClick {
+        x: i32,
+        y: i32,
+    },
+    /// Middle button released, client coordinates in device pixels. Sent only in keyboard
+    /// mode.
+    MiddleClick {
+        x: i32,
+        y: i32,
+    },
+    /// The second press of a double click (the left button), client coordinates in device
+    /// pixels. It follows that press's own `Click`. Sent in every mode.
+    DoubleClick {
+        x: i32,
+        y: i32,
+    },
+    /// The keyboard focus or the activation went away (`WM_KILLFOCUS`, or `WM_ACTIVATE`
+    /// with `WA_INACTIVE`). One deactivation can send both, so handle it idempotently.
+    /// Sent only in keyboard mode.
+    FocusLost,
 }
 
 pub trait Handler {
@@ -114,7 +165,14 @@ thread_local! {
     static QUEUE: RefCell<VecDeque<Event>> = const { RefCell::new(VecDeque::new()) };
     static TRACKING: Cell<bool> = const { Cell::new(false) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
+    /// Keyboard mode is on (see [`set_keyboard`]).
+    static KEYBOARD: Cell<bool> = const { Cell::new(false) };
+    /// A high surrogate from `WM_CHAR` waiting for its low half.
+    static HIGH_SURROGATE: Cell<Option<u16>> = const { Cell::new(None) };
 }
+
+/// The backtick key on US layouts (`VK_OEM_3`), the terminal's hotkey.
+pub const VK_OEM_3: u32 = 0xC0;
 
 fn push(ev: Event) {
     QUEUE.with(|q| q.borrow_mut().push_back(ev));
@@ -186,6 +244,9 @@ pub fn create_window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND> {
         TASKBAR_CREATED.with(|c| c.set(RegisterWindowMessageW(w!("TaskbarCreated"))));
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
+            // The second press of a double click arrives as WM_LBUTTONDBLCLK; the window
+            // procedure turns it into a `Click` and a `DoubleClick` (see `left_press`).
+            style: CS_DBLCLKS,
             lpfnWndProc: Some(wndproc),
             hInstance: hinst.into(),
             hCursor: LoadCursorW(None, IDC_ARROW)?,
@@ -333,6 +394,252 @@ pub fn unregister_hotkey(hwnd: HWND, id: i32) {
     }
 }
 
+// ---- keyboard mode ------------------------------------------------------------------
+
+/// The extended style with `WS_EX_NOACTIVATE` removed (`keyboard_on`) or put back.
+fn ex_style_for(ex: isize, keyboard_on: bool) -> isize {
+    let no_activate = WS_EX_NOACTIVATE.0 as isize;
+    if keyboard_on {
+        ex & !no_activate
+    } else {
+        ex | no_activate
+    }
+}
+
+/// The answer to `WM_MOUSEACTIVATE`: a click activates the island only in keyboard mode.
+fn mouse_activate(keyboard_on: bool) -> u32 {
+    if keyboard_on {
+        MA_ACTIVATE
+    } else {
+        MA_NOACTIVATE
+    }
+}
+
+/// Turns keyboard mode on or off for the island window.
+///
+/// Off (the default) is the island as it always was: `WS_EX_NOACTIVATE` is set, a click
+/// does not activate it, and no keyboard, wheel, right-click or focus events are sent.
+/// On, the style is removed and a click activates the window, so it can take the keyboard
+/// (see [`take_keyboard`]), and the events above are sent. Turning it off puts
+/// `WS_EX_NOACTIVATE` back; it does not move the foreground (see [`give_back_keyboard`]).
+/// While on, key messages never reach `DefWindowProc`, so Alt+F4, F10 and Alt+Space can't
+/// close the island or open its system menu.
+pub fn set_keyboard(hwnd: HWND, on: bool) {
+    KEYBOARD.with(|k| k.set(on));
+    HIGH_SURROGATE.with(|h| h.set(None));
+    // SAFETY: plain style reads and writes on a window owned by this thread. The style
+    // is not a frame style, so no `SWP_FRAMECHANGED` is needed for it to take effect.
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let new = ex_style_for(ex, on);
+        if new != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new);
+        }
+    }
+}
+
+/// Gives the island window the foreground and the keyboard focus, and returns the window
+/// that had the foreground (its raw handle, 0 when there was none) for
+/// [`give_back_keyboard`]. Call it once per opening, after `set_keyboard(hwnd, true)`, and
+/// keep the first value: a second call would return the island itself. Use it only right
+/// after the user's hotkey or click, which is what lets this process take the foreground.
+pub fn take_keyboard(hwnd: HWND) -> isize {
+    // SAFETY: plain calls on our own window, on the thread that owns it. The previous
+    // foreground handle is only stored, never dereferenced.
+    unsafe {
+        let prev = GetForegroundWindow();
+        let _ = SetForegroundWindow(hwnd);
+        let _ = SetFocus(Some(hwnd));
+        prev.0 as isize
+    }
+}
+
+/// `hwnd` is the foreground window (it has the keyboard).
+pub fn is_foreground(hwnd: HWND) -> bool {
+    // SAFETY: no arguments; the returned handle is only compared.
+    unsafe { GetForegroundWindow() == hwnd }
+}
+
+/// Activates `prev` (from [`take_keyboard`]) if it is still a window and visible; a stale
+/// or zero handle does nothing. Best effort: the system may refuse (the foreground lock).
+pub fn give_back_keyboard(prev: isize) {
+    if prev == 0 {
+        return;
+    }
+    let hwnd = HWND(prev as *mut _);
+    // SAFETY: plain calls on a handle that may be stale (then `IsWindow` says so).
+    unsafe {
+        if IsWindow(Some(hwnd)).as_bool() && IsWindowVisible(hwnd).as_bool() {
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+/// Modifier keys at the time of a message.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Mods {
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+}
+
+/// What `translate` needs besides the message itself.
+#[derive(Clone, Copy, Debug, Default)]
+struct Ctx {
+    keyboard: bool,
+    mods: Mods,
+    /// Where the client area's (0, 0) is on the screen, for `WM_MOUSEWHEEL`'s screen
+    /// coordinates.
+    origin: (i32, i32),
+}
+
+fn key_down(vk: u16) -> bool {
+    // SAFETY: no pointers involved. `GetKeyState` reports the state as of the message
+    // being handled, which is what a typed character needs.
+    unsafe { GetKeyState(i32::from(vk)) < 0 }
+}
+
+/// The modifier keys now. AltGr is how Windows reports Ctrl+Alt+... layouts (a left Ctrl
+/// plus a right Alt), so it shows as `ctrl` and `alt` both down; callers decide.
+fn read_mods() -> Mods {
+    Mods {
+        ctrl: key_down(VK_CONTROL.0),
+        shift: key_down(VK_SHIFT.0),
+        alt: key_down(VK_MENU.0),
+    }
+}
+
+/// Adds one UTF-16 unit from `WM_CHAR` to `high` (the pending high surrogate) and returns
+/// the character it completes. A high surrogate waits; a low one joins it. Unpaired
+/// surrogates are dropped: a high one followed by something else, and a low one on its own.
+fn join_utf16(high: &mut Option<u16>, unit: u16) -> Option<char> {
+    match unit {
+        0xD800..=0xDBFF => {
+            *high = Some(unit);
+            None
+        }
+        0xDC00..=0xDFFF => {
+            let hi = high.take()?;
+            char::decode_utf16([hi, unit]).next()?.ok()
+        }
+        _ => {
+            *high = None;
+            char::from_u32(u32::from(unit))
+        }
+    }
+}
+
+/// Signed client coordinates from a mouse message's `lparam`.
+fn lparam_xy(lp: isize) -> (i32, i32) {
+    let v = lp as u32;
+    (
+        i32::from(v as u16 as i16),
+        i32::from((v >> 16) as u16 as i16),
+    )
+}
+
+/// The events one left-button press makes: always a `Click` (the second press of a double
+/// click too, with the capture the caller takes, so every feature that only knows `Click`
+/// behaves as before `CS_DBLCLKS`), and a `DoubleClick` after it for `WM_LBUTTONDBLCLK`.
+fn left_press(msg: u32, lp: isize) -> (Event, Option<Event>) {
+    let (x, y) = lparam_xy(lp);
+    let double = (msg == WM_LBUTTONDBLCLK).then_some(Event::DoubleClick { x, y });
+    (Event::Click { x, y }, double)
+}
+
+/// The messages that keyboard mode takes for itself: the window procedure answers them
+/// with 0 and never calls `DefWindowProc`. For the key messages that is what keeps Alt+F4
+/// (`WM_SYSKEYDOWN` → `SC_CLOSE`), F10 and Alt+Space (→ `SC_KEYMENU`) from the system;
+/// `WM_SYSCOMMAND`'s `SC_KEYMENU` is also refused in case one arrives another way.
+/// `TranslateMessage` has already made the `WM_CHAR`s by then. Always false outside
+/// keyboard mode.
+fn consumed(msg: u32, wp: usize, keyboard_on: bool) -> bool {
+    keyboard_on
+        && match msg {
+            WM_KEYDOWN | WM_SYSKEYDOWN | WM_SYSKEYUP | WM_CHAR | WM_SYSCHAR | WM_MOUSEWHEEL
+            | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => true,
+            WM_SYSCOMMAND => (wp & 0xFFF0) as u32 == SC_KEYMENU,
+            _ => false,
+        }
+}
+
+/// Maps the messages that carry keyboard-mode input (and `WM_KILLFOCUS` / `WM_ACTIVATE`)
+/// to their event. Everything is `None` outside keyboard mode. `high` is the pending high
+/// surrogate (see `join_utf16`). The left button is not here: see `left_press`.
+fn translate(msg: u32, wp: usize, lp: isize, ctx: &Ctx, high: &mut Option<u16>) -> Option<Event> {
+    if !ctx.keyboard {
+        return None;
+    }
+    let Mods { ctrl, shift, alt } = ctx.mods;
+    match msg {
+        WM_KEYDOWN | WM_SYSKEYDOWN => Some(Event::Key {
+            vk: wp as u16,
+            ctrl,
+            shift,
+            alt,
+        }),
+        WM_CHAR | WM_SYSCHAR => {
+            let ch = join_utf16(high, wp as u16)?;
+            Some(Event::Char { ch, ctrl, alt })
+        }
+        WM_MOUSEWHEEL => {
+            // The high word of `wparam` is the signed delta, and the position in `lparam`
+            // is in screen coordinates.
+            let delta = i32::from((wp >> 16) as u16 as i16);
+            let (sx, sy) = lparam_xy(lp);
+            Some(Event::Wheel {
+                delta,
+                x: sx - ctx.origin.0,
+                y: sy - ctx.origin.1,
+            })
+        }
+        WM_RBUTTONDOWN => {
+            let (x, y) = lparam_xy(lp);
+            Some(Event::RightClick { x, y })
+        }
+        // On the release, as browsers close a tab: a press that drags elsewhere is no click.
+        WM_MBUTTONUP => {
+            let (x, y) = lparam_xy(lp);
+            Some(Event::MiddleClick { x, y })
+        }
+        WM_KILLFOCUS => Some(Event::FocusLost),
+        // The low word of `wparam` is the activation state; the high word is "minimized".
+        WM_ACTIVATE if (wp & 0xFFFF) as u32 == WA_INACTIVE => Some(Event::FocusLost),
+        _ => None,
+    }
+}
+
+/// `translate` for a live message: reads the thread's keyboard-mode state, the modifier
+/// keys and the client origin it needs (and only when it needs them).
+fn translate_live(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<Event> {
+    let keyboard = KEYBOARD.with(Cell::get);
+    if !keyboard {
+        return None;
+    }
+    let mods = if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN | WM_CHAR | WM_SYSCHAR) {
+        read_mods()
+    } else {
+        Mods::default()
+    };
+    let origin = if msg == WM_MOUSEWHEEL {
+        let mut pt = POINT { x: 0, y: 0 };
+        // SAFETY: valid window handle and out-pointer. On failure the origin stays (0, 0).
+        let _ = unsafe { ClientToScreen(hwnd, &mut pt) };
+        (pt.x, pt.y)
+    } else {
+        (0, 0)
+    };
+    let ctx = Ctx {
+        keyboard,
+        mods,
+        origin,
+    };
+    let mut high = HIGH_SURROGATE.with(Cell::get);
+    let ev = translate(msg, wp.0, lp.0, &ctx, &mut high);
+    HIGH_SURROGATE.with(|h| h.set(high));
+    ev
+}
+
 pub fn run(handler: &mut dyn Handler) {
     let mut msg = MSG::default();
     'outer: loop {
@@ -366,25 +673,36 @@ pub fn run(handler: &mut dyn Handler) {
     }
 }
 
-fn lparam_xy(lp: LPARAM) -> (i32, i32) {
-    let v = lp.0 as u32;
-    (
-        i32::from(v as u16 as i16),
-        i32::from((v >> 16) as u16 as i16),
-    )
-}
-
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    // Keyboard mode: these messages are the island's own and never reach DefWindowProc.
+    if consumed(msg, wp.0, KEYBOARD.with(Cell::get)) {
+        if let Some(ev) = translate_live(hwnd, msg, wp, lp) {
+            push(ev);
+        }
+        return LRESULT(0);
+    }
     match msg {
-        WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
+        WM_MOUSEACTIVATE => {
+            return LRESULT(mouse_activate(KEYBOARD.with(Cell::get)) as isize);
+        }
         WM_ERASEBKGND => return LRESULT(1),
-        WM_LBUTTONDOWN => {
-            let (x, y) = lparam_xy(lp);
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
             // Capture so a bar drag keeps reporting after the pointer leaves the pill.
             // SAFETY: valid window handle owned by this thread.
             let _ = unsafe { SetCapture(hwnd) };
-            push(Event::Click { x, y });
+            let (click, double) = left_press(msg, lp.0);
+            push(click);
+            if let Some(double) = double {
+                push(double);
+            }
             return LRESULT(0);
+        }
+        // Reported, then `DefWindowProc` still runs: it gives a newly activated window the
+        // keyboard focus. The events are sent in keyboard mode only.
+        WM_KILLFOCUS | WM_ACTIVATE => {
+            if let Some(ev) = translate_live(hwnd, msg, wp, lp) {
+                push(ev);
+            }
         }
         WM_LBUTTONUP => {
             // SAFETY: releases only this thread's capture; harmless if we don't hold it.
@@ -405,7 +723,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     TRACKING.with(|t| t.set(true));
                 }
             }
-            let (x, y) = lparam_xy(lp);
+            let (x, y) = lparam_xy(lp.0);
             // MK_LBUTTON: the left button is held (a drag, possibly captured).
             if wp.0 & 0x0001 != 0 {
                 push(Event::Drag { x, y });
@@ -499,4 +817,394 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     }
     // SAFETY: forwards the unhandled message with the original arguments.
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lp(x: i16, y: i16) -> isize {
+        (u32::from(y as u16) << 16 | u32::from(x as u16)) as isize
+    }
+
+    fn mods(ctrl: bool, shift: bool, alt: bool) -> Mods {
+        Mods { ctrl, shift, alt }
+    }
+
+    fn ctx(keyboard: bool, m: Mods) -> Ctx {
+        Ctx {
+            keyboard,
+            mods: m,
+            origin: (0, 0),
+        }
+    }
+
+    /// `translate` with no pending surrogate.
+    fn tr(msg: u32, wp: usize, lparam: isize, c: &Ctx) -> Option<Event> {
+        translate(msg, wp, lparam, c, &mut None)
+    }
+
+    /// `wp` for a `WM_MOUSEWHEEL`: the delta in the high word, key flags in the low one.
+    fn wheel_wp(delta: i16, keys: u16) -> usize {
+        (usize::from(delta as u16) << 16) | usize::from(keys)
+    }
+
+    fn key(vk: u16, ctrl: bool, shift: bool, alt: bool) -> Option<Event> {
+        Some(Event::Key {
+            vk,
+            ctrl,
+            shift,
+            alt,
+        })
+    }
+
+    fn chr(ch: char, ctrl: bool, alt: bool) -> Option<Event> {
+        Some(Event::Char { ch, ctrl, alt })
+    }
+
+    const ON: bool = true;
+    const OFF: bool = false;
+
+    #[test]
+    fn the_backtick_key_code() {
+        assert_eq!(VK_OEM_3, 0xC0);
+    }
+
+    // ---- keys ----
+
+    #[test]
+    fn keys_carry_the_virtual_key_and_modifiers() {
+        for msg in [WM_KEYDOWN, WM_SYSKEYDOWN] {
+            let c = ctx(ON, Mods::default());
+            assert_eq!(tr(msg, 0x41, 0, &c), key(0x41, false, false, false));
+            let c = ctx(ON, mods(true, true, false));
+            assert_eq!(tr(msg, 0x25, 0, &c), key(0x25, true, true, false));
+            let c = ctx(ON, mods(false, false, true));
+            assert_eq!(tr(msg, 0x73, 0, &c), key(0x73, false, false, true));
+        }
+        // The key code is the low 16 bits of wparam.
+        assert_eq!(
+            tr(WM_KEYDOWN, 0x1_0027, 0, &ctx(ON, Mods::default())),
+            key(0x27, false, false, false)
+        );
+    }
+
+    #[test]
+    fn altgr_is_reported_as_ctrl_and_alt_together() {
+        let altgr = ctx(ON, mods(true, false, true));
+        assert_eq!(
+            tr(WM_KEYDOWN, 0x51, 0, &altgr),
+            key(0x51, true, false, true)
+        );
+        // German `@` is Ctrl+Alt+Q: the char keeps both flags, for the core to decide.
+        let at = u32::from('@') as usize;
+        assert_eq!(tr(WM_CHAR, at, 0, &altgr), chr('@', true, true));
+        assert_eq!(tr(WM_SYSCHAR, at, 0, &altgr), chr('@', true, true));
+    }
+
+    #[test]
+    fn chars_carry_the_character_and_modifiers() {
+        let plain = ctx(ON, Mods::default());
+        assert_eq!(tr(WM_CHAR, 0x61, 0, &plain), chr('a', false, false));
+        // Shift is not part of a char: it is already in the character.
+        let shift = ctx(ON, mods(false, true, false));
+        assert_eq!(tr(WM_CHAR, 0x41, 0, &shift), chr('A', false, false));
+        // Ctrl+C arrives as U+0003 with ctrl set.
+        let ctrl = ctx(ON, mods(true, false, false));
+        assert_eq!(tr(WM_CHAR, 0x03, 0, &ctrl), chr('\u{3}', true, false));
+        // Alt+x is a WM_SYSCHAR.
+        let alt = ctx(ON, mods(false, false, true));
+        assert_eq!(tr(WM_SYSCHAR, 0x78, 0, &alt), chr('x', false, true));
+        // Enter, Esc and Tab come through as the control characters they are.
+        for (unit, ch) in [(0x0D, '\r'), (0x1B, '\u{1b}'), (0x09, '\t')] {
+            assert_eq!(tr(WM_CHAR, unit, 0, &plain), chr(ch, false, false));
+        }
+        // A BMP character that isn't ASCII.
+        assert_eq!(tr(WM_CHAR, 0x00E9, 0, &plain), chr('é', false, false));
+    }
+
+    // ---- surrogates ----
+
+    #[test]
+    fn a_surrogate_pair_joins_into_one_char() {
+        let c = ctx(ON, Mods::default());
+        let mut high = None;
+        // U+1F600 is D83D DE00.
+        assert_eq!(translate(WM_CHAR, 0xD83D, 0, &c, &mut high), None);
+        assert_eq!(high, Some(0xD83D));
+        assert_eq!(
+            translate(WM_CHAR, 0xDE00, 0, &c, &mut high),
+            chr('\u{1F600}', false, false)
+        );
+        assert_eq!(high, None);
+    }
+
+    #[test]
+    fn unpaired_surrogates_are_dropped() {
+        let c = ctx(ON, Mods::default());
+        // A low surrogate on its own.
+        let mut high = None;
+        assert_eq!(translate(WM_CHAR, 0xDE00, 0, &c, &mut high), None);
+        // A high surrogate followed by an ordinary char: the high one is dropped and the
+        // char is not.
+        assert_eq!(translate(WM_CHAR, 0xD83D, 0, &c, &mut high), None);
+        assert_eq!(
+            translate(WM_CHAR, 0x62, 0, &c, &mut high),
+            chr('b', false, false)
+        );
+        assert_eq!(high, None);
+        // ...and a low one after that finds nothing to join.
+        assert_eq!(translate(WM_CHAR, 0xDE00, 0, &c, &mut high), None);
+        // Two highs in a row: the later one wins.
+        assert_eq!(translate(WM_CHAR, 0xD800, 0, &c, &mut high), None);
+        assert_eq!(translate(WM_CHAR, 0xD83D, 0, &c, &mut high), None);
+        assert_eq!(
+            translate(WM_CHAR, 0xDE00, 0, &c, &mut high),
+            chr('\u{1F600}', false, false)
+        );
+    }
+
+    #[test]
+    fn a_surrogate_pair_works_through_wm_syschar() {
+        let c = ctx(ON, mods(false, false, true));
+        let mut high = None;
+        assert_eq!(translate(WM_SYSCHAR, 0xD83D, 0, &c, &mut high), None);
+        assert_eq!(
+            translate(WM_SYSCHAR, 0xDE00, 0, &c, &mut high),
+            chr('\u{1F600}', false, true)
+        );
+    }
+
+    // ---- the wheel ----
+
+    fn wheel_ev(delta: i32, x: i32, y: i32) -> Option<Event> {
+        Some(Event::Wheel { delta, x, y })
+    }
+
+    #[test]
+    fn the_wheel_keeps_the_sign_of_its_delta() {
+        let c = ctx(ON, Mods::default());
+        let wheel = |d: i16| tr(WM_MOUSEWHEEL, wheel_wp(d, 0), lp(10, 20), &c);
+        // Rolled away from the user (up): positive.
+        assert_eq!(wheel(120), wheel_ev(120, 10, 20));
+        assert_eq!(wheel(-120), wheel_ev(-120, 10, 20));
+        // A high-resolution wheel sends fractions of a notch.
+        assert_eq!(wheel(-30), wheel_ev(-30, 10, 20));
+        assert_eq!(wheel(i16::MIN), wheel_ev(-32768, 10, 20));
+        assert_eq!(wheel(i16::MAX), wheel_ev(32767, 10, 20));
+        // The key flags in the low word and the upper half of a 64-bit wparam don't leak in.
+        let wp = wheel_wp(-120, 0x0008 | 0x0004) | (0xABCD_usize << 32);
+        assert_eq!(
+            tr(WM_MOUSEWHEEL, wp, lp(10, 20), &c),
+            wheel_ev(-120, 10, 20)
+        );
+    }
+
+    #[test]
+    fn the_wheel_position_is_converted_to_client_coordinates() {
+        let at = |origin: (i32, i32), screen: (i16, i16)| {
+            let c = Ctx {
+                origin,
+                ..ctx(ON, Mods::default())
+            };
+            tr(WM_MOUSEWHEEL, wheel_wp(120, 0), lp(screen.0, screen.1), &c)
+        };
+        // The window at (656, 0) on the primary monitor.
+        assert_eq!(at((656, 0), (700, 90)), wheel_ev(120, 44, 90));
+        // A pointer left of and above the client area reads negative.
+        assert_eq!(at((656, 10), (600, 4)), wheel_ev(120, -56, -6));
+        // A monitor to the left of the primary has negative screen coordinates.
+        assert_eq!(at((-1264, 0), (-1000, 50)), wheel_ev(120, 264, 50));
+    }
+
+    // ---- the right and left buttons ----
+
+    #[test]
+    fn a_right_press_is_a_right_click() {
+        let c = ctx(ON, Mods::default());
+        assert_eq!(
+            tr(WM_RBUTTONDOWN, 2, lp(-3, 40), &c),
+            Some(Event::RightClick { x: -3, y: 40 })
+        );
+        // The release makes no event of its own.
+        assert_eq!(tr(WM_RBUTTONUP, 0, lp(-3, 40), &c), None);
+    }
+
+    #[test]
+    fn a_middle_release_is_a_middle_click() {
+        let c = ctx(ON, Mods::default());
+        assert_eq!(tr(WM_MBUTTONDOWN, 0x10, lp(7, 9), &c), None);
+        assert_eq!(
+            tr(WM_MBUTTONUP, 0, lp(7, 9), &c),
+            Some(Event::MiddleClick { x: 7, y: 9 })
+        );
+        assert_eq!(
+            tr(WM_MBUTTONUP, 0, lp(7, 9), &ctx(OFF, Mods::default())),
+            None
+        );
+        assert!(consumed(WM_MBUTTONUP, 0, ON) && consumed(WM_MBUTTONDOWN, 0, ON));
+        assert!(!consumed(WM_MBUTTONUP, 0, OFF));
+    }
+
+    #[test]
+    fn a_double_click_is_a_click_and_a_double_click() {
+        // The plain press: a Click, nothing else.
+        assert_eq!(
+            left_press(WM_LBUTTONDOWN, lp(12, -4)),
+            (Event::Click { x: 12, y: -4 }, None)
+        );
+        // The second press of a double click: the same Click as before CS_DBLCLKS, then
+        // the DoubleClick. `left_press` doesn't look at keyboard mode, so this holds in
+        // every mode.
+        assert_eq!(
+            left_press(WM_LBUTTONDBLCLK, lp(12, -4)),
+            (
+                Event::Click { x: 12, y: -4 },
+                Some(Event::DoubleClick { x: 12, y: -4 })
+            )
+        );
+    }
+
+    // ---- focus ----
+
+    #[test]
+    fn losing_the_keyboard_focus_is_reported() {
+        assert_eq!(
+            tr(WM_KILLFOCUS, 0, 0, &ctx(ON, Mods::default())),
+            Some(Event::FocusLost)
+        );
+    }
+
+    #[test]
+    fn only_deactivation_loses_focus() {
+        let c = ctx(ON, Mods::default());
+        assert_eq!(
+            tr(WM_ACTIVATE, WA_INACTIVE as usize, 0, &c),
+            Some(Event::FocusLost)
+        );
+        // Deactivated while minimized: the high word is set, the low word is still 0.
+        assert_eq!(tr(WM_ACTIVATE, 0x0001_0000, 0, &c), Some(Event::FocusLost));
+        // WA_ACTIVE (1) and WA_CLICKACTIVE (2) are activations.
+        assert_eq!(tr(WM_ACTIVATE, 1, 0, &c), None);
+        assert_eq!(tr(WM_ACTIVATE, 2, 0, &c), None);
+        assert_eq!(tr(WM_ACTIVATE, 0x0001_0001, 0, &c), None);
+    }
+
+    // ---- outside keyboard mode ----
+
+    #[test]
+    fn nothing_is_sent_outside_keyboard_mode() {
+        let c = ctx(OFF, mods(true, true, true));
+        for (msg, wp) in [
+            (WM_KEYDOWN, 0x41),
+            (WM_SYSKEYDOWN, 0x73),
+            (WM_CHAR, 0x61),
+            (WM_SYSCHAR, 0x61),
+            (WM_MOUSEWHEEL, wheel_wp(120, 0)),
+            (WM_RBUTTONDOWN, 2),
+            (WM_KILLFOCUS, 0),
+            (WM_ACTIVATE, WA_INACTIVE as usize),
+        ] {
+            assert_eq!(tr(msg, wp, lp(5, 5), &c), None, "{msg:#x}");
+        }
+        // A surrogate half doesn't wait for its pair when nothing is listening.
+        let mut high = None;
+        assert_eq!(translate(WM_CHAR, 0xD83D, 0, &c, &mut high), None);
+        assert_eq!(high, None);
+    }
+
+    #[test]
+    fn unrelated_messages_make_no_event() {
+        let c = ctx(ON, Mods::default());
+        for msg in [
+            WM_MOUSEMOVE,
+            WM_LBUTTONDOWN,
+            WM_LBUTTONUP,
+            WM_KEYUP,
+            WM_SYSKEYUP,
+            WM_SETFOCUS,
+            WM_PAINT,
+            WM_MOUSEHWHEEL,
+        ] {
+            assert_eq!(tr(msg, 1, lp(1, 1), &c), None, "{msg:#x}");
+        }
+    }
+
+    // ---- what keyboard mode takes for itself ----
+
+    #[test]
+    fn keyboard_mode_consumes_the_key_messages_so_alt_f4_cannot_close() {
+        for msg in [
+            WM_KEYDOWN,
+            WM_SYSKEYDOWN,
+            WM_SYSKEYUP,
+            WM_CHAR,
+            WM_SYSCHAR,
+            WM_MOUSEWHEEL,
+            WM_RBUTTONDOWN,
+            WM_RBUTTONUP,
+        ] {
+            assert!(consumed(msg, 0x73, ON), "{msg:#x}");
+            assert!(!consumed(msg, 0x73, OFF), "{msg:#x} outside keyboard mode");
+        }
+        // The system menu by keyboard (F10, Alt+Space), however it arrives. The low four
+        // bits of wparam are used by the system.
+        assert!(consumed(WM_SYSCOMMAND, SC_KEYMENU as usize, ON));
+        assert!(consumed(WM_SYSCOMMAND, SC_KEYMENU as usize | 0x2, ON));
+        assert!(!consumed(WM_SYSCOMMAND, SC_KEYMENU as usize, OFF));
+        // Other system commands are not ours to take (an outside WM_CLOSE still closes).
+        assert!(!consumed(WM_SYSCOMMAND, SC_CLOSE as usize, ON));
+        assert!(!consumed(WM_CLOSE, 0, ON));
+    }
+
+    #[test]
+    fn keyboard_mode_leaves_everything_else_alone() {
+        for msg in [
+            WM_MOUSEMOVE,
+            WM_LBUTTONDOWN,
+            WM_LBUTTONDBLCLK,
+            WM_LBUTTONUP,
+            WM_HOTKEY,
+            WM_KILLFOCUS,
+            WM_ACTIVATE,
+            WM_TIMER,
+            WM_DESTROY,
+        ] {
+            assert!(!consumed(msg, 0, ON), "{msg:#x}");
+        }
+    }
+
+    #[test]
+    fn a_click_activates_the_island_only_in_keyboard_mode() {
+        assert_eq!(mouse_activate(OFF), MA_NOACTIVATE);
+        assert_eq!(mouse_activate(ON), MA_ACTIVATE);
+    }
+
+    #[test]
+    fn keyboard_mode_toggles_only_no_activate_and_restores_it_exactly() {
+        let no_activate = WS_EX_NOACTIVATE.0 as isize;
+        // The style `create_window` gives the island.
+        let created =
+            (WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE).0
+                as isize;
+        let on = ex_style_for(created, ON);
+        assert_eq!(on, created & !no_activate, "on removes NOACTIVATE only");
+        // Off puts back exactly what create_window set.
+        assert_eq!(ex_style_for(on, OFF), created);
+        // Idempotent both ways.
+        assert_eq!(ex_style_for(on, ON), on);
+        assert_eq!(ex_style_for(created, OFF), created);
+    }
+
+    // ---- lparam ----
+
+    #[test]
+    fn lparam_coordinates_are_signed() {
+        assert_eq!(lparam_xy(lp(12, 34)), (12, 34));
+        assert_eq!(lparam_xy(lp(-5, 7)), (-5, 7));
+        assert_eq!(lparam_xy(lp(9, -300)), (9, -300));
+        assert_eq!(lparam_xy(lp(i16::MIN, i16::MAX)), (-32768, 32767));
+        // The upper half of a 64-bit lparam is ignored.
+        assert_eq!(lparam_xy(0x1234_0000_0003_0004), (4, 3));
+    }
 }

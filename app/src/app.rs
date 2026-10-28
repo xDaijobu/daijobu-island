@@ -12,6 +12,9 @@ use crate::snap::{
 };
 use crate::storage;
 use crate::sweep::{Job, Msg, ScanId, Sweeper};
+use crate::terminal::{
+    Outcome as TermOutcome, SessionSpawner, Terminal, TextClipboard, HOTKEY_TERMINAL,
+};
 use crate::tile::{
     IslandGeo, SystemWindows, Tiler, HOTKEY_DOWN, HOTKEY_LEFT, HOTKEY_RIGHT, HOTKEY_UP,
     HOTKEY_ZONE_1, HOTKEY_ZONE_9, POLL_MS, TIMER_TILE_NOTICE, TIMER_TILE_POLL, TIMER_TILE_RETRY,
@@ -30,6 +33,7 @@ use dj_core::snap::{loupe_label, pixel_at, size_label, IRect, Loupe, Stamp};
 use dj_core::snap_edit::{CursorKind, EditInput, Key, KeyCode, Outcome, Rgba, TextMeasure};
 use dj_core::snap_stack::Stack;
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
+use dj_core::terminal::{self as termcore, Mods};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::tile_assist::{self, AssistKey};
 use dj_core::vitals::Vitals;
@@ -37,7 +41,8 @@ use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{
     AssistCard, AssistScene, AssistSurface, EditScene, Frame, MusicFrame, RenderError, Renderer,
-    SnapFrame, SnapOverlay, SnapScene, TextMetrics, TilePanel, TileThumb, ZoneOverlay, ZoneScene,
+    SnapFrame, SnapOverlay, SnapScene, TerminalPanel, TextMetrics, TilePanel, TileThumb,
+    ZoneOverlay, ZoneScene,
 };
 use dj_win::assist::{AssistInput, Thumbnail};
 use dj_win::overlay::{self, SnapInput};
@@ -175,6 +180,11 @@ pub struct App {
     tile_notice_at: Option<Instant>,
     /// The window picker's window while it fills a layout.
     assist_win: Option<AssistWin>,
+    /// The terminal panel: the shell behind it, whether the island holds the keyboard for
+    /// it, and the window that had the keyboard before it opened.
+    terminal: Terminal,
+    term_keyboard: bool,
+    term_prev: isize,
 }
 
 /// The window picker on the zone it fills: its window, surface, live thumbnails and input.
@@ -278,6 +288,16 @@ impl App {
             storage::log(&format!("tile: {e}"));
         }
         let tiler = Tiler::new(Box::new(SystemWindows), config.tile.clone(), &custom);
+        let (pinned, errors) = dj_core::term_tabs::parse_pinned(&storage::read_terminal_tabs());
+        for e in errors {
+            storage::log(&format!("terminal tabs: {e}"));
+        }
+        let terminal = Terminal::new(
+            config.terminal.clone(),
+            Box::new(SessionSpawner { hwnd: raw }),
+            Box::new(TextClipboard { owner: raw }),
+            pinned,
+        );
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -339,6 +359,9 @@ impl App {
             tile_retry_at: None,
             tile_notice_at: None,
             assist_win: None,
+            terminal,
+            term_keyboard: false,
+            term_prev: 0,
         };
         app.relayout();
         app.install_shell_integration();
@@ -374,6 +397,15 @@ impl App {
             if !window::register_hotkey(self.hwnd, *id, window::MOD_CTRL_ALT, *vk) {
                 storage::log(&format!("tile: {name} is already taken by another app"));
             }
+        }
+        // Ctrl+Alt+`: the terminal panel (Ctrl+` stays VS Code's).
+        if !window::register_hotkey(
+            self.hwnd,
+            HOTKEY_TERMINAL,
+            window::MOD_CTRL_ALT,
+            window::VK_OEM_3,
+        ) {
+            storage::log("Ctrl+Alt+` is already taken by another app");
         }
         system::install_topmost_hook(self.hwnd);
         system::watch_dir(self.hwnd, &storage::themes_dir());
@@ -1373,11 +1405,127 @@ impl App {
         self.sync_appbar(true);
         let now = Instant::now();
         self.previews.relayout(self.stack_anchor(), now);
+        // A new scale changes the cell size, and so the shell's grid.
+        let cell = self.term_cell();
+        self.terminal.measure(cell, self.scale);
     }
 
     /// The island itself needs a frame: it moves, crossfades a theme, or changed.
     fn island_due(&self) -> bool {
         self.visible && (self.dirty || self.island.is_animating() || self.anim.animating())
+    }
+
+    // ---- Terminal ----
+
+    /// One terminal cell in device px for the configured font at the current scale.
+    fn term_cell(&mut self) -> (u16, u16) {
+        let (font, size) = {
+            let c = self.terminal.config();
+            (c.font.clone(), c.font_size)
+        };
+        match self.renderer.as_mut() {
+            Some(r) => r.terminal_cell(&font, size, self.scale),
+            // No renderer yet: a mono font's usual proportions; measured again on open.
+            None => (
+                (size * 0.6 * self.scale).round().max(1.0) as u16,
+                (size * 1.3 * self.scale).round().max(1.0) as u16,
+            ),
+        }
+    }
+
+    /// Opens the panel (starting the shell the first time) and takes the keyboard. Only
+    /// called right after the user's hotkey or click, which lets the island take the
+    /// foreground.
+    fn open_terminal(&mut self) {
+        let tokens = self.anim.current().clone();
+        let cell = self.term_cell();
+        self.terminal.open(cell, self.scale);
+        self.island.open_terminal(&tokens);
+        if !self.term_keyboard {
+            window::set_keyboard(self.hwnd, true);
+            let prev = window::take_keyboard(self.hwnd);
+            self.term_prev = if prev == self.hwnd.0 as isize {
+                0
+            } else {
+                prev
+            };
+            self.term_keyboard = true;
+        } else {
+            window::take_keyboard(self.hwnd);
+        }
+        // The system can refuse the foreground: then the cursor says so (hollow) rather
+        // than pretend the keys go here.
+        self.terminal.set_focused(window::is_foreground(self.hwnd));
+        self.dirty = true;
+    }
+
+    /// Collapses the panel; the shell keeps running. `give_back`: the keyboard returns to
+    /// the window that had it (the hotkey or ✕), not when the user clicked elsewhere; and
+    /// only while the island still holds it (with `hide_on_blur` off the user may be
+    /// typing in another window by now).
+    fn close_terminal(&mut self, give_back: bool) {
+        if self.island.terminal_open() {
+            let tokens = self.anim.current().clone();
+            self.island.collapse(&tokens);
+        }
+        self.release_keyboard(give_back);
+        self.dirty = true;
+    }
+
+    fn release_keyboard(&mut self, give_back: bool) {
+        if !self.term_keyboard {
+            return;
+        }
+        self.term_keyboard = false;
+        let held = window::is_foreground(self.hwnd);
+        window::set_keyboard(self.hwnd, false);
+        self.terminal.set_focused(false);
+        self.terminal.on_hide();
+        let prev = std::mem::take(&mut self.term_prev);
+        if give_back && held {
+            window::give_back_keyboard(prev);
+        }
+    }
+
+    /// The keyboard follows the panel: when something else collapsed it (a snap, another
+    /// panel, a theme switch through Home), the island stops taking keys, and if it still
+    /// has them they go back to where they were (never stuck on a window that won't take
+    /// them).
+    fn sync_terminal(&mut self) {
+        if self.term_keyboard && !self.island.terminal_open() {
+            self.release_keyboard(true);
+        }
+        // Pinned tabs changed (pinned, unpinned, closed, reordered): saved for the next run.
+        if let Some(toml) = self.terminal.take_save() {
+            storage::save_terminal_tabs(&toml);
+        }
+    }
+
+    fn term_outcome(&mut self, outcome: TermOutcome) {
+        match outcome {
+            TermOutcome::None => {}
+            TermOutcome::Redraw => self.dirty = true,
+            TermOutcome::Close => self.close_terminal(true),
+        }
+    }
+
+    /// A window-logical point in the terminal panel's local px (its final size, anchored
+    /// at the window's top centre like every panel).
+    fn terminal_local(lx: f32, ly: f32) -> (f32, f32) {
+        let (win_w, _) = layout::window_size();
+        (lx - (win_w - layout::TERM_W) / 2.0, ly - layout::TOP_MARGIN)
+    }
+
+    /// The panel is open and has (or had, with `hide_on_blur` off) the keyboard.
+    fn terminal_input(&self) -> bool {
+        self.term_keyboard && self.island.terminal_open()
+    }
+
+    /// A window device-px point is on the panel itself: not the notch's shoulders around
+    /// it, and not while the volume OSD covers the island.
+    fn over_panel(&self, x: i32, y: i32) -> bool {
+        let (lx, ly) = self.island_point(x, y);
+        self.island.view().osd.alpha <= 0.0 && self.island.pill_rect().contains(lx, ly)
     }
 
     // ---- Tile ----
@@ -1957,6 +2105,11 @@ impl App {
     }
 
     fn set_visible(&mut self, visible: bool) {
+        // A hidden island can't hold the keyboard: the panel closes (the shell keeps
+        // running) and the keyboard goes back.
+        if !visible && self.island.terminal_open() {
+            self.close_terminal(true);
+        }
         self.visible = visible;
         // The island stays hidden while the Snap overlay is up; it comes back after.
         window::set_visible(self.hwnd, visible && self.overlay.is_none());
@@ -2239,6 +2392,10 @@ impl App {
         tray::remove(self.hwnd);
         window::unregister_hotkey(self.hwnd, HOTKEY_TOGGLE);
         window::unregister_hotkey(self.hwnd, HOTKEY_THEME);
+        window::unregister_hotkey(self.hwnd, HOTKEY_TERMINAL);
+        // The shell ends with the island.
+        self.release_keyboard(false);
+        self.terminal.shutdown();
         window::quit();
     }
 
@@ -2317,6 +2474,15 @@ impl Handler for App {
                         self.island.collapse(&tokens);
                         self.tile_panel = false;
                     }
+                    ClickOutcome::Open(i) if FEATURES[i].id == "terminal" => self.open_terminal(),
+                    // ✕ closes; the text area starts a selection. A click into the panel
+                    // also activates the island again (it answers `MA_ACTIVATE` while the
+                    // panel holds the keyboard).
+                    ClickOutcome::Terminal { x, y } => {
+                        self.terminal.set_focused(self.term_keyboard);
+                        let outcome = self.terminal.press(x, y);
+                        self.term_outcome(outcome);
+                    }
                     ClickOutcome::Snap(action) => self.snap_action(action),
                     ClickOutcome::Timer(action) => self.timer_action(action),
                     ClickOutcome::Settings(action) => self.settings_action(action),
@@ -2341,13 +2507,25 @@ impl Handler for App {
                         self.dirty = true;
                     }
                 }
+                if self.island.terminal_open() {
+                    let (px, py) = Self::terminal_local(lx, ly);
+                    if self.terminal.hover(px, py) {
+                        self.dirty = true;
+                    }
+                }
             }
             Event::Drag { x, y } => {
                 let (lx, ly) = self.island_point(x, y);
                 match self.island.drag(lx) {
+                    // The OSD's bar, even over the terminal panel.
                     Some(level) => {
                         self.set_level(level);
                         self.dirty = true;
+                    }
+                    None if self.island.terminal_open() => {
+                        let (px, py) = Self::terminal_local(lx, ly);
+                        let outcome = self.terminal.drag(px, py);
+                        self.term_outcome(outcome);
                     }
                     None => {
                         if self.island.hover(lx, ly) {
@@ -2356,7 +2534,11 @@ impl Handler for App {
                     }
                 }
             }
-            Event::Release => self.island.release(),
+            Event::Release => {
+                self.island.release();
+                let outcome = self.terminal.release();
+                self.term_outcome(outcome);
+            }
             Event::VolumeChanged => self.show_volume(),
             Event::DefaultDeviceChanged => {
                 if let Some(m) = self.mixer.as_mut() {
@@ -2377,12 +2559,25 @@ impl Handler for App {
                 self.show_volume();
             }
             Event::Leave => {
-                if self.island.clear_hover() | self.tiler.clear_hover() {
+                if self.island.clear_hover()
+                    | self.tiler.clear_hover()
+                    | self.terminal.clear_hover()
+                {
                     self.dirty = true;
                 }
             }
             Event::Hotkey(HOTKEY_TOGGLE) => self.set_visible(!self.visible),
             Event::Hotkey(HOTKEY_THEME) => self.cycle_theme(),
+            Event::Hotkey(HOTKEY_TERMINAL) => {
+                if self.island.terminal_open() {
+                    self.close_terminal(true);
+                } else if self.overlay.is_none() && !self.snap_pending {
+                    if !self.visible {
+                        self.set_visible(true);
+                    }
+                    self.open_terminal();
+                }
+            }
             Event::Hotkey(HOTKEY_SNAP | HOTKEY_SNAP_ALT) | Event::PrintScreen => {
                 self.request_snap()
             }
@@ -2477,6 +2672,10 @@ impl Handler for App {
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => {
+                // The shell printed (or set a title, or exited).
+                if self.terminal.drain() && self.island.terminal_open() {
+                    self.dirty = true;
+                }
                 self.drain_art();
                 // A card saved the thumb's shot: the thumb reads "open" too.
                 let saved = self.previews.drain(Instant::now());
@@ -2505,6 +2704,65 @@ impl Handler for App {
             }
             Event::VitalsReady => self.drain_vitals(),
             Event::SweepReady => self.drain_sweep(),
+            // Terminal input: dj-win sends these only while the island holds the keyboard
+            // (all but `DoubleClick`, which every double click sends).
+            Event::Key {
+                vk,
+                ctrl,
+                shift,
+                alt,
+            } if self.terminal_input() => {
+                let outcome = self.terminal.key(vk, Mods { ctrl, shift, alt });
+                self.term_outcome(outcome);
+            }
+            Event::Char { ch, ctrl, alt } if self.terminal_input() => {
+                let mods = Mods {
+                    ctrl,
+                    shift: false,
+                    alt,
+                };
+                let outcome = self.terminal.char(ch, mods);
+                self.term_outcome(outcome);
+            }
+            Event::Wheel { delta, x, y } if self.terminal_input() && self.over_panel(x, y) => {
+                let outcome = self.terminal.wheel(delta);
+                self.term_outcome(outcome);
+            }
+            Event::RightClick { x, y } if self.terminal_input() && self.over_panel(x, y) => {
+                let (lx, ly) = self.island_point(x, y);
+                let (px, py) = Self::terminal_local(lx, ly);
+                let outcome = self.terminal.right_click(px, py);
+                self.term_outcome(outcome);
+            }
+            Event::MiddleClick { x, y } if self.terminal_input() && self.over_panel(x, y) => {
+                let (lx, ly) = self.island_point(x, y);
+                let (px, py) = Self::terminal_local(lx, ly);
+                let outcome = self.terminal.middle_click(px, py);
+                self.term_outcome(outcome);
+            }
+            Event::DoubleClick { x, y } if self.island.terminal_open() => {
+                let (lx, ly) = self.island_point(x, y);
+                let (px, py) = Self::terminal_local(lx, ly);
+                let outcome = self.terminal.double_click(px, py);
+                self.term_outcome(outcome);
+            }
+            // Clicking another window: the panel hides (the shell keeps running), or with
+            // `hide_on_blur` off it stays with a hollow cursor until clicked again.
+            Event::FocusLost if self.term_keyboard => {
+                if self.terminal.config().hide_on_blur {
+                    self.close_terminal(false);
+                } else {
+                    self.terminal.set_focused(false);
+                    self.dirty = true;
+                }
+            }
+            Event::Key { .. }
+            | Event::Char { .. }
+            | Event::Wheel { .. }
+            | Event::RightClick { .. }
+            | Event::MiddleClick { .. }
+            | Event::DoubleClick { .. }
+            | Event::FocusLost => {}
         }
         self.sync_vu_timer();
         self.sync_vitals();
@@ -2512,6 +2770,7 @@ impl Handler for App {
         self.sync_timer();
         self.sync_snap();
         self.sync_tile();
+        self.sync_terminal();
     }
 
     fn wants_frame(&self) -> bool {
@@ -2605,6 +2864,21 @@ impl Handler for App {
             header: dj_core::tile::PANEL_HEADER,
             footer_rect: dj_core::tile::PANEL_FOOTER,
         });
+        // The terminal panel's content, only while its layer shows; its colours follow the
+        // theme (and its crossfade).
+        let term_palette = termcore::palette(self.anim.current());
+        let term_view = (view.layers.terminal > 0.0).then(|| self.terminal.view(&term_palette));
+        let term_config = self.terminal.config();
+        let terminal = term_view.as_ref().map(|v| TerminalPanel {
+            title: &v.title,
+            screen: &v.screen,
+            palette: &term_palette,
+            font: &term_config.font,
+            font_size: term_config.font_size,
+            notice: v.notice.as_deref(),
+            close_hover: v.close_hover,
+            tabs: &v.tabs,
+        });
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
             return;
@@ -2625,6 +2899,7 @@ impl Handler for App {
             snap: self.snap_frame,
             settings: &settings,
             tile: tile_panel,
+            terminal,
             island_style: self.config.island.style(),
         };
         match renderer.render(&frame) {

@@ -17,6 +17,7 @@ dj-vitals = { path = "../crates/dj-vitals" }
 dj-win = { path = "../crates/dj-win" }
 dj-music = { path = "../crates/dj-music" }
 dj-capture = { path = "../crates/dj-capture" }
+dj-term = { path = "../crates/dj-term" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

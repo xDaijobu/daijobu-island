@@ -2,7 +2,8 @@
 //! layout, the island state machine, vitals, the Sweep view model, the Pomodoro timer,
 //! the Snap selection model, the Snap annotation editor, the Snap preview stack, Tile
 //! (layouts, zone math and the window-drag state machine), the Tile window picker (the
-//! zone-by-zone fill run and its card grid) and the Settings panel.
+//! zone-by-zone fill run and its card grid), the Settings panel and the terminal panel's
+//! shared types and key mapping.
 //! No `unsafe`, no Win32.
 #![forbid(unsafe_code)]
 
@@ -20,6 +21,9 @@ pub mod snap_edit;
 pub mod snap_stack;
 pub mod spring;
 pub mod sweep;
+pub mod term_agents;
+pub mod term_tabs;
+pub mod terminal;
 pub mod theme;
 pub mod tile;
 pub mod tile_assist;

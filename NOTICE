@@ -9,3 +9,8 @@ Bundled third-party assets:
   SIL Open Font License 1.1, see assets/fonts/OFL-Geist.txt.
 - Doto font, Copyright 2024 The Doto Project Authors.
   SIL Open Font License 1.1, see assets/fonts/OFL-Doto.txt.
+
+Third-party code linked into the binary:
+
+- alacritty_terminal (terminal emulation for the Terminal panel), Copyright the Alacritty
+  contributors. Apache License, Version 2.0. https://github.com/alacritty/alacritty

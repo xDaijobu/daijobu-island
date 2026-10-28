@@ -84,6 +84,31 @@ pub fn read_layouts() -> String {
     fs::read_to_string(data_dir().join("layouts.toml")).unwrap_or_default()
 }
 
+fn terminal_tabs_path() -> PathBuf {
+    data_dir().join("terminal-tabs.toml")
+}
+
+/// `terminal-tabs.toml`: the terminal's pinned tabs. Empty if there is none.
+pub fn read_terminal_tabs() -> String {
+    fs::read_to_string(terminal_tabs_path()).unwrap_or_default()
+}
+
+/// Writes the pinned tabs (the file goes when none is left).
+pub fn save_terminal_tabs(toml: &str) {
+    let path = terminal_tabs_path();
+    let result = if toml.trim().is_empty() {
+        match fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    } else {
+        fs::write(&path, toml)
+    };
+    if let Err(e) = result {
+        log(&format!("terminal tabs: {e}"));
+    }
+}
+
 pub fn log(msg: &str) {
     dj_win::system::log(msg);
 }
