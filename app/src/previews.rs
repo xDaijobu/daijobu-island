@@ -59,8 +59,11 @@ const VK_RIGHT: u16 = 0x27;
 const VK_DELETE: u16 = 0x2E;
 const VK_A: u16 = 0x41;
 const VK_C: u16 = 0x43;
+const VK_M: u16 = 0x4D;
 const VK_P: u16 = 0x50;
 const VK_S: u16 = 0x53;
+const VK_APPS: u16 = 0x5D;
+const VK_F10: u16 = 0x79;
 
 /// The key a stack key press stands for. Letters work with or without Ctrl (Ctrl+C
 /// copies like C), except A, which needs Ctrl.
@@ -77,6 +80,8 @@ pub fn stack_key(vk: u16, ctrl: bool, shift: bool) -> Option<StackKey> {
         VK_C => StackKey::C,
         VK_S => StackKey::S,
         VK_P => StackKey::P,
+        VK_M | VK_APPS => StackKey::More,
+        VK_F10 if shift => StackKey::More,
         VK_A if ctrl => StackKey::CtrlA,
         _ => return None,
     })
@@ -119,8 +124,14 @@ fn pointer_hits(
     (click, origin)
 }
 
-/// The stack's decisions: cards, their payloads, the actions and the worker's replies.
-/// No window: errors come back as text for the app's log.
+/// A screen-pin request retains the exact shared screenshot, independent of its card.
+pub struct PinRequest {
+    pub id: u64,
+    pub payload: Payload,
+    pub saved: Option<PathBuf>,
+}
+
+/// The stack's decisions, tested without a window or the system clipboard.
 pub struct Model {
     stack: Stack,
     store: Store,
@@ -133,6 +144,10 @@ pub struct Model {
     /// Copies waiting for the worker to encode their PNG, and saves waiting for it.
     copying: Vec<ItemId>,
     saving: Vec<ItemId>,
+    pin_requests: Vec<PinRequest>,
+    /// Cards with a pin request out, and the status each had before `Pinning`.
+    pinning: HashMap<ItemId, CardStatus>,
+    more: Option<ItemId>,
     drag: DragState,
     /// Set by Previews with the owner's wake callback; headless tests inject replies.
     drag_store: Option<DragStore>,
@@ -162,6 +177,9 @@ impl Model {
             stamp,
             copying: Vec::new(),
             saving: Vec::new(),
+            pin_requests: Vec::new(),
+            pinning: HashMap::new(),
+            more: None,
             drag: DragState::default(),
             drag_store: None,
             drag_ready: None,
@@ -222,6 +240,11 @@ impl Model {
         self.store.remove(id.0);
         self.copying.retain(|c| *c != id);
         self.saving.retain(|s| *s != id);
+        self.pinning.remove(&id);
+        self.pin_requests.retain(|r| r.id != id.0);
+        if self.more == Some(id) {
+            self.more = None;
+        }
         self.drag_failed.remove(&id);
     }
 
@@ -254,13 +277,74 @@ impl Model {
         match action {
             CardAction::Copy => self.copy(id, now),
             CardAction::Save => self.save_or_open(id, now),
+            CardAction::More => self.more = Some(id),
             CardAction::Pin => self.stack.toggle_pin(id, now),
+            CardAction::PinToScreen => self.request_pin(id, now),
             CardAction::Dismiss => {
                 if self.stack.remove(id, now) {
                     self.forget(id);
                 }
             }
         }
+    }
+
+    fn request_pin(&mut self, id: ItemId, now: Instant) {
+        if self.pinning.contains_key(&id) {
+            return;
+        }
+        let Some(payload) = self.payload(id).cloned() else {
+            return;
+        };
+        self.pin_requests.push(PinRequest {
+            id: id.0,
+            payload,
+            saved: self.saved_path(id),
+        });
+        let before = self
+            .stack
+            .get(id)
+            .map_or(CardStatus::Ready, |item| item.status);
+        self.pinning.insert(id, before);
+        self.stack.set_status(id, CardStatus::Pinning);
+        self.sync_busy(id, now);
+    }
+
+    fn take_pin_requests(&mut self) -> Vec<PinRequest> {
+        std::mem::take(&mut self.pin_requests)
+    }
+
+    fn pin_result(&mut self, id: u64, result: Result<(), String>, now: Instant) {
+        let id = ItemId(id);
+        let Some(before) = self.pinning.remove(&id) else {
+            return;
+        };
+        if self.stack.get(id).is_none() {
+            return;
+        }
+        let status = match result {
+            // A pin doesn't fix a missing file or a failed copy/save, so that warning
+            // stays on the card. Anything else is superseded by the pin's own feedback.
+            Ok(()) if keeps_through_pin(before) => before,
+            Ok(()) => CardStatus::ScreenPinned,
+            Err(error) => {
+                self.errors
+                    .push(format!("snap stack: pin failed for card {}: {error}", id.0));
+                CardStatus::PinFailed
+            }
+        };
+        self.stack.set_status(id, status);
+        self.sync_busy(id, now);
+    }
+
+    fn more_choice(&mut self, id: ItemId, choice: win::MoreAction, now: Instant) {
+        self.card(
+            id,
+            match choice {
+                win::MoreAction::KeepInStack => CardAction::Pin,
+                win::MoreAction::PinToScreen => CardAction::PinToScreen,
+            },
+            now,
+        );
     }
 
     pub fn bar(&mut self, action: BarAction, now: Instant) {
@@ -711,13 +795,20 @@ impl Model {
         self.copying.len() != before
     }
 
-    /// A card is busy (paused, never evicted) while a save or a copy's encode is out.
+    /// A card is busy (paused, never evicted) while its IO, pin request or drag is out.
     fn sync_busy(&mut self, id: ItemId, now: Instant) {
         let busy = self.saving.contains(&id)
             || self.copying.contains(&id)
+            || self.pinning.contains_key(&id)
             || self.drag.request().is_some_and(|r| r.items.contains(&id));
         self.stack.set_busy(id, busy, now);
     }
+}
+
+/// Statuses a successful screen pin leaves alone: the problems that pinning doesn't
+/// resolve. `PinFailed` is the pin's own, so a retry replaces it.
+fn keeps_through_pin(status: CardStatus) -> bool {
+    status.is_error() && status != CardStatus::PinFailed
 }
 
 /// `rect` grown by `by` on every side, as window client px `(l, t, r, b)` at `scale`.
@@ -775,8 +866,10 @@ fn card_label(action: CardAction, saved: bool, pinned: bool) -> &'static str {
         CardAction::Copy => "copy",
         CardAction::Save if saved => "open",
         CardAction::Save => "save",
-        CardAction::Pin if pinned => "unpin",
-        CardAction::Pin => "pin",
+        CardAction::More => "more",
+        CardAction::Pin if pinned => "Release from stack",
+        CardAction::Pin => "Keep in stack",
+        CardAction::PinToScreen => "Pin to screen",
         CardAction::Dismiss => "✕",
     }
 }
@@ -1000,6 +1093,19 @@ impl Previews {
     pub fn mark_saved(&mut self, bitmap: &Arc<Bitmap>, path: &Path) {
         self.model.mark_saved(bitmap, path);
         self.dirty = true;
+    }
+
+    /// Drain outside preview handling: opening a screen pin must not borrow this
+    /// controller across native creation or dispatch. Payload identity stays shared.
+    pub fn take_pin_requests(&mut self) -> Vec<PinRequest> {
+        self.model.take_pin_requests()
+    }
+
+    pub fn pin_result(&mut self, id: u64, result: Result<(), String>, now: Instant) {
+        self.model.pin_result(id, result, now);
+        self.log_errors();
+        self.dirty = true;
+        self.sync(now);
     }
 
     /// The island moved: the stack follows its lower edge.
@@ -1445,9 +1551,53 @@ impl Previews {
                 self.model.stack_mut().set_focus(None, now);
             }
         }
+        self.show_more(now);
+        let now = Instant::now().max(now);
         self.log_errors();
         self.dirty = true;
         self.sync(now);
+    }
+
+    fn show_more(&mut self, now: Instant) {
+        let Some(id) = self.model.more.take() else {
+            return;
+        };
+        let Some(item) = self.model.stack().get(id) else {
+            return;
+        };
+        let kept = item.pinned;
+        let Some(s) = self.surface.as_ref().filter(|s| s.shown) else {
+            return;
+        };
+        let layout = stack::layout(self.model.stack(), now);
+        let Some(card) = layout.cards.iter().find(|c| c.id == id) else {
+            return;
+        };
+        let rect = card.actions[2].1;
+        let Some(point) = win::screen_point(
+            s.hwnd,
+            (rect.x * s.scale).round() as i32,
+            ((rect.y + rect.h) * s.scale).round() as i32,
+        ) else {
+            return;
+        };
+        let hwnd = s.hwnd;
+        // A native menu pumps messages. Clear the gesture first, keep this exact
+        // card paused, and apply only the returned command outside its callbacks.
+        self.cancel_drag(now);
+        self.model.stack_mut().set_busy(id, true, now);
+        let choice = win::show_more_menu(hwnd, point, kept);
+        let after = Instant::now().max(now);
+        self.model.sync_busy(id, after);
+        self.model.stack_mut().set_hover(None, after);
+        match choice {
+            Ok(Some(choice)) => self.model.more_choice(id, choice, after),
+            Ok(None) => {}
+            Err(error) => self
+                .model
+                .errors
+                .push(format!("snap stack: cannot open More menu: {error}")),
+        }
     }
 
     /// One frame: springs, input region, pixels. `dt` in seconds.
@@ -1718,6 +1868,187 @@ mod tests {
     }
 
     #[test]
+    fn more_click_never_drags_and_choices_have_separate_effects() {
+        let mut r = rig();
+        let id = r.add(1);
+        let hit = Some(Hit::Action(id, CardAction::More));
+        r.m.press(hit, (0, 0), None);
+        assert!(r.m.drag_motion((200, 200), (4, 4), r.t0).is_none());
+        r.m.release(hit, r.t0);
+        assert_eq!(r.m.more.take(), Some(id));
+        assert!(r.m.drag.request().is_none());
+        assert!(r.m.stack.selected().is_empty());
+        r.m.more_choice(id, win::MoreAction::KeepInStack, r.t0);
+        assert!(r.m.stack.get(id).unwrap().pinned);
+        assert!(r.m.take_pin_requests().is_empty());
+        r.m.more_choice(id, win::MoreAction::PinToScreen, r.t0);
+        assert_eq!(r.m.take_pin_requests().len(), 1);
+        assert!(r.m.stack.get(id).unwrap().pinned);
+        r.m.pin_result(id.0, Ok(()), r.t0);
+        r.m.more_choice(id, win::MoreAction::KeepInStack, r.t0);
+        assert!(!r.m.stack.get(id).unwrap().pinned);
+        assert!(r.puts.borrow().is_empty());
+        assert!(r.files().is_empty());
+    }
+
+    #[test]
+    fn pin_request_shares_exact_image_png_and_path_without_copy_or_save() {
+        let mut r = rig();
+        let shot = payload(2);
+        let path = r.dir.path().join("existing.png");
+        let id =
+            r.m.add(shot.clone(), CardStatus::Saved, Some(path.clone()), r.t0)
+                .unwrap();
+        r.m.stack.toggle_select(id, r.t0);
+        r.m.card(id, CardAction::PinToScreen, r.t0);
+        r.m.card(id, CardAction::PinToScreen, r.t0);
+        let requests = r.m.take_pin_requests();
+        assert_eq!(
+            requests.len(),
+            1,
+            "coalesce a pending request for the same card"
+        );
+        assert_eq!(requests[0].id, id.0);
+        assert!(Arc::ptr_eq(&requests[0].payload.bitmap, &shot.bitmap));
+        assert!(Arc::ptr_eq(
+            requests[0].payload.png.as_ref().unwrap(),
+            shot.png.as_ref().unwrap()
+        ));
+        assert_eq!(requests[0].saved, Some(path.clone()));
+        assert!(r.m.take_pin_requests().is_empty());
+        r.m.pin_result(id.0, Ok(()), r.t0);
+        let item = r.m.stack.get(id).unwrap();
+        assert!(item.selected && !item.pinned && !item.busy);
+        assert_eq!(item.saved, Some(path));
+        assert_eq!(item.status, CardStatus::ScreenPinned);
+        assert!(r.puts.borrow().is_empty());
+        assert!(r.files().is_empty());
+    }
+
+    #[test]
+    fn pin_feedback_targets_exact_live_ids_and_ignores_late_replies() {
+        let mut r = rig();
+        let a = r.add(1);
+        let b = r.add(2);
+        let original = Arc::clone(&r.m.payload(a).unwrap().bitmap);
+        r.m.card(a, CardAction::PinToScreen, r.t0);
+        r.m.card(b, CardAction::PinToScreen, r.t0);
+        let requests = r.m.take_pin_requests();
+        assert_eq!(
+            requests.iter().map(|v| v.id).collect::<Vec<_>>(),
+            [a.0, b.0]
+        );
+        r.m.pin_result(b.0, Err("Screen pin limit reached".into()), r.t0);
+        assert_eq!(r.status(a), CardStatus::Pinning);
+        assert_eq!(r.status(b), CardStatus::PinFailed);
+        assert!(r.status(b).is_error());
+        assert!(r.m.take_errors()[0].contains("Screen pin limit reached"));
+        r.m.pin_result(b.0, Ok(()), r.t0);
+        assert_eq!(
+            r.status(b),
+            CardStatus::PinFailed,
+            "unsolicited duplicate ignored"
+        );
+        r.m.card(a, CardAction::Dismiss, r.t0);
+        let replacement = r.add(3);
+        r.m.pin_result(a.0, Err("late native creation failure".into()), r.t0);
+        assert_eq!(r.status(replacement), CardStatus::Copied);
+        assert!(r.m.take_errors().is_empty());
+        assert!(Arc::ptr_eq(&requests[0].payload.bitmap, &original));
+        assert_eq!(
+            requests[0].payload.bitmap.width, 4,
+            "drained request outlives its card"
+        );
+        assert!(!r.m.stack.get(b).unwrap().pinned);
+        assert!(!r.m.stack.get(b).unwrap().busy);
+    }
+
+    #[test]
+    fn successful_pin_keeps_an_earlier_card_problem_but_still_confirms_a_plain_card() {
+        let mut r = rig();
+        for before in [
+            CardStatus::Missing,
+            CardStatus::CopyFailed,
+            CardStatus::SaveFailed,
+        ] {
+            let id =
+                r.m.add(
+                    payload(1),
+                    before,
+                    Some(r.dir.path().join("gone.png")),
+                    r.t0,
+                )
+                .unwrap();
+            r.m.card(id, CardAction::PinToScreen, r.t0);
+            assert_eq!(r.status(id), CardStatus::Pinning);
+            r.m.pin_result(id.0, Ok(()), r.t0);
+            assert_eq!(r.status(id), before, "{before:?} survives a successful pin");
+            assert!(!r.m.stack.get(id).unwrap().busy);
+            assert!(r.m.pinning.is_empty());
+            assert!(r.m.take_errors().is_empty());
+        }
+        for before in [CardStatus::Ready, CardStatus::Copied, CardStatus::Saved] {
+            let id = r.m.add(payload(2), before, None, r.t0).unwrap();
+            r.m.card(id, CardAction::PinToScreen, r.t0);
+            r.m.pin_result(id.0, Ok(()), r.t0);
+            assert_eq!(r.status(id), CardStatus::ScreenPinned, "{before:?}");
+        }
+        // A failed earlier pin is the pin's own feedback, so a retry replaces it.
+        let id = r.add(3);
+        r.m.card(id, CardAction::PinToScreen, r.t0);
+        r.m.pin_result(id.0, Err("capacity".into()), r.t0);
+        assert_eq!(r.status(id), CardStatus::PinFailed);
+        r.m.card(id, CardAction::PinToScreen, r.t0);
+        r.m.pin_result(id.0, Ok(()), r.t0);
+        assert_eq!(r.status(id), CardStatus::ScreenPinned);
+    }
+
+    #[test]
+    fn failed_pin_shows_pin_failed_over_an_earlier_problem_and_stale_ids_change_nothing() {
+        let mut r = rig();
+        let id =
+            r.m.add(payload(1), CardStatus::Missing, None, r.t0)
+                .unwrap();
+        r.m.card(id, CardAction::PinToScreen, r.t0);
+        r.m.pin_result(id.0, Err("capacity".into()), r.t0);
+        assert_eq!(r.status(id), CardStatus::PinFailed);
+        assert!(r.m.take_errors()[0].contains("capacity"));
+        // Answered once; a duplicate or a never-requested ID is ignored.
+        r.m.pin_result(id.0, Ok(()), r.t0);
+        r.m.pin_result(999, Ok(()), r.t0);
+        assert_eq!(r.status(id), CardStatus::PinFailed);
+        // Dismissed while pending: the late success leaves the replacement alone.
+        let gone =
+            r.m.add(payload(2), CardStatus::Missing, None, r.t0)
+                .unwrap();
+        r.m.card(gone, CardAction::PinToScreen, r.t0);
+        r.m.card(gone, CardAction::Dismiss, r.t0);
+        let other = r.add(4);
+        r.m.pin_result(gone.0, Ok(()), r.t0);
+        assert_eq!(r.status(other), CardStatus::Copied);
+        assert!(r.m.pinning.is_empty());
+    }
+
+    #[test]
+    fn pending_pin_pauses_remainder_and_forgetting_drops_undrained_requests() {
+        let mut r = rig();
+        let id = r.add(1);
+        r.m.card(id, CardAction::PinToScreen, r.t0 + Duration::from_secs(3));
+        assert!(r.m.stack.get(id).unwrap().busy);
+        let after = r.t0 + Duration::from_secs(50);
+        assert!(r.m.tick(after).is_empty());
+        r.m.pin_result(id.0, Err("capacity".into()), after);
+        assert_eq!(r.m.stack.remaining(id, after), Some(Duration::from_secs(7)));
+        r.m.card(id, CardAction::Dismiss, after);
+        assert!(r.m.take_pin_requests().is_empty());
+        r.m.more_choice(id, win::MoreAction::PinToScreen, after);
+        assert!(
+            r.m.take_pin_requests().is_empty(),
+            "stale menu cannot target a replacement"
+        );
+    }
+
+    #[test]
     fn drag_short_press_still_selects_and_action_row_never_drags() {
         let mut r = rig();
         let id = r.add(1);
@@ -1762,6 +2093,11 @@ mod tests {
             assert_eq!(
                 hit(button.x + 10.0, button.y + 8.0, &[id]),
                 (Some(Hit::Action(id, CardAction::Copy)), None)
+            );
+            let more = card.actions[2].1;
+            assert_eq!(
+                hit(more.x + 10.0, more.y + 8.0, &[id]),
+                (Some(Hit::Action(id, CardAction::More)), None)
             );
             assert_eq!(hit(button.x + button.w + 1.0, button.y + 8.0, &[]).1, None);
         }
@@ -2127,6 +2463,10 @@ mod tests {
         assert_eq!(stack_key(VK_C, false, false), Some(StackKey::C));
         assert_eq!(stack_key(VK_S, false, false), Some(StackKey::S));
         assert_eq!(stack_key(VK_P, false, false), Some(StackKey::P));
+        assert_eq!(stack_key(VK_M, false, false), Some(StackKey::More));
+        assert_eq!(stack_key(VK_APPS, false, false), Some(StackKey::More));
+        assert_eq!(stack_key(VK_F10, false, true), Some(StackKey::More));
+        assert_eq!(stack_key(VK_F10, false, false), None);
         assert_eq!(stack_key(VK_A, true, false), Some(StackKey::CtrlA));
         assert_eq!(stack_key(VK_A, false, false), None);
         assert_eq!(stack_key(0x5A, true, false), None, "Ctrl+Z is nothing here");
@@ -2419,7 +2759,7 @@ mod tests {
         let cards = scene_cards(r.m.stack(), &drawn, &parts, r.t0);
         let card = |id: ItemId| cards.iter().find(|c| c.id == id.0).unwrap();
         let (pa, pb) = (card(a), card(b));
-        assert!(pa.pinned && pa.remaining.is_none() && pa.actions[2].label == "unpin");
+        assert!(pa.pinned && pa.remaining.is_none() && pa.actions[2].label == "more");
         assert!(pb.hovered && pb.show_actions && pb.show_check);
         assert_eq!(pb.actions[1].label, "open");
         assert_eq!(pb.status, Some(("copied", false)));

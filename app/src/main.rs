@@ -9,6 +9,7 @@ mod preview_store;
 mod previews;
 mod snap;
 mod snap_drag_store;
+mod snap_pins;
 mod storage;
 mod sweep;
 mod terminal;

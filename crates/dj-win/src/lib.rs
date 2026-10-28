@@ -19,6 +19,7 @@ pub mod launcher;
 pub mod overlay;
 pub mod popup;
 pub mod previews;
+pub mod snap_pins;
 pub mod sound;
 pub mod system;
 pub mod tile;

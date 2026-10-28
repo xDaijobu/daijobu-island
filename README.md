@@ -38,7 +38,7 @@ Early development. Music (YouTube Music), the volume OSD, Vitals with Sweep, Tim
 | 6 | Timer / pomodoro | ✅ done |
 | 7a–7c | Screenshots: capture, annotate, floating preview stack | ✅ done |
 | 7c-2 | Screenshot drag-out into compatible apps | implemented; desktop drag checks pending |
-| 7d | Screenshot pin-to-screen | planned |
+| 7d | Screenshot pin-to-screen | implemented; native smoke checks passed |
 | T | Terminal: shell tabs, pinned tabs, Claude and Codex tabs | ✅ merged |
 | N–N2 | Notch style and reserved top space | ✅ done |
 | V | Spotlight, standalone Settings, notch size and stay behind windows | ✅ merged, live testing pending |
@@ -123,6 +123,18 @@ Drag-out exports the final annotated PNGs to the configured Snap save folder
 (`Pictures/Daijobu` by default). These files remain after cancellation, a drop, preview
 expiry or app exit. The drag copies files and leaves the clipboard unchanged. After a
 successful copy drop, unpinned previews disappear; previews kept in the stack remain.
+
+**Pin to screen** opens a separate reference window from the annotation editor, the
+latest screenshot, or a preview's **More** menu. **Keep in stack / Release from stack**
+in that menu controls only the preview countdown. A screen pin keeps its original
+pixels after the preview expires and has its own Copy, Save/Open and Close actions.
+
+Pinning does not copy or save automatically. References last for the current app
+session, with a limit of eight pins and 256 MiB of unique retained image payloads.
+Drag the image to move a reference; `Ctrl+Alt+H` hides/restores it with the island.
+The tray's **Show pinned screenshots** offers keyboard access: Tab/Shift+Tab, Enter,
+Ctrl+C, Ctrl+S and Escape to close. Pins hide before a new screenshot freezes the
+desktop and return afterward; open island panels keep their existing Snap behaviour.
 
 By default the island is a notch attached to the top edge of the screen. Choose *Island style* in Settings to switch to the floating pill, or set `[island] style = "pill"` in the config. The Notch page also adjusts its width and height.
 

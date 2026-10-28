@@ -47,7 +47,7 @@ pub const CHIP_GAP: f32 = 4.0;
 pub const ACTION_H: f32 = 16.0;
 pub const ACTION_INSET: f32 = 5.0;
 pub const ACTION_GAP: f32 = 3.0;
-/// Widths of Copy, Save/Open, Pin/Unpin and Dismiss (they fill the 114 px row with the gaps).
+/// Widths of Copy, Save/Open, More and Dismiss (they fill the 114 px row with the gaps).
 pub const ACTION_W: [f32; 4] = [27.0, 27.0, 33.0, 18.0];
 /// The selection bar: its height, side padding and the gap between its parts.
 pub const BAR_H: f32 = 32.0;
@@ -68,7 +68,7 @@ pub const NOTICE_H: f32 = 24.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ItemId(pub u64);
 
-/// What a card says about its last copy/save.
+/// What a card says about its last copy, save or screen-pin request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardStatus {
     Ready,
@@ -77,6 +77,9 @@ pub enum CardStatus {
     Saving,
     Saved,
     SaveFailed,
+    Pinning,
+    ScreenPinned,
+    PinFailed,
     /// The saved file is gone.
     Missing,
 }
@@ -91,6 +94,9 @@ impl CardStatus {
             CardStatus::Saving => Some("saving…"),
             CardStatus::Saved => Some("saved"),
             CardStatus::SaveFailed => Some("save failed"),
+            CardStatus::Pinning => Some("pinning…"),
+            CardStatus::ScreenPinned => Some("on screen"),
+            CardStatus::PinFailed => Some("pin failed"),
             CardStatus::Missing => Some("file missing"),
         }
     }
@@ -98,19 +104,24 @@ impl CardStatus {
     pub fn is_error(self) -> bool {
         matches!(
             self,
-            CardStatus::CopyFailed | CardStatus::SaveFailed | CardStatus::Missing
+            CardStatus::CopyFailed
+                | CardStatus::SaveFailed
+                | CardStatus::PinFailed
+                | CardStatus::Missing
         )
     }
 }
 
-/// A card's four buttons, in row order.
+/// A card's actions. Only `ALL` appears in the compact row; More exposes the others.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardAction {
     Copy,
     /// Reads "open" once saved.
     Save,
-    /// Reads "unpin" when pinned.
+    More,
+    /// Keep in stack / Release from stack; also the existing P shortcut.
     Pin,
+    PinToScreen,
     Dismiss,
 }
 
@@ -118,7 +129,7 @@ impl CardAction {
     pub const ALL: [CardAction; 4] = [
         CardAction::Copy,
         CardAction::Save,
-        CardAction::Pin,
+        CardAction::More,
         CardAction::Dismiss,
     ];
 }
@@ -156,7 +167,7 @@ pub struct Item {
     pub hovered: bool,
     /// Has the keyboard focus.
     pub focused: bool,
-    /// A copy/save/encode for this card is in flight.
+    /// A copy/save/encode or screen-pin request for this card is in flight.
     pub busy: bool,
     pub status: CardStatus,
     /// Where it was saved, once it was.
@@ -201,6 +212,7 @@ pub enum StackKey {
     C,
     S,
     P,
+    More,
     CtrlA,
 }
 
@@ -527,7 +539,8 @@ impl Stack {
     /// - Tab/Shift+Tab walk the cards, then the bar's buttons (while there is a bar), and
     ///   **wrap** around. With no focus they go to the first / last of them.
     /// - Space/Enter on a card give `ToggleSelect`; on a bar button, `Bar`.
-    /// - C/S/P/Delete give `Card(focused, Copy/Save/Pin/Dismiss)`; with no card focused,
+    /// - C/S/P/Delete give `Card(focused, Copy/Save/Pin/Dismiss)`; More opens the
+    ///   focused card's overflow. With no card focused,
     ///   nothing. Ctrl+A gives `Bar(SelectAll)` (while there are cards).
     /// - Escape clears the focus and gives `Release`.
     ///
@@ -556,6 +569,7 @@ impl Stack {
             StackKey::C => card_cmd(self.focus, CardAction::Copy),
             StackKey::S => card_cmd(self.focus, CardAction::Save),
             StackKey::P => card_cmd(self.focus, CardAction::Pin),
+            StackKey::More => card_cmd(self.focus, CardAction::More),
             StackKey::Delete => card_cmd(self.focus, CardAction::Dismiss),
         }
     }
@@ -677,11 +691,11 @@ pub struct CardLayout {
     pub rect: Rect,
     /// The selected mark: 18x18, 6 px in from the top-left.
     pub check: Rect,
-    /// The countdown ring (or PIN badge): 16x16, 5 px in from the top-right.
+    /// The countdown ring (or KEEP badge): 16x16, 5 px in from the top-right.
     pub ring: Rect,
     /// The status chip, between the check and the ring.
     pub status: Rect,
-    /// Copy, Save/Open, Pin/Unpin, Dismiss: the bottom row, 5 px in, 16 px high.
+    /// Copy, Save/Open, More, Dismiss: the bottom row, 5 px in, 16 px high.
     pub actions: [(CardAction, Rect); 4],
 }
 
@@ -1172,6 +1186,9 @@ mod tests {
             (Saving, Some("saving…"), false),
             (Saved, Some("saved"), false),
             (SaveFailed, Some("save failed"), true),
+            (Pinning, Some("pinning…"), false),
+            (ScreenPinned, Some("on screen"), false),
+            (PinFailed, Some("pin failed"), true),
             (Missing, Some("file missing"), true),
         ];
         for (s, label, error) in table {
@@ -1921,7 +1938,7 @@ mod tests {
             [
                 CardAction::Copy,
                 CardAction::Save,
-                CardAction::Pin,
+                CardAction::More,
                 CardAction::Dismiss
             ]
         );
@@ -2333,6 +2350,7 @@ mod tests {
             (StackKey::C, CardAction::Copy),
             (StackKey::S, CardAction::Save),
             (StackKey::P, CardAction::Pin),
+            (StackKey::More, CardAction::More),
             (StackKey::Delete, CardAction::Dismiss),
         ];
         for (k, _) in keys {

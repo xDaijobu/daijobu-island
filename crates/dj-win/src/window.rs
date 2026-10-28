@@ -97,6 +97,11 @@ pub enum Event {
     Popup(crate::popup::PopupKind, crate::popup::PopupInput),
     /// Input on the Snap preview stack's window (see [`crate::previews`]).
     Previews(crate::previews::PreviewInput),
+    /// Input from one independent pinned screenshot window.
+    SnapPin {
+        id: u64,
+        input: crate::snap_pins::PinInput,
+    },
     /// The shell moved the AppBars around (see [`crate::appbar`]): set the strip again.
     AppBarMoved,
     /// Another process's window started or finished a move or a resize (see

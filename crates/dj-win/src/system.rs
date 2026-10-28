@@ -170,16 +170,18 @@ pub fn set_island_on_top(on_top: bool) {
     ISLAND_ON_TOP.store(on_top, Ordering::Relaxed);
 }
 
-// SAFETY: only ever invoked by the system as a WINEVENTPROC; it ignores all arguments.
+// SAFETY: only ever invoked by the system as a WINEVENTPROC; it only reads `hwnd`,
+// as an opaque handle that the callee revalidates.
 unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,
-    _hwnd: HWND,
+    hwnd: HWND,
     _id_object: i32,
     _id_child: i32,
     _thread: u32,
     _time: u32,
 ) {
+    crate::snap_pins::note_foreground(hwnd);
     for (i, raw) in [&TOPMOST_HWND, &COMPANION_HWND]
         .map(|h| h.load(Ordering::Relaxed))
         .into_iter()

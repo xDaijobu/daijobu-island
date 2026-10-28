@@ -8,7 +8,7 @@
 //! Cards follow plan.html's `.shot`: 124 x 80, r 12, a 1 px hairline, aspect-fit thumbnail,
 //! an 18 px check box top-left, a 16 px countdown ring top-right and a row of action
 //! chips on hover. Selected, pinned, focused and failed cards differ by shape or text,
-//! not by colour alone: a drawn check mark, a "PIN" badge in place of the ring, a dashed
+//! not by colour alone: a drawn check mark, a "KEEP" badge in place of the ring, a dashed
 //! focus ring just inside the card, and the status text itself.
 //!
 //! Everything is laid out by `dj-core` in logical px; this module only multiplies by the
@@ -400,7 +400,7 @@ fn busy_mark(canvas: &Canvas, t: &ResolvedTokens, r: Rect, s: f32) {
     }
 }
 
-/// The status chip and the countdown ring or "PIN" badge in the top row.
+/// The status chip and the countdown ring or stack keep-alive badge in the top row.
 fn status_and_ring(
     canvas: &Canvas,
     fonts: &mut Fonts,
@@ -415,7 +415,7 @@ fn status_and_ring(
     if c.pinned {
         let font = fonts.font(&t.font_label, Weight::Medium, 8.0 * s);
         let tracking = 0.04 * 8.0 * s;
-        let tw = text_width(&font, "PIN", tracking);
+        let tw = text_width(&font, "KEEP", tracking);
         let w = tw + 6.0 * s;
         let h = 12.0 * s;
         let badge = Rect::from_xywh(ring.right - w, ring.center_y() - h / 2.0, w, h);
@@ -428,7 +428,7 @@ fn status_and_ring(
             canvas,
             &font,
             8.0 * s,
-            "PIN",
+            "KEEP",
             &badge,
             tracking,
             col(t.pill, 1.0),
@@ -717,6 +717,17 @@ mod tests {
             n
         }
 
+        /// Pixels inside the rect (x, y, w, h) that differ at all from the same pixel in `other`.
+        fn count_diff(&self, other: &Shot, r: (i32, i32, i32, i32)) -> usize {
+            let mut n = 0;
+            for y in r.1..r.1 + r.3 {
+                for x in r.0..r.0 + r.2 {
+                    n += usize::from(self.at(x, y) != other.at(x, y));
+                }
+            }
+            n
+        }
+
         /// Opaque pixels inside the rect (x, y, w, h) that are NOT within `tol` of `c`.
         fn count_far(&self, r: (i32, i32, i32, i32), c: [u8; 4], tol: u8) -> usize {
             let mut n = 0;
@@ -750,7 +761,7 @@ mod tests {
         Shot { w, h, px }
     }
 
-    const LABELS: [&str; 4] = ["copy", "save", "pin", "✕"];
+    const LABELS: [&str; 4] = ["copy", "save", "more", "✕"];
 
     /// A card at (x, y) with the contract's card-local rects (A's layout: 18 px check at
     /// 6,6; 16 px ring 5 px in from the top right; actions on the bottom row).
@@ -896,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pinned_card_has_a_pin_badge_instead_of_the_ring() {
+    fn a_kept_card_has_a_keep_badge_instead_of_the_ring() {
         let t = tokens();
         let hi = bgra(t.highlight);
         let area = (20 + 100, 20 + 2, 24, 22);
@@ -915,7 +926,7 @@ mod tests {
             pinned.at(20 + 117, 20 + 9)
         );
         let letters = pinned.count_far((20 + 103, 20 + 8, 14, 10), acc, 60);
-        assert!(letters > 10, "PIN text: {letters}");
+        assert!(letters > 10, "KEEP text: {letters}");
         // The same card unpinned has the ring, not the plate.
         let mut c = card(1, 20.0, 20.0);
         c.remaining = Some(0.5);
@@ -1057,6 +1068,72 @@ mod tests {
             0
         );
         assert!(shot.count_in((20 + 28, 20 + 4, 72, 22), bgra(t.warn), 8) > 20);
+    }
+
+    #[test]
+    fn more_and_failed_screen_pin_feedback_fit_with_keep_in_every_theme_and_scale() {
+        let themes = ThemeRegistry::with_builtins();
+        for id in themes.ids() {
+            let t = themes.get(id).unwrap();
+            for scale in [1.0, 1.5, 2.0] {
+                let mut c = card(1, 20.0, 20.0);
+                c.pinned = true;
+                c.show_actions = true;
+                let size = ((180.0 * scale) as i32, (120.0 * scale) as i32);
+                let cards = [c];
+                let clean = paint(&scene(t, scale, &cards), &HashMap::new(), size.0, size.1);
+                c.status = Some(("pin failed", true));
+                let cards = [c];
+                let shot = paint(&scene(t, scale, &cards), &HashMap::new(), size.0, size.1);
+                let area = |x: f32, y: f32, w: f32, h: f32| {
+                    (
+                        (x * scale).ceil() as i32,
+                        (y * scale).ceil() as i32,
+                        (w * scale).floor() as i32,
+                        (h * scale).floor() as i32,
+                    )
+                };
+                assert!(
+                    shot.count_in(area(48.0, 24.0, 60.0, 22.0), bgra(t.warn), 12) > 15,
+                    "{id} at {scale}x: readable pin failure"
+                );
+                // A theme may reuse its warn colour for the badge (paper-zine's accent is
+                // its warn red), so colour alone cannot tell the badge from a spilled chip.
+                // Compare the plate with the same card drawn without a status instead.
+                // The plate is as wide as "KEEP" plus padding, which depends on the theme's
+                // label font, so measure it the way the painter does (right-aligned to the
+                // ring at x 119) and include the 1 px of gap before it.
+                let mut fonts = Fonts::new().unwrap();
+                let keep = fonts.font(&t.font_label, Weight::Medium, 8.0 * scale);
+                let plate_w = text_width(&keep, "KEEP", 0.04 * 8.0 * scale) / scale + 6.0;
+                assert!(plate_w > 16.0, "{id} at {scale}x: plate {plate_w}");
+                let (left, right) = ((138.0 - plate_w) * scale, 139.0 * scale);
+                let plate = (
+                    left.floor() as i32,
+                    (27.0 * scale).ceil() as i32,
+                    right.floor() as i32 - left.floor() as i32,
+                    (12.0 * scale).floor() as i32,
+                );
+                assert!(
+                    clean.count_in(plate, bgra(t.accent), 8) > 20,
+                    "{id} at {scale}x: KEEP plate is drawn"
+                );
+                assert_eq!(
+                    shot.count_diff(&clean, plate),
+                    0,
+                    "{id} at {scale}x: KEEP stays clear"
+                );
+                let more = c.actions[2].rect;
+                assert!(
+                    shot.count_in(
+                        area(20.0 + more.x, 20.0 + more.y, more.w, more.h),
+                        [0xee, 0xee, 0xee, 0xff],
+                        40
+                    ) > 4,
+                    "{id} at {scale}x: More label remains legible"
+                );
+            }
+        }
     }
 
     #[test]

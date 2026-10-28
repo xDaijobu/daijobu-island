@@ -1,6 +1,8 @@
 # Stage 7d brief: Snap pin to screen
 
-Status: planned, after Stage 7c-2. Read the [coordination plan](stage-snap-clipboard-plan.md).
+Status: implemented, reviewed and verified; see [report](stage-7d-report.md) for
+automated/native evidence and remaining desktop checks. Based on Stage 7c-2 (PR #29). Read the
+[dispatch contract](stage-7d-dispatch.md) and [coordination plan](stage-snap-clipboard-plan.md).
 **OCR was removed by the user and must not be implemented.**
 
 ## User flow and labels

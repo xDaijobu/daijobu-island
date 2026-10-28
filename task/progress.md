@@ -23,8 +23,8 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | 7a | **Snap core**: PrtSc freeze, region/window select with loupe, auto-copy, save + open, snap thumb | ✅ | `stage-7a-snap` | Opus 5.5 agent (headless) · live test with the user · [`stage-7a-report.md`](stage-7a-report.md) |
 | 7b | **Snap annotations**: Lightshot-style editor on release (8 tools, select/move, text re-edit, HSV picker, undo/redo) | ✅ merged, live test pending | `xDaijobu/stage-7b-work` | Opus 5.5 agent (headless) · merged at the user's request before the live test · [`stage-7b-report.md`](stage-7b-report.md) |
 | 7c | Snap stack: floating previews, countdown, keep-in-stack pin, multi-select, copy/save | ✅ | `xDaijobu/stage-7c-snap-stack` | coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 541 tests · live test with the user · [`stage-7c-report.md`](stage-7c-report.md) · no OLE in this stage |
-| 7c-2 | Snap stack: multi-file OLE drag-out | 🟡 implementing | `xDaijobu/stage-7c2-snap-drag` | [brief](stage-7c2-brief.md), [live dispatch](stage-7c2-dispatch.md); no commit before review/tests |
-| 7d | Snap: standalone pin-to-screen | ⬜ planned, not dispatched | — | after 7c-2; [brief](stage-7d-brief.md); OCR removed |
+| 7c-2 | Snap stack: multi-file OLE drag-out | ✅ merged; desktop drag checks pending | `master` | [PR #29](https://github.com/xDaijobu/daijobu-island/pull/29), [report](stage-7c2-report.md); worktree removed |
+| 7d | Snap: standalone pin-to-screen | ✅ implemented, reviewed, checks passed | `xDaijobu/stage-7d-snap-pin` | [report](stage-7d-report.md); remaining desktop cases listed |
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
 | N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
 | N2 | **Reserve top space**: the notch registers a top AppBar so maximized windows (Chrome tabs) start below it (Settings switch, default on) | ✅ | `xDaijobu/stage-n2-appbar` | user-requested · built by the coordinator · live-checked by the coordinator |
@@ -502,19 +502,29 @@ Acceptance: drag one and several annotated synthetic shots into Explorer and a l
 browser file input; verify exact pixels, copy-only behaviour, cancel/reject, DPI and
 countdowns. Report untested target apps honestly; never send/upload test attachments.
 
-## Stage 7d: Snap pin-to-screen (planned)
+## Stage 7d: Snap pin-to-screen
 
-**Status:** after 7c-2; no implementation started. OCR is explicitly removed.
+**Status:** implemented and verified on `xDaijobu/stage-7d-snap-pin`, based on merged PR #29.
+After Claude saved additional fixes and exhausted its quota, the user asked Codex to
+resume. Sol 6.1 high workers completed three independent final reviews and focused
+repairs in Orca run `run_c736a1266e74`. The [handover](handover-claude-2026-10-28.md)
+is historical; preserve the current [dispatch contract](stage-7d-dispatch.md).
+OCR is explicitly removed. Implementation, review and required automated checks passed.
 Contract: [stage-7d-brief.md](stage-7d-brief.md).
+Evidence: [stage-7d-report.md](stage-7d-report.md), including unperformed desktop cases.
 
-- [ ] Separate Keep in stack and Pin to screen actions; editor pin does not copy/save.
-- [ ] Independent movable native reference windows, Copy/Save/Open/Close, no activation
+- [x] Separate Keep in stack and Pin to screen actions; editor pin does not copy/save.
+- [x] Independent movable native reference windows, Copy/Save/Open/Close, no activation
   on creation, and tray recovery.
-- [ ] Stable IDs and shared annotated payloads; source-card expiry does not close pins.
-- [ ] Session lifetime, eight-window / 256 MiB limits, no silent eviction or disk writes.
-- [ ] Monitor/DPI placement, hide/show, capture exclusion and exact restoration after
+- [x] Stable IDs and shared annotated payloads; source-card expiry does not close pins.
+- [x] Session lifetime, eight-window / 256 MiB limits, no silent eviction or disk writes.
+- [x] Monitor/DPI placement, hide/show, capture exclusion and exact restoration after
   capture/cancel/error; preserve the existing Terminal/panel Snap behaviour.
-- [ ] Synthetic model/render/lifecycle checks, workspace checks and desktop acceptance.
+- [x] Synthetic model/render/lifecycle checks, 1,445 workspace tests, clippy and release.
+- [x] Native editor pin creation, two independent windows, quick Close button,
+  global hide/show and capture/cancel restoration; clipboard sequence unchanged.
+- [ ] Remaining real drag/tray/input, cross-monitor/DPI and failure desktop checks
+  listed in the report. This host has one monitor at 100% scale.
 
 Acceptance: pin/move two annotated shots, dismiss their source cards, copy/save from
 the pins, then Snap with Terminal open; references are excluded and restored while
