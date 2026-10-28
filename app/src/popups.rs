@@ -8,6 +8,7 @@ use dj_win::launcher::{self, IconBitmap};
 use dj_win::popup::{self, PopupKind};
 use dj_win::{window, HWND};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -264,10 +265,11 @@ impl IconLoader {
             .name("dj-spotlight-icons".into())
             .spawn(move || {
                 for (key, job) in job_rx {
-                    let icon = match &job {
+                    let icon = catch_unwind(AssertUnwindSafe(|| match &job {
                         IconJob::App(target) => launcher::app_icon(target, ICON_PX),
                         IconJob::File(path) => launcher::file_icon(path, ICON_PX),
-                    };
+                    }))
+                    .unwrap_or(None);
                     if done_tx.send((key, icon)).is_err() {
                         break;
                     }
@@ -373,7 +375,9 @@ impl SizeLoader {
                         SizeJob::Folder(_) => FOLDER_TTL,
                         SizeJob::App(_) => Duration::MAX,
                     };
-                    let info = match job {
+                    // One job going wrong (a panic) must not stop the worker: that row just
+                    // has no size, instead of every row waiting forever.
+                    let info = catch_unwind(AssertUnwindSafe(|| match job {
                         SizeJob::File(p) => match std::fs::metadata(&p) {
                             Ok(m) => SizeInfo::Known {
                                 bytes: m.len(),
@@ -403,7 +407,8 @@ impl SizeLoader {
                                 None => SizeInfo::Unknown,
                             }
                         }
-                    };
+                    }))
+                    .unwrap_or(SizeInfo::Unknown);
                     if done_tx.send((key, info, ttl)).is_err() {
                         return;
                     }
@@ -468,5 +473,57 @@ impl SizeLoader {
             any = true;
         }
         any
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_arrive_for_a_file_and_a_folder() {
+        let dir = std::env::temp_dir().join(format!("dj-sizes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), [0u8; 10]).unwrap();
+        std::fs::write(dir.join("sub/b.txt"), [0u8; 5]).unwrap();
+        let file = dir.join("a.txt").to_string_lossy().into_owned();
+        let folder = dir.to_string_lossy().into_owned();
+        let mut s = SizeLoader::new(0);
+        let rows = vec![
+            (EntryKind::File, file.clone(), "a.txt".to_string()),
+            (EntryKind::Folder, folder.clone(), "dir".to_string()),
+        ];
+        s.want(&rows);
+        assert_eq!(s.get(&file), Some(SizeInfo::Pending));
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            s.drain();
+            // The app asks again on every redraw.
+            s.want(&rows);
+            if matches!(s.get(&folder), Some(SizeInfo::Known { .. }))
+                && matches!(s.get(&file), Some(SizeInfo::Known { .. }))
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            s.get(&file),
+            Some(SizeInfo::Known {
+                bytes: 10,
+                files: None,
+                capped: false
+            })
+        );
+        assert_eq!(
+            s.get(&folder),
+            Some(SizeInfo::Known {
+                bytes: 15,
+                files: Some(2),
+                capped: false
+            })
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

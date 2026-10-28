@@ -116,11 +116,13 @@ pub fn installed_size(name: &str, installed: &[(String, u64)]) -> Option<u64> {
         } else {
             (&want, &have)
         };
-        let boundary = long[short.len()..]
-            .chars()
-            .next()
-            .is_some_and(|c| !c.is_alphanumeric());
-        if short.chars().count() >= 4 && long.starts_with(short.as_str()) && boundary {
+        // `starts_with` first: only then is `short.len()` a char boundary of `long`.
+        let boundary = long.starts_with(short.as_str())
+            && long[short.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_alphanumeric());
+        if short.chars().count() >= 4 && boundary {
             let gap = long.len() - short.len();
             if best.is_none_or(|(g, _)| gap < g) {
                 best = Some((gap, *bytes));
@@ -1223,5 +1225,13 @@ mod tests {
         assert_eq!(installed_size("Zoo", &list), None);
         assert_eq!(installed_size("Notepad", &list), None);
         assert_eq!(installed_size("ab", &list), None);
+        // Non-ASCII names never cut a char in half (this used to panic).
+        let odd = vec![
+            ("Daijōbu Ä Ö".to_string(), 1),
+            ("日本語のアプリ".to_string(), 2),
+        ];
+        assert_eq!(installed_size("Daij", &odd), None);
+        assert_eq!(installed_size("日本語", &odd), None);
+        assert_eq!(installed_size("Dropbox", &odd), None);
     }
 }
