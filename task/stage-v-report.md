@@ -32,6 +32,11 @@ Plan: `task/stage-v-plan.md`. Branch `xDaijobu/stage-v-notch` (not pushed, no PR
     - Files: the size from metadata (cached 1 minute).
     - Folders: the file count and total size, summed recursively without following junctions. The count stops at 200,000 files or 2 seconds and then reads "≥ …" (cached 5 minutes).
     - Apps: `EstimatedSize` from the Uninstall registry keys, matched by name (exact, or a prefix at a word boundary). Nothing is shown when there is no good match.
+  - **Right-click menu** on a row (also the Menu key or Shift+F10; arrows, Enter and Esc work inside it). Asked for on 2026-10-28.
+    - Files: Open · Open with… · Run as administrator (`.exe`/`.bat`/`.cmd`/`.msi`/`.ps1` only) · Show in Explorer · Open in Terminal · Claude here · Codex here · Copy path · Copy file · Properties · Delete.
+    - Folders: the same without Open with… and Run as administrator; the terminal opens in the folder itself.
+    - Apps: Open · Run as administrator · Copy name.
+    - Delete moves the item to the Recycle Bin (`dj-sweep`) and needs a second click. Copy file puts it on the clipboard as `CF_HDROP`. Properties uses `SHObjectProperties`; Open with… runs `rundll32 shell32.dll,OpenAs_RunDLL`. The terminal items open a new island terminal tab in that folder (Claude and Codex in yolo mode).
 - [x] **The old in-island Settings panel** is no longer reachable from the gear. Its code is still there (`IslandState::Settings`), and removing it is a follow-up.
 
 ## Verification

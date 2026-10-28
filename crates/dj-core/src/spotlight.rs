@@ -181,6 +181,118 @@ pub struct SpotlightView {
     pub note: Option<&'static str>,
     /// Keyboard hints at the right of the field ("esc").
     pub hint: &'static str,
+    /// The right-click menu of a row, when open.
+    pub menu: Option<MenuView>,
+}
+
+/// A right-click menu entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuAction {
+    Open,
+    OpenWith,
+    RunAsAdmin,
+    /// Show it in Explorer (selected in its folder).
+    Reveal,
+    /// A terminal tab in the folder (a file's parent).
+    Terminal,
+    Claude,
+    Codex,
+    CopyPath,
+    /// The file itself on the clipboard (paste it in Explorer, a chat, a mail).
+    CopyFile,
+    Properties,
+    /// To the Recycle Bin; the first click only arms it.
+    Delete,
+}
+
+impl MenuAction {
+    pub fn label(self, kind: EntryKind) -> &'static str {
+        match self {
+            MenuAction::Open => "Open",
+            MenuAction::OpenWith => "Open with\u{2026}",
+            MenuAction::RunAsAdmin => "Run as administrator",
+            MenuAction::Reveal => "Show in Explorer",
+            MenuAction::Terminal => "Open in Terminal",
+            MenuAction::Claude => "Claude here",
+            MenuAction::Codex => "Codex here",
+            MenuAction::CopyPath if kind == EntryKind::App => "Copy name",
+            MenuAction::CopyPath => "Copy path",
+            MenuAction::CopyFile => "Copy file",
+            MenuAction::Properties => "Properties",
+            MenuAction::Delete => "Delete",
+        }
+    }
+
+    /// A dim note at the right of the row.
+    fn hint(self) -> &'static str {
+        match self {
+            MenuAction::Open => "enter",
+            MenuAction::Reveal => "ctrl+enter",
+            MenuAction::Claude | MenuAction::Codex => "yolo",
+            _ => "",
+        }
+    }
+
+    /// Starts a new group: a hairline is drawn above it.
+    fn starts_group(self) -> bool {
+        matches!(
+            self,
+            MenuAction::Reveal | MenuAction::CopyPath | MenuAction::Properties | MenuAction::Delete
+        )
+    }
+}
+
+/// Programs Windows can run elevated.
+fn runnable(target: &str) -> bool {
+    let ext = std::path::Path::new(target)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(ext.as_str(), "exe" | "bat" | "cmd" | "msi" | "ps1" | "com")
+}
+
+/// The menu of an entry, in order.
+pub fn menu_for(e: &Entry) -> Vec<MenuAction> {
+    use MenuAction::*;
+    match e.kind {
+        EntryKind::App => vec![Open, RunAsAdmin, CopyPath],
+        EntryKind::Folder => vec![
+            Open, Reveal, Terminal, Claude, Codex, CopyPath, CopyFile, Properties, Delete,
+        ],
+        EntryKind::File => {
+            let mut v = vec![Open, OpenWith];
+            if runnable(&e.target) {
+                v.push(RunAsAdmin);
+            }
+            v.extend([
+                Reveal, Terminal, Claude, Codex, CopyPath, CopyFile, Properties, Delete,
+            ]);
+            v
+        }
+    }
+}
+
+pub const MENU_W: f32 = 220.0;
+pub const MENU_ROW_H: f32 = 28.0;
+pub const MENU_PAD: f32 = 6.0;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuItemView {
+    pub action: MenuAction,
+    pub label: &'static str,
+    pub hint: &'static str,
+    pub rect: Rect,
+    pub hovered: bool,
+    /// Draw a hairline above it (a new group).
+    pub separator: bool,
+    /// Drawn in the warn colour (Delete, and its "click again" state).
+    pub danger: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuView {
+    pub rect: Rect,
+    pub items: Vec<MenuItemView>,
 }
 
 /// What the app must do after an input.
@@ -192,6 +304,9 @@ pub enum Action {
     Launch(Entry),
     /// Show the file in Explorer (`explorer /select,`), then close.
     Reveal(Entry),
+    /// A right-click menu entry for this entry (Open and Reveal come as `Launch` and
+    /// `Reveal`). The app closes Spotlight first, except for the copy actions.
+    Menu(MenuAction, Entry),
     Close,
 }
 
@@ -215,6 +330,8 @@ const VK_PRIOR: u16 = 0x21;
 const VK_NEXT: u16 = 0x22;
 const VK_UP: u16 = 0x26;
 const VK_DOWN: u16 = 0x28;
+const VK_APPS: u16 = 0x5D;
+const VK_F10: u16 = 0x79;
 
 /// One char, Unicode-lowercased (the first char of its lowercase form, so indices stay
 /// aligned with the original text).
@@ -368,6 +485,19 @@ pub struct Spotlight {
     include_files: bool,
     /// Unused fraction of wheel lines.
     wheel_acc: f32,
+    /// The open right-click menu.
+    menu: Option<Menu>,
+}
+
+/// A right-click menu: whose it is (index into `results`), where it sits, its actions,
+/// the hovered item, and whether Delete was clicked once.
+#[derive(Clone, Debug)]
+struct Menu {
+    result: usize,
+    rect: Rect,
+    actions: Vec<MenuAction>,
+    hover: Option<usize>,
+    armed: bool,
 }
 
 impl Default for Spotlight {
@@ -388,6 +518,7 @@ impl Spotlight {
             indexing: false,
             include_files: true,
             wheel_acc: 0.0,
+            menu: None,
         }
     }
 
@@ -400,6 +531,7 @@ impl Spotlight {
         self.scroll = 0;
         self.hover = None;
         self.wheel_acc = 0.0;
+        self.menu = None;
     }
 
     pub fn query(&self) -> &str {
@@ -460,6 +592,7 @@ impl Spotlight {
             self.scroll = 0;
         }
         self.hover = None;
+        self.menu = None;
         self.set_selected(selected, entries);
     }
 
@@ -504,6 +637,12 @@ impl Spotlight {
     /// launches, Ctrl+Enter reveals a file or folder (an app launches), Esc clears the
     /// query and then closes; the rest edits the query.
     pub fn key(&mut self, vk: u16, ctrl: bool, shift: bool, entries: &[Entry]) -> Action {
+        if self.menu.is_some() {
+            return self.menu_key(vk, entries);
+        }
+        if vk == VK_APPS || (shift && vk == VK_F10) {
+            return self.open_menu_for_selected(entries);
+        }
         let n = self.results.len();
         match vk {
             VK_ESCAPE => {
@@ -540,6 +679,7 @@ impl Spotlight {
 
     /// A typed char.
     pub fn char(&mut self, c: char, entries: &[Entry]) -> Action {
+        self.menu = None;
         if !self.query.insert_char(c) {
             return Action::None;
         }
@@ -549,6 +689,7 @@ impl Spotlight {
 
     /// Pasted text (newlines become spaces).
     pub fn paste(&mut self, s: &str, entries: &[Entry]) -> Action {
+        self.menu = None;
         if !self.query.insert_str(s) {
             return Action::None;
         }
@@ -600,6 +741,16 @@ impl Spotlight {
 
     /// The pointer moved. Redraw when the hovered row changed.
     pub fn hover(&mut self, x: f32, y: f32) -> Action {
+        // With the menu open only its items highlight (the last one stays when the pointer
+        // leaves the menu, so the keyboard can carry on from it).
+        let item = self.menu_item_at(x, y);
+        if let Some(menu) = self.menu.as_mut() {
+            if item.is_none() || item == menu.hover {
+                return Action::None;
+            }
+            menu.hover = item;
+            return Action::Redraw;
+        }
         let h = self.result_at(x, y);
         if h == self.hover {
             return Action::None;
@@ -619,6 +770,16 @@ impl Spotlight {
 
     /// A left click: a row launches it, the field just takes focus, outside the panel closes.
     pub fn press(&mut self, x: f32, y: f32, entries: &[Entry]) -> Action {
+        // With the menu open a click runs an item, or just closes the menu.
+        if self.menu.is_some() {
+            return match self.menu_item_at(x, y) {
+                Some(i) => self.run_menu_item(i, entries),
+                None => {
+                    self.menu = None;
+                    Action::Redraw
+                }
+            };
+        }
         if !self.panel_rect().contains(x, y) {
             return Action::Close;
         }
@@ -636,6 +797,9 @@ impl Spotlight {
 
     /// The wheel: positive `lines` scroll down (to later rows). The selection stays.
     pub fn wheel(&mut self, lines: f32) -> Action {
+        if self.menu.take().is_some() {
+            return Action::Redraw;
+        }
         self.wheel_acc += lines;
         let whole = self.wheel_acc.trunc();
         self.wheel_acc -= whole;
@@ -647,6 +811,164 @@ impl Spotlight {
         self.scroll = target;
         self.hover = None;
         Action::Redraw
+    }
+
+    // -- the right-click menu --------------------------------------------------------
+
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// A right click: on a row, selects it and opens its menu at the pointer; elsewhere
+    /// closes an open menu.
+    pub fn right_click(&mut self, x: f32, y: f32, entries: &[Entry]) -> Action {
+        if let Some(menu) = self.menu.as_ref() {
+            if menu.rect.contains(x, y) {
+                return Action::None;
+            }
+        }
+        match self.result_at(x, y) {
+            Some(i) => self.open_menu(i, x, y, entries),
+            None if self.menu.take().is_some() => Action::Redraw,
+            None => Action::None,
+        }
+    }
+
+    fn open_menu(&mut self, result: usize, x: f32, y: f32, entries: &[Entry]) -> Action {
+        self.set_selected(result, entries);
+        let Some(e) = self.selected_clone(entries) else {
+            return Action::None;
+        };
+        let actions = menu_for(&e);
+        let h = 2.0 * MENU_PAD + actions.len() as f32 * MENU_ROW_H;
+        let mx = x.clamp(MARGIN, MARGIN + PANEL_W - MENU_W);
+        // Below the pointer if it fits in the window, else above it.
+        let my = if y + h <= WIN_H - 4.0 { y } else { y - h };
+        let my = my.clamp(MARGIN, (WIN_H - 4.0 - h).max(MARGIN));
+        self.hover = None;
+        self.menu = Some(Menu {
+            result,
+            rect: Rect::new(mx, my, MENU_W, h),
+            actions,
+            hover: None,
+            armed: false,
+        });
+        Action::Redraw
+    }
+
+    /// Opens the selected row's menu from the keyboard (the Menu key, Shift+F10).
+    fn open_menu_for_selected(&mut self, entries: &[Entry]) -> Action {
+        if self.results.is_empty() {
+            return Action::None;
+        }
+        let slot = self.selected.saturating_sub(self.scroll);
+        let r = Self::row_rect(slot);
+        let action = self.open_menu(self.selected, r.x + 56.0, r.y + r.h, entries);
+        if let Some(m) = self.menu.as_mut() {
+            m.hover = Some(0);
+        }
+        action
+    }
+
+    fn menu_item_rect(menu: Rect, i: usize) -> Rect {
+        Rect::new(
+            menu.x,
+            menu.y + MENU_PAD + i as f32 * MENU_ROW_H,
+            menu.w,
+            MENU_ROW_H,
+        )
+    }
+
+    fn menu_item_at(&self, x: f32, y: f32) -> Option<usize> {
+        let m = self.menu.as_ref()?;
+        (0..m.actions.len()).find(|&i| Self::menu_item_rect(m.rect, i).contains(x, y))
+    }
+
+    /// Runs item `i` of the open menu. Delete only arms on the first click.
+    fn run_menu_item(&mut self, i: usize, entries: &[Entry]) -> Action {
+        let Some(menu) = self.menu.as_mut() else {
+            return Action::None;
+        };
+        let Some(&action) = menu.actions.get(i) else {
+            return Action::None;
+        };
+        if action == MenuAction::Delete && !menu.armed {
+            menu.armed = true;
+            menu.hover = Some(i);
+            return Action::Redraw;
+        }
+        let result = menu.result;
+        self.menu = None;
+        let Some(e) = self
+            .results
+            .get(result)
+            .and_then(|r| entries.get(r.0))
+            .cloned()
+        else {
+            return Action::Redraw;
+        };
+        match action {
+            MenuAction::Open => Action::Launch(e),
+            MenuAction::Reveal => Action::Reveal(e),
+            a => Action::Menu(a, e),
+        }
+    }
+
+    /// Keys while the menu is open: Up/Down move, Enter runs, Esc closes the menu.
+    fn menu_key(&mut self, vk: u16, entries: &[Entry]) -> Action {
+        let Some(menu) = self.menu.as_mut() else {
+            return Action::None;
+        };
+        let n = menu.actions.len();
+        match vk {
+            VK_UP => {
+                menu.hover = Some(menu.hover.map_or(n - 1, |h| (h + n - 1) % n));
+                Action::Redraw
+            }
+            VK_DOWN => {
+                menu.hover = Some(menu.hover.map_or(0, |h| (h + 1) % n));
+                Action::Redraw
+            }
+            VK_RETURN => match menu.hover {
+                Some(i) => self.run_menu_item(i, entries),
+                None => Action::None,
+            },
+            _ => {
+                self.menu = None;
+                Action::Redraw
+            }
+        }
+    }
+
+    fn menu_view(&self, entries: &[Entry]) -> Option<MenuView> {
+        let m = self.menu.as_ref()?;
+        let kind = self
+            .results
+            .get(m.result)
+            .and_then(|r| entries.get(r.0))
+            .map_or(EntryKind::File, |e| e.kind);
+        let items = m
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| MenuItemView {
+                action: a,
+                label: if a == MenuAction::Delete && m.armed {
+                    "Click again to delete"
+                } else {
+                    a.label(kind)
+                },
+                hint: a.hint(),
+                rect: Self::menu_item_rect(m.rect, i),
+                hovered: m.hover == Some(i),
+                separator: i > 0 && a.starts_group(),
+                danger: a == MenuAction::Delete,
+            })
+            .collect();
+        Some(MenuView {
+            rect: m.rect,
+            items,
+        })
     }
 
     /// Everything the window draws.
@@ -692,6 +1014,7 @@ impl Spotlight {
             rows,
             note: self.note(),
             hint: "esc",
+            menu: self.menu_view(entries),
         }
     }
 }
@@ -1233,5 +1556,172 @@ mod tests {
         assert_eq!(installed_size("Daij", &odd), None);
         assert_eq!(installed_size("日本語", &odd), None);
         assert_eq!(installed_size("Dropbox", &odd), None);
+    }
+
+    // -- the right-click menu --------------------------------------------------------
+
+    fn searched(q: &str, entries: &[Entry]) -> Spotlight {
+        let mut s = Spotlight::new();
+        s.paste(q, entries);
+        s
+    }
+
+    fn row_mid(s: &Spotlight, i: usize) -> (f32, f32) {
+        let r = Spotlight::row_rect(i - s.scroll());
+        (r.x + 100.0, r.y + r.h / 2.0)
+    }
+
+    fn item_mid(v: &SpotlightView, a: MenuAction) -> (f32, f32) {
+        let m = v.menu.as_ref().expect("menu");
+        let it = m.items.iter().find(|it| it.action == a).expect("item");
+        (it.rect.x + 20.0, it.rect.y + it.rect.h / 2.0)
+    }
+
+    #[test]
+    fn menus_depend_on_the_kind() {
+        use MenuAction::*;
+        assert_eq!(menu_for(&app("Chrome")), [Open, RunAsAdmin, CopyPath]);
+        assert_eq!(
+            menu_for(&folder("Projects")),
+            [Open, Reveal, Terminal, Claude, Codex, CopyPath, CopyFile, Properties, Delete]
+        );
+        assert_eq!(
+            menu_for(&file("notes.txt")),
+            [
+                Open, OpenWith, Reveal, Terminal, Claude, Codex, CopyPath, CopyFile, Properties,
+                Delete
+            ]
+        );
+        assert!(menu_for(&file("setup.EXE")).contains(&RunAsAdmin));
+        assert_eq!(CopyPath.label(EntryKind::App), "Copy name");
+        assert_eq!(CopyPath.label(EntryKind::File), "Copy path");
+    }
+
+    #[test]
+    fn a_right_click_opens_the_rows_menu_and_an_item_runs() {
+        let entries = vec![file("budget.xlsx"), file("budget-old.xlsx")];
+        let mut s = searched("budget", &entries);
+        let (x, y) = row_mid(&s, 1);
+        assert_eq!(s.right_click(x, y, &entries), Action::Redraw);
+        assert!(s.menu_open());
+        assert_eq!(s.selected(), 1, "the row is selected");
+        let v = s.view(&entries);
+        let m = v.menu.as_ref().unwrap();
+        // Inside the window, groups marked.
+        assert!(m.rect.x >= MARGIN && m.rect.x + m.rect.w <= MARGIN + PANEL_W);
+        assert!(m.rect.y + m.rect.h <= WIN_H);
+        assert!(m.items.iter().any(|i| i.separator));
+        assert!(m.items.iter().filter(|i| i.danger).count() == 1);
+        let (mx, my) = item_mid(&v, MenuAction::Properties);
+        assert_eq!(s.hover(mx, my), Action::Redraw);
+        let e = entries[1].clone();
+        assert_eq!(
+            s.press(mx, my, &entries),
+            Action::Menu(MenuAction::Properties, e)
+        );
+        assert!(!s.menu_open());
+    }
+
+    #[test]
+    fn open_and_reveal_from_the_menu_are_launch_and_reveal() {
+        let entries = vec![file("budget.xlsx")];
+        let mut s = searched("budget", &entries);
+        let (x, y) = row_mid(&s, 0);
+        s.right_click(x, y, &entries);
+        let (mx, my) = item_mid(&s.view(&entries), MenuAction::Open);
+        assert_eq!(
+            s.press(mx, my, &entries),
+            Action::Launch(entries[0].clone())
+        );
+        s.right_click(x, y, &entries);
+        let (mx, my) = item_mid(&s.view(&entries), MenuAction::Reveal);
+        assert_eq!(
+            s.press(mx, my, &entries),
+            Action::Reveal(entries[0].clone())
+        );
+    }
+
+    #[test]
+    fn delete_needs_a_second_click() {
+        let entries = vec![file("budget.xlsx")];
+        let mut s = searched("budget", &entries);
+        let (x, y) = row_mid(&s, 0);
+        s.right_click(x, y, &entries);
+        let (mx, my) = item_mid(&s.view(&entries), MenuAction::Delete);
+        assert_eq!(s.press(mx, my, &entries), Action::Redraw);
+        assert!(s.menu_open());
+        let label = |s: &Spotlight| {
+            s.view(&entries)
+                .menu
+                .unwrap()
+                .items
+                .into_iter()
+                .find(|i| i.action == MenuAction::Delete)
+                .unwrap()
+                .label
+        };
+        assert_eq!(label(&s), "Click again to delete");
+        assert_eq!(
+            s.press(mx, my, &entries),
+            Action::Menu(MenuAction::Delete, entries[0].clone())
+        );
+    }
+
+    #[test]
+    fn a_click_outside_the_menu_closes_it_without_acting() {
+        let entries = vec![file("budget.xlsx"), file("budget-2.xlsx")];
+        let mut s = searched("budget", &entries);
+        let (x, y) = row_mid(&s, 0);
+        s.right_click(x, y, &entries);
+        // On the other row, outside the menu: nothing launches.
+        let (ox, oy) = (MARGIN + PANEL_W - 10.0, MARGIN + FIELD_H / 2.0);
+        assert_eq!(s.press(ox, oy, &entries), Action::Redraw);
+        assert!(!s.menu_open());
+        // The wheel and typing close it too.
+        s.right_click(x, y, &entries);
+        assert_eq!(s.wheel(1.0), Action::Redraw);
+        assert!(!s.menu_open());
+        s.right_click(x, y, &entries);
+        s.char('x', &entries);
+        assert!(!s.menu_open());
+        // A right click on empty space closes an open menu.
+        let mut s = searched("budget", &entries);
+        s.right_click(x, y, &entries);
+        assert_eq!(s.right_click(ox, oy, &entries), Action::Redraw);
+        assert!(!s.menu_open());
+    }
+
+    #[test]
+    fn the_menu_key_and_arrows_drive_the_menu() {
+        let entries = vec![app("Chrome")];
+        let mut s = searched("chr", &entries);
+        assert_eq!(s.key(VK_APPS, false, false, &entries), Action::Redraw);
+        assert!(s.menu_open());
+        // The first item is highlighted; Down, then Enter runs "Run as administrator".
+        s.key(VK_DOWN, false, false, &entries);
+        assert_eq!(
+            s.key(VK_RETURN, false, false, &entries),
+            Action::Menu(MenuAction::RunAsAdmin, entries[0].clone())
+        );
+        // Shift+F10 opens it too; Esc closes only the menu.
+        s.key(VK_F10, false, true, &entries);
+        assert!(s.menu_open());
+        assert_eq!(s.key(VK_ESCAPE, false, false, &entries), Action::Redraw);
+        assert!(!s.menu_open());
+        // Then Esc works as before: it clears the query, then closes Spotlight.
+        assert_eq!(s.key(VK_ESCAPE, false, false, &entries), Action::Redraw);
+        assert_eq!(s.query(), "");
+        assert_eq!(s.key(VK_ESCAPE, false, false, &entries), Action::Close);
+    }
+
+    #[test]
+    fn a_menu_near_the_bottom_opens_upward() {
+        let entries: Vec<Entry> = (0..10).map(|i| file(&format!("budget{i}.xlsx"))).collect();
+        let mut s = searched("budget", &entries);
+        let (x, y) = row_mid(&s, MAX_ROWS - 1);
+        s.right_click(x, y, &entries);
+        let m = s.view(&entries).menu.unwrap();
+        assert!(m.rect.y + m.rect.h <= WIN_H - 4.0);
+        assert!(m.rect.y < y);
     }
 }

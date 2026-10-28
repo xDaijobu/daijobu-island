@@ -34,9 +34,9 @@ use windows::Win32::UI::Shell::{
     BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
     FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos, IEnumShellItems, IShellItem,
     IShellItemImageFactory, SHCreateItemFromParsingName, SHGetFileInfoW, SHGetKnownFolderItem,
-    SHGetKnownFolderPath, ShellExecuteW, KF_FLAG_DEFAULT, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
-    SHGFI_USEFILEATTRIBUTES, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING, SIIGBF_BIGGERSIZEOK,
-    SIIGBF_ICONONLY,
+    SHGetKnownFolderPath, SHObjectProperties, ShellExecuteW, KF_FLAG_DEFAULT, SHFILEINFOW,
+    SHGFI_ICON, SHGFI_LARGEICON, SHGFI_USEFILEATTRIBUTES, SHOP_FILEPATH, SIGDN_NORMALDISPLAY,
+    SIGDN_PARENTRELATIVEPARSING, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, SW_SHOWNORMAL};
 
@@ -239,12 +239,16 @@ pub fn scan_files(
 }
 
 fn shell_open(target: &str) -> bool {
+    shell_verb(w!("open"), target)
+}
+
+fn shell_verb(verb: PCWSTR, target: &str) -> bool {
     let t = wide(target);
-    // SAFETY: `t` is NUL-terminated and outlives the call; "open" is a static string.
+    // SAFETY: `t` is NUL-terminated and outlives the call; `verb` is a static string.
     let r = unsafe {
         ShellExecuteW(
             None,
-            w!("open"),
+            verb,
             PCWSTR(t.as_ptr()),
             PCWSTR::null(),
             PCWSTR::null(),
@@ -252,6 +256,33 @@ fn shell_open(target: &str) -> bool {
         )
     };
     r.0 as isize > 32
+}
+
+/// Runs an app (by its parsing name, `app`) or a program file elevated: Windows shows
+/// the UAC prompt. False when refused or cancelled.
+pub fn run_as_admin(target: &str, app: bool) -> bool {
+    let t = if app {
+        format!("shell:AppsFolder\\{target}")
+    } else {
+        target.to_string()
+    };
+    shell_verb(w!("runas"), &t)
+}
+
+/// Opens the file's or folder's Properties dialog (it runs on its own thread; this
+/// returns at once).
+pub fn properties(path: &Path) -> bool {
+    let p = wide(&path.to_string_lossy());
+    // SAFETY: `p` is NUL-terminated and outlives the call; no owner window.
+    unsafe { SHObjectProperties(None, SHOP_FILEPATH, PCWSTR(p.as_ptr()), PCWSTR::null()) }.as_bool()
+}
+
+/// Windows' "Open with" chooser for a file, in its own process (it is modal, and must not
+/// block the island).
+pub fn open_with(path: &Path) {
+    let _ = std::process::Command::new("rundll32.exe")
+        .raw_arg(format!("shell32.dll,OpenAs_RunDLL {}", path.display()))
+        .spawn();
 }
 
 /// Launches an app by its [`AppEntry::parsing_name`]. True when the shell accepted it.

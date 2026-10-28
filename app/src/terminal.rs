@@ -268,6 +268,28 @@ impl Terminal {
     /// The panel opens with cells of `cell` device px at `scale`. The first time it brings
     /// back the saved pinned tabs; with no tab at all it opens one.
     pub fn open(&mut self, cell: (u16, u16), scale: f32) {
+        self.restore_pinned(cell, scale);
+        if self.tabs.is_empty() {
+            self.new_tab();
+        }
+    }
+
+    /// Opens the panel on a new tab in `dir` (Spotlight's "Open in Terminal", "Claude
+    /// here"), running `agent` in yolo mode if given. Pinned tabs come back first, and no
+    /// default tab is opened besides this one.
+    pub fn open_in(&mut self, cell: (u16, u16), scale: f32, dir: String, agent: Option<Agent>) {
+        self.restore_pinned(cell, scale);
+        let mut spec = match agent {
+            Some(a) => self.agent_spec(a),
+            None => self.config_spec(),
+        };
+        spec.cwd = dir;
+        if !self.add_tab(spec, None, false) && self.tabs.is_empty() {
+            self.new_tab();
+        }
+    }
+
+    fn restore_pinned(&mut self, cell: (u16, u16), scale: f32) {
         self.measure(cell, scale);
         for p in std::mem::take(&mut self.restore) {
             let spec = Spec {
@@ -278,9 +300,6 @@ impl Terminal {
             };
             let title = Some(p.title).filter(|t| !t.trim().is_empty());
             self.add_tab(spec, title, true);
-        }
-        if self.tabs.is_empty() {
-            self.new_tab();
         }
     }
 
@@ -331,12 +350,7 @@ impl Terminal {
     /// configured one when that is unknown or gone). The agents are npm PowerShell shims, so
     /// the tab is the configured shell if it is PowerShell, else Windows PowerShell.
     fn new_agent_tab(&mut self, agent: Agent) -> bool {
-        let mut spec = self.config_spec();
-        let (program, _) = dj_term::resolve_shell(&spec.shell, &spec.args);
-        if !dj_term::is_powershell(&program) {
-            spec.shell = "powershell".to_string();
-            spec.args = Vec::new();
-        }
+        let mut spec = self.agent_spec(agent);
         // The folder the active shell last reported, else the one it started in (an agent
         // tab that has not reached a prompt yet has reported nothing).
         if let Some(dir) = self.active().and_then(|t| {
@@ -347,8 +361,20 @@ impl Terminal {
         }) {
             spec.cwd = dir;
         }
-        spec.agent = Some(agent);
         self.add_tab(spec, None, false)
+    }
+
+    /// A tab running `agent` (the configured folder): the agents are npm PowerShell shims,
+    /// so the shell is the configured one if it is PowerShell, else Windows PowerShell.
+    fn agent_spec(&self, agent: Agent) -> Spec {
+        let mut spec = self.config_spec();
+        let (program, _) = dj_term::resolve_shell(&spec.shell, &spec.args);
+        if !dj_term::is_powershell(&program) {
+            spec.shell = "powershell".to_string();
+            spec.args = Vec::new();
+        }
+        spec.agent = Some(agent);
+        spec
     }
 
     fn add_tab(&mut self, spec: Spec, title: Option<String>, pinned: bool) -> bool {
@@ -1485,6 +1511,28 @@ mod tests {
             .push(TermEvent::Title("codex: refactor".into()));
         r.term.drain();
         assert_eq!(bar(&r).tabs[1].title, "codex: refactor");
+    }
+
+    #[test]
+    fn open_in_starts_one_tab_in_the_folder() {
+        let mut r = Rig::new();
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        r.term.open_in((8, 17), 1.0, dir.clone(), None);
+        assert_eq!(bar(&r).tabs.len(), 1, "no default tab besides it");
+        assert_eq!(last_spawn(&r).cwd, Some(PathBuf::from(&dir)));
+        // Again, with an agent: a second tab, active, running Claude in yolo mode there.
+        r.term
+            .open_in((8, 17), 1.0, dir.clone(), Some(Agent::Claude));
+        let tabs = bar(&r).tabs;
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs[1].active);
+        let o = last_spawn(&r);
+        assert_eq!(o.cwd, Some(PathBuf::from(&dir)));
+        assert!(o
+            .args
+            .last()
+            .unwrap()
+            .ends_with("; claude --dangerously-skip-permissions"));
     }
 
     #[test]

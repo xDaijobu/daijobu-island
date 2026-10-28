@@ -63,6 +63,11 @@ pub enum PopupInput {
         x: f32,
         y: f32,
     },
+    /// A right button press (the row menus).
+    RightPress {
+        x: f32,
+        y: f32,
+    },
     /// The second press of a double click (comes instead of a second `Press`).
     DoubleClick {
         x: f32,
@@ -337,6 +342,13 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             );
             return LRESULT(0);
         }
+        WM_RBUTTONDOWN => {
+            let (x, y) = lparam_xy(lp);
+            send(hwnd, PopupInput::RightPress { x, y });
+            return LRESULT(0);
+        }
+        // No system context menu on a right click (the app draws its own).
+        WM_CONTEXTMENU => return LRESULT(0),
         WM_MOUSEMOVE => {
             let mut tme = TRACKMOUSEEVENT {
                 cbSize: size_of::<TRACKMOUSEEVENT>() as u32,

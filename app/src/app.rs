@@ -34,8 +34,9 @@ use dj_core::settings_ui::{self as sui, SettingsDoc, Taken};
 use dj_core::snap::{loupe_label, pixel_at, size_label, IRect, Loupe, Stamp};
 use dj_core::snap_edit::{CursorKind, EditInput, Key, KeyCode, Outcome, Rgba, TextMeasure};
 use dj_core::snap_stack::Stack;
-use dj_core::spotlight::{self as spot, Action as SpotAction, Spotlight};
+use dj_core::spotlight::{self as spot, Action as SpotAction, EntryKind, MenuAction, Spotlight};
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
+use dj_core::term_agents::Agent;
 use dj_core::terminal::{self as termcore, Mods};
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::tile_assist::{self, AssistKey};
@@ -1016,6 +1017,93 @@ impl App {
                 self.close_spotlight(false);
                 dj_win::launcher::reveal(std::path::Path::new(&entry.target));
             }
+            SpotAction::Menu(action, entry) => self.spotlight_menu(action, entry),
+        }
+    }
+
+    /// A right-click menu entry. Spotlight closes first; for the copies the keyboard goes
+    /// back where it was, so the paste can follow.
+    fn spotlight_menu(&mut self, action: MenuAction, entry: spot::Entry) {
+        use dj_win::launcher;
+        let path = std::path::PathBuf::from(&entry.target);
+        let raw = self.hwnd.0 as isize;
+        // The folder a terminal opens in: the folder itself, or a file's parent.
+        let dir = || match entry.kind {
+            EntryKind::Folder => entry.target.clone(),
+            _ => path
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+        match action {
+            MenuAction::Open => self.spotlight_action(SpotAction::Launch(entry)),
+            MenuAction::Reveal => self.spotlight_action(SpotAction::Reveal(entry)),
+            MenuAction::OpenWith => {
+                self.close_spotlight(false);
+                launcher::open_with(&path);
+            }
+            MenuAction::RunAsAdmin => {
+                self.close_spotlight(false);
+                if !launcher::run_as_admin(&entry.target, entry.kind == EntryKind::App) {
+                    storage::log(&format!("spotlight: not elevated: {}", entry.target));
+                }
+            }
+            MenuAction::Terminal | MenuAction::Claude | MenuAction::Codex => {
+                let agent = match action {
+                    MenuAction::Claude => Some(Agent::Claude),
+                    MenuAction::Codex => Some(Agent::Codex),
+                    _ => None,
+                };
+                let dir = dir();
+                self.close_spotlight(false);
+                if self.overlay.is_none() && !self.snap_pending {
+                    if !self.visible {
+                        self.set_visible(true);
+                    }
+                    self.open_terminal_at(Some((dir, agent)));
+                }
+            }
+            MenuAction::CopyPath => {
+                let text = if entry.kind == EntryKind::App {
+                    entry.name.clone()
+                } else {
+                    entry.target.clone()
+                };
+                self.close_spotlight(true);
+                dj_win::clipboard::set_text(raw, &text);
+            }
+            MenuAction::CopyFile => {
+                self.close_spotlight(true);
+                if !dj_win::clipboard::set_files(raw, &[path]) {
+                    storage::log("spotlight: the clipboard refused the file");
+                }
+            }
+            MenuAction::Properties => {
+                self.close_spotlight(false);
+                launcher::properties(&path);
+            }
+            // To the Recycle Bin, off this thread; the row goes at once (the next index
+            // build would drop it anyway). Spotlight stays open.
+            MenuAction::Delete => {
+                let target = entry.target.clone();
+                self.spot_index.entries.retain(|e| e.target != target);
+                self.spotlight
+                    .refresh(&self.spot_index.entries, self.config.spotlight.files);
+                if let Some(w) = self.spot_win.as_mut() {
+                    w.dirty = true;
+                }
+                let _ = std::thread::Builder::new()
+                    .name("dj-spotlight-recycle".into())
+                    .spawn(move || {
+                        use dj_sweep::Ops;
+                        if let Err(e) = dj_sweep::WinOps.recycle(&path) {
+                            storage::log(&format!(
+                                "spotlight: cannot recycle {}: {e}",
+                                path.display()
+                            ));
+                        }
+                    });
+            }
         }
     }
 
@@ -1035,6 +1123,10 @@ impl App {
             PopupInput::Motion { x, y } => {
                 let (lx, ly) = win.local(x, y);
                 self.spotlight.hover(lx, ly)
+            }
+            PopupInput::RightPress { x, y } => {
+                let (lx, ly) = win.local(x, y);
+                self.spotlight.right_click(lx, ly, entries)
             }
             PopupInput::Leave => self.spotlight.leave(),
             PopupInput::Wheel { lines } => self.spotlight.wheel(-lines),
@@ -1208,6 +1300,7 @@ impl App {
                 doc.release(lx, ly)
             }
             PopupInput::Leave => doc.leave(),
+            PopupInput::RightPress { .. } => sui::Outcome::default(),
             PopupInput::Wheel { lines } => doc.wheel(-lines),
             PopupInput::Key {
                 vk: 0x56,
@@ -1944,9 +2037,18 @@ impl App {
     /// called right after the user's hotkey or click, which lets the island take the
     /// foreground.
     fn open_terminal(&mut self) {
+        self.open_terminal_at(None);
+    }
+
+    /// Opens the panel, on a new tab in `at` (a folder, and an agent to run in it) when
+    /// given (Spotlight's "Open in Terminal", "Claude here").
+    fn open_terminal_at(&mut self, at: Option<(String, Option<Agent>)>) {
         let tokens = self.anim.current().clone();
         let cell = self.term_cell();
-        self.terminal.open(cell, self.scale);
+        match at {
+            Some((dir, agent)) => self.terminal.open_in(cell, self.scale, dir, agent),
+            None => self.terminal.open(cell, self.scale),
+        }
         self.island.open_terminal(&tokens);
         if !self.term_keyboard {
             window::set_keyboard(self.hwnd, true);

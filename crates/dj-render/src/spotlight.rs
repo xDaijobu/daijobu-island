@@ -5,10 +5,11 @@
 use crate::fonts::{Fonts, Weight};
 use crate::paint::{col, draw_text, fill_paint, fit, stroke_paint, text_width};
 use crate::popup::{dev, paint_field, paint_panel, IconCache};
-use dj_core::spotlight::{EntryKind, ResultRow, SpotlightView, PANEL_R};
+use dj_core::spotlight::{EntryKind, MenuView, ResultRow, SpotlightView, PANEL_R};
 use dj_core::theme::ResolvedTokens;
 use skia_safe::{
-    Canvas, ClipOp, Color, FilterMode, MipmapMode, Paint, RRect, Rect, SamplingOptions,
+    BlurStyle, Canvas, ClipOp, Color, FilterMode, MaskFilter, MipmapMode, Paint, RRect, Rect,
+    SamplingOptions,
 };
 
 /// The icon is drawn this many logical px square.
@@ -94,6 +95,85 @@ pub fn paint_spotlight(
         );
     }
     canvas.restore();
+
+    // The right-click menu floats over everything (it may reach past the panel).
+    if let Some(menu) = view.menu.as_ref() {
+        paint_menu(canvas, fonts, t, s, menu);
+    }
+}
+
+/// A row's right-click menu: a pill-coloured rounded card with a soft shadow and a
+/// hairline, one label per item, a plate under the hovered one, hairlines between groups,
+/// Delete in the warn colour.
+fn paint_menu(canvas: &Canvas, fonts: &mut Fonts, t: &ResolvedTokens, s: f32, menu: &MenuView) {
+    let r = dev(menu.rect, s);
+    let rad = 10.0 * s;
+    let body = RRect::new_rect_xy(r, rad, rad);
+    let mut shadow = fill_paint(Color::from_argb(70, 0, 0, 0));
+    shadow.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, 10.0 * s, false));
+    canvas.draw_rrect(body.with_offset((0.0, 4.0 * s)), &shadow);
+    canvas.draw_rrect(body, &fill_paint(col(t.pill, 1.0)));
+    canvas.draw_rrect(
+        RRect::new_rect_xy(r.with_inset((0.5, 0.5)), rad - 0.5, rad - 0.5),
+        &stroke_paint(col(t.text, 0.14), 1.0),
+    );
+    let size = 12.5 * s;
+    let font = fonts.font(&t.font_label, Weight::Medium, size);
+    let hint_size = 10.0 * s;
+    let mono = fonts.font("Geist Mono", Weight::Regular, hint_size);
+    for item in &menu.items {
+        let row = dev(item.rect, s);
+        if item.separator {
+            canvas.draw_line(
+                (row.left + 10.0 * s, row.top),
+                (row.right - 10.0 * s, row.top),
+                &stroke_paint(col(t.text, 0.10), s.max(1.0)),
+            );
+        }
+        if item.hovered {
+            let plate = Rect::new(
+                row.left + 5.0 * s,
+                row.top + 2.0 * s,
+                row.right - 5.0 * s,
+                row.bottom - 2.0 * s,
+            );
+            canvas.draw_rrect(
+                RRect::new_rect_xy(plate, 6.0 * s, 6.0 * s),
+                &fill_paint(col(t.surface2, 1.0)),
+            );
+        }
+        let ink = if item.danger {
+            col(t.warn, 1.0)
+        } else {
+            col(t.text, 1.0)
+        };
+        let mut right = row.right - 14.0 * s;
+        if !item.hint.is_empty() {
+            let hw = text_width(&mono, item.hint, 0.0);
+            right -= hw;
+            draw_text(
+                canvas,
+                &mono,
+                item.hint,
+                right,
+                base(row.center_y(), hint_size),
+                0.0,
+                &fill_paint(col(t.text_dim, 0.9)),
+            );
+            right -= 10.0 * s;
+        }
+        let x = row.left + 14.0 * s;
+        let label = fit(&font, item.label, 0.0, (right - x).max(10.0 * s));
+        draw_text(
+            canvas,
+            &font,
+            &label,
+            x,
+            base(row.center_y(), size),
+            0.0,
+            &fill_paint(ink),
+        );
+    }
 }
 
 fn kind_tag(kind: EntryKind) -> &'static str {
@@ -388,6 +468,7 @@ mod tests {
             rows: rows(n),
             note,
             hint: "esc",
+            menu: None,
         }
     }
 
@@ -446,5 +527,48 @@ mod tests {
         v.rows[0].matched = vec![0, 70];
         let (px, w, _) = render(&v, &icons, 1.75);
         assert!(alpha_at(&px, w, w / 2, (MARGIN * 1.75) as i32 + 30) > 200);
+    }
+
+    #[test]
+    fn a_menu_draws_over_the_rows_and_past_the_panel() {
+        use dj_core::spotlight::{MenuAction, MenuItemView, MenuView, MENU_ROW_H, MENU_W};
+        let icons = IconCache::new();
+        let mut v = view(1, None, "budget");
+        // A menu that reaches below the one-row panel, into the window's margin area.
+        let top = MARGIN + FIELD_H + 20.0;
+        let actions = [
+            MenuAction::Open,
+            MenuAction::Reveal,
+            MenuAction::Properties,
+            MenuAction::Delete,
+        ];
+        let items = actions
+            .iter()
+            .enumerate()
+            .map(|(i, a)| MenuItemView {
+                action: *a,
+                label: a.label(EntryKind::File),
+                hint: if i == 0 { "enter" } else { "" },
+                rect: LRect::new(
+                    MARGIN + 40.0,
+                    top + 6.0 + i as f32 * MENU_ROW_H,
+                    MENU_W,
+                    MENU_ROW_H,
+                ),
+                hovered: i == 1,
+                separator: i > 0,
+                danger: *a == MenuAction::Delete,
+            })
+            .collect();
+        let h = 12.0 + actions.len() as f32 * MENU_ROW_H;
+        v.menu = Some(MenuView {
+            rect: LRect::new(MARGIN + 40.0, top, MENU_W, h),
+            items,
+        });
+        let (px, w, _) = render(&v, &icons, 1.0);
+        // Opaque inside the menu even where the panel has ended.
+        let below_panel = (v.panel.y + v.panel.h + 10.0) as i32;
+        assert!(below_panel < (top + h) as i32);
+        assert!(alpha_at(&px, w, (MARGIN + 60.0) as i32, below_panel) > 200);
     }
 }
