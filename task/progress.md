@@ -30,7 +30,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | N2 | **Reserve top space**: the notch registers a top AppBar so maximized windows (Chrome tabs) start below it (Settings switch, default on) | ✅ | `xDaijobu/stage-n2-appbar` | user-requested · built by the coordinator · live-checked by the coordinator |
 | T | **Terminal**: a real shell (PowerShell) inside the island, like VS Code's integrated terminal; drops from the notch on Ctrl+Alt+`, keeps running when closed | ✅ done (T, T2 tabs, T3 agent tabs) | `xDaijobu/stage-t-terminal` | user-requested · coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 1084 tests · PR #20 · [`stage-t-plan.md`](stage-t-plan.md) · [`stage-t-report.md`](stage-t-report.md) · [`stage-t3-plan.md`](stage-t3-plan.md) · [`stage-t3-report.md`](stage-t3-report.md) |
 | V | **Spotlight, Settings window, stay behind and notch size** | ✅ code complete, live acceptance pending | `xDaijobu/stage-v-notch` | 1196 tests · user requested PR + merge before remaining live checks · [`stage-v-plan.md`](stage-v-plan.md) · [`stage-v-report.md`](stage-v-report.md) |
-| T4 | **Terminal shortcuts by the idle clock and agent logos** | 🟡 in progress | `xDaijobu/stage-t4-terminal-shortcuts` | user-requested · [`stage-t4-brief.md`](stage-t4-brief.md) |
+| T4 | **Terminal shortcuts by the idle clock and agent logos** | ✅ code complete, live checks pending | `xDaijobu/stage-t4-terminal-shortcuts` | user-requested · 1207 tests · [`stage-t4-brief.md`](stage-t4-brief.md) · [`stage-t4-report.md`](stage-t4-report.md) |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
