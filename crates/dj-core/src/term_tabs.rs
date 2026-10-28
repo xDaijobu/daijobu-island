@@ -25,6 +25,18 @@ pub const DRAG_SLOP: f32 = 4.0;
 pub const MENU_W: f32 = 168.0;
 pub const MENU_ROW_H: f32 = 26.0;
 
+/// Rename dialog and controls, in terminal panel-local logical pixels.
+pub const RENAME_DIALOG: Rect = Rect::new(190.0, 52.0, 380.0, 154.0);
+pub const RENAME_FIELD: Rect = Rect::new(206.0, 88.0, 348.0, 34.0);
+pub const RENAME_SAVE: Rect = Rect::new(466.0, 162.0, 88.0, 28.0);
+pub const RENAME_CANCEL: Rect = Rect::new(370.0, 162.0, 88.0, 28.0);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenameView {
+    pub field: crate::settings_ui::FieldView,
+    pub selected: bool,
+}
+
 /// A tab's stable id; the app keys its sessions by it.
 pub type TabId = u64;
 
@@ -65,6 +77,7 @@ pub enum MenuAction {
     Close,
     CloseOthers,
     CloseRight,
+    Rename,
     /// The "+" menu: a new shell tab.
     NewShell,
     /// The "+" menu: a new tab running Claude (yolo).
@@ -99,6 +112,7 @@ pub struct TabBarView {
     pub plus: Option<Rect>,
     pub hover: Option<BarHit>,
     pub menu: Option<MenuView>,
+    pub rename: Option<RenameView>,
 }
 
 /// A tab shortcut (the shell never sees these keys).
@@ -751,6 +765,7 @@ impl Tabs {
             plus,
             hover,
             menu: self.menu.as_ref().and_then(|m| self.menu_view(m)),
+            rename: None,
         }
     }
 
@@ -875,6 +890,7 @@ impl Tabs {
             (MenuAction::Close, "Close", "", true),
             (MenuAction::CloseOthers, "Close others", "", others),
             (MenuAction::CloseRight, "Close to the right", "", right),
+            (MenuAction::Rename, "Rename tab...", "", true),
         ]
     }
 
@@ -962,6 +978,9 @@ pub struct PinnedTab {
     /// shell. Unknown values are kept as they are; the app decides what to do with them.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent: String,
+    /// A user override, separate from the last title reported by the shell.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub custom_title: String,
 }
 
 /// Reads `terminal-tabs.toml`: the valid pinned tabs (at most `MAX_TABS`, in file order),
@@ -2219,6 +2238,7 @@ mod tests {
                 (MenuAction::Close, "Close", true),
                 (MenuAction::CloseOthers, "Close others", true),
                 (MenuAction::CloseRight, "Close to the right", true),
+                (MenuAction::Rename, "Rename tab...", true),
             ]
         );
         assert!(t.menu_open());
@@ -2269,7 +2289,7 @@ mod tests {
         let m = open(&mut t, 1);
         assert_eq!(m.rect.x, r.x);
         assert_eq!(m.rect.y, r.y + r.h + TAB_GAP);
-        assert_eq!((m.rect.w, m.rect.h), (MENU_W, 4.0 * MENU_ROW_H));
+        assert_eq!((m.rect.w, m.rect.h), (MENU_W, 5.0 * MENU_ROW_H));
         for (k, item) in m.items.iter().enumerate() {
             assert_eq!(
                 item.rect,
@@ -2567,6 +2587,7 @@ mod tests {
             args: args.iter().map(|a| a.to_string()).collect(),
             cwd: cwd.into(),
             agent: String::new(),
+            custom_title: String::new(),
         }
     }
 
@@ -2735,6 +2756,18 @@ args = ["/k"]
     fn an_empty_pinned_list_round_trips() {
         let text = pinned_to_toml(&[]);
         assert_eq!(parse_pinned(&text), (Vec::new(), Vec::new()), "{text}");
+    }
+
+    #[test]
+    fn custom_pinned_titles_round_trip_without_changing_older_files() {
+        let mut tab = pin("shell title", "pwsh.exe", &[], "");
+        let old_text = pinned_to_toml(&[tab.clone()]);
+        assert!(!old_text.contains("custom_title"));
+        assert!(parse_pinned(&old_text).0[0].custom_title.is_empty());
+        tab.custom_title = "API 日".into();
+        let (read, errors) = parse_pinned(&pinned_to_toml(&[tab.clone()]));
+        assert!(errors.is_empty());
+        assert_eq!(read, [tab]);
     }
 
     #[test]

@@ -283,6 +283,9 @@ pub(crate) fn paint_terminal(
     if let Some(menu) = &p.tabs.menu {
         tab_menu(canvas, fonts, t, area, s, menu);
     }
+    if let Some(rename) = &p.tabs.rename {
+        rename_dialog(canvas, fonts, t, area, s, rename);
+    }
     canvas.restore_to_count(base);
 }
 
@@ -649,9 +652,113 @@ fn pin_mark(canvas: &Canvas, cx: f32, cy: f32, s: f32, ink: Color) {
     canvas.restore();
 }
 
-/// The tab menu: a pill-coloured rounded rect with a hairline border and a soft shadow, one
-/// label per row, the hovered enabled row on a plate and a disabled row dim. Drawn over the
-/// header and the grid, inside the panel's clip.
+/// Modal editor drawn over the terminal, using panel-local control geometry.
+fn rename_dialog(
+    canvas: &Canvas,
+    fonts: &mut Fonts,
+    t: &ResolvedTokens,
+    area: Rect,
+    s: f32,
+    rename: &term_tabs::RenameView,
+) {
+    let body = local(area, term_tabs::RENAME_DIALOG, s);
+    canvas.draw_rect(area, &fill_paint(Color::from_argb(90, 0, 0, 0)));
+    let plate = RRect::new_rect_xy(body, 10.0 * s, 10.0 * s);
+    canvas.draw_rrect(plate, &fill_paint(col(t.pill, 1.0)));
+    canvas.draw_rrect(plate, &stroke_paint(col(t.surface2, 1.0), s));
+    let font = fonts.font(&t.font_label, Weight::Medium, 11.0 * s);
+    let ink = fill_paint(col(t.text, 1.0));
+    draw_text(
+        canvas,
+        &font,
+        "Rename tab",
+        body.left + 16.0 * s,
+        body.top + 22.0 * s,
+        0.0,
+        &ink,
+    );
+    let field = local(area, rename.field.rect, s);
+    let field_plate = RRect::new_rect_xy(field, 6.0 * s, 6.0 * s);
+    canvas.draw_rrect(field_plate, &fill_paint(col(t.surface1, 1.0)));
+    canvas.draw_rrect(field_plate, &stroke_paint(col(t.accent, 1.0), s));
+    let text = &rename.field.text;
+    let before: String = text.chars().take(rename.field.caret).collect();
+    let caret_w = text_width(&font, &before, 0.0);
+    let available = field.width() - 20.0 * s;
+    let shift = (caret_w - available + 2.0 * s).max(0.0);
+    let x = field.left + 10.0 * s - shift;
+    let baseline = field.center_y() + 3.85 * s;
+    canvas.save();
+    canvas.clip_rect(
+        field.with_inset((8.0 * s, 2.0 * s)),
+        ClipOp::Intersect,
+        true,
+    );
+    if rename.selected && !text.is_empty() {
+        canvas.draw_rect(
+            Rect::from_xywh(
+                x,
+                field.top + 5.0 * s,
+                text_width(&font, text, 0.0),
+                field.height() - 10.0 * s,
+            ),
+            &fill_paint(col(t.accent, 0.25)),
+        );
+    }
+    if text.is_empty() {
+        draw_text(
+            canvas,
+            &font,
+            "Automatic title",
+            x,
+            baseline,
+            0.0,
+            &fill_paint(col(t.text_dim, 1.0)),
+        );
+    } else {
+        draw_text(canvas, &font, text, x, baseline, 0.0, &ink);
+    }
+    if rename.field.focused && !rename.selected {
+        canvas.draw_line(
+            (x + caret_w, field.top + 7.0 * s),
+            (x + caret_w, field.bottom - 7.0 * s),
+            &stroke_paint(col(t.accent, 1.0), s),
+        );
+    }
+    canvas.restore();
+    let hint = fonts.font(&t.font_label, Weight::Medium, 9.0 * s);
+    draw_text(
+        canvas,
+        &hint,
+        "Empty = automatic title",
+        field.left,
+        field.bottom + 18.0 * s,
+        0.0,
+        &fill_paint(col(t.text_dim, 1.0)),
+    );
+    for (rect, label) in [
+        (term_tabs::RENAME_CANCEL, "Cancel"),
+        (term_tabs::RENAME_SAVE, "Save"),
+    ] {
+        let r = local(area, rect, s);
+        canvas.draw_rrect(
+            RRect::new_rect_xy(r, 6.0 * s, 6.0 * s),
+            &fill_paint(col(t.surface2, 1.0)),
+        );
+        let width = text_width(&font, label, 0.0);
+        draw_text(
+            canvas,
+            &font,
+            label,
+            r.center_x() - width / 2.0,
+            r.center_y() + 3.85 * s,
+            0.0,
+            &ink,
+        );
+    }
+}
+
+/// The tab menu: pill-coloured rows, hovered enabled plates and a soft shadow.
 fn tab_menu(
     canvas: &Canvas,
     fonts: &mut Fonts,
@@ -1468,6 +1575,7 @@ mod tests {
         plus: None,
         hover: None,
         menu: None,
+        rename: None,
     };
 
     fn panel<'a>(sc: &'a Screen, pal: &'a Palette) -> TerminalPanel<'a> {
@@ -2456,6 +2564,7 @@ mod tests {
             tabs,
             hover: None,
             menu: None,
+            rename: None,
         }
     }
 
@@ -3476,6 +3585,7 @@ mod tests {
             let (a, g) = render(&t, &base, s);
             // Hover, "+" and a menu rect mean nothing without tabs: the header is the same.
             let stray = TabBarView {
+                rename: None,
                 tabs: Vec::new(),
                 plus: Some(LRect::new(100.0, 6.0, 24.0, 24.0)),
                 hover: Some(BarHit::Plus),
@@ -3513,6 +3623,37 @@ mod tests {
     }
 
     #[test]
+    fn rename_editor_stays_in_the_panel_and_clips_long_names_on_all_themes() {
+        for t in themes() {
+            for s in SCALES {
+                let mut v = view(vec![tab(1, 30.0, 120.0, "terminal")]);
+                let mut edit = dj_core::line_edit::LineEdit::new();
+                edit.set_text(&"long-name-".repeat(40));
+                v.rename = Some(term_tabs::RenameView {
+                    field: edit.view(term_tabs::RENAME_FIELD, true, "Automatic title"),
+                    selected: true,
+                });
+                let (selected, g) = render_tabs(&t, &v, s);
+                assert_eq!(selected.lit_outside(selected.whole(), &[g.panel]), None);
+                let field = g.rect(term_tabs::RENAME_FIELD);
+                assert!(
+                    selected.closest(field, bgra(t.text)) < 80,
+                    "{} {s}: name ink",
+                    t.name
+                );
+                let dialog = g.rect(term_tabs::RENAME_DIALOG);
+                assert!(selected.lit_in(dialog) > 100, "{} {s}: dialog", t.name);
+                v.rename.as_mut().unwrap().selected = false;
+                let (caret, _) = render_tabs(&t, &v, s);
+                assert!(caret.px != selected.px, "selection and caret differ");
+                v.rename.as_mut().unwrap().field.text.clear();
+                let (empty, _) = render_tabs(&t, &v, s);
+                assert!(empty.px != caret.px, "empty placeholder differs");
+            }
+        }
+    }
+
+    #[test]
     fn a_hostile_tab_view_never_panics_or_draws_outside_the_panel() {
         let t = tokens();
         let pal = palette(&t);
@@ -3545,6 +3686,7 @@ mod tests {
                 .collect();
             let v = TabBarView {
                 tabs,
+                rename: None,
                 plus: Some(huge),
                 hover: Some(BarHit::Close(99)),
                 menu: Some(MenuView {
@@ -3588,6 +3730,7 @@ mod tests {
             // An empty menu and no items are fine too.
             let v = TabBarView {
                 tabs: vec![tab(1, 30.0, 100.0, "")],
+                rename: None,
                 plus: None,
                 hover: None,
                 menu: Some(MenuView {
@@ -3632,6 +3775,7 @@ mod tests {
                 })
                 .collect();
             let mut v = TabBarView {
+                rename: None,
                 plus: None,
                 tabs,
                 hover: Some(BarHit::Close(4)),
