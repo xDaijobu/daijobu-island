@@ -165,6 +165,8 @@ impl Session {
 
         let child = Child::of(&pty);
 
+        let pty = crate::tap::Tapped::new(pty, shared.clone());
+
         let event_loop = match EventLoop::new(term.clone(), listener, pty, true, false) {
             Ok(l) => l,
             Err(e) => {

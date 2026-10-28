@@ -1127,3 +1127,57 @@ fn spawning_a_missing_program_is_an_error_not_a_panic() {
         assert!(err.contains("not found"), "readable message, got: {err}");
     }
 }
+
+// ---------------------------------------------------------------- cwd capture
+
+#[test]
+fn is_powershell_by_file_stem() {
+    for yes in [
+        "powershell",
+        "pwsh",
+        "PWSH.EXE",
+        "powershell.exe",
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        r"C:\Program Files\PowerShell\7\pwsh.exe",
+        "\"C:/Program Files/PowerShell/7/pwsh.exe\"",
+    ] {
+        assert!(crate::is_powershell(yes), "{yes}");
+    }
+    for no in [
+        "cmd",
+        "cmd.exe",
+        "wsl.exe",
+        "",
+        r"C:\tools\pwsh-preview.exe",
+        r"C:\powershell\bash.exe",
+    ] {
+        assert!(!crate::is_powershell(no), "{no}");
+    }
+}
+
+#[test]
+fn a_real_shell_cwd_sequence_becomes_an_event_and_the_screen_is_unaffected() {
+    let (wake, rx) = waker();
+    let cmd = r"[Console]::Write('before-'); [Console]::Write([char]27 + ']9;9;C:\Windows' + [char]27 + '\');[Console]::Write('-after'); Start-Sleep -Milliseconds 500";
+    let mut session = Session::spawn(
+        &opts(
+            "powershell.exe",
+            &["-NoLogo", "-NoProfile", "-Command", cmd],
+        ),
+        wake,
+    )
+    .unwrap_or_else(|e| panic!("spawn failed: {e}"));
+    let (screen, events) = wait_for(&mut session, &rx, Duration::from_secs(10), |s, ev| {
+        ev.iter().any(|e| matches!(e, TermEvent::Cwd(_))) && text(s).contains("-after")
+    });
+    assert!(
+        events.contains(&TermEvent::Cwd(r"C:\Windows".to_string())),
+        "events: {events:?}"
+    );
+    let shown = text(&screen);
+    assert!(shown.contains("before--after"), "screen:\n{shown}");
+    assert!(
+        !shown.contains("9;9"),
+        "the sequence is not shown:\n{shown}"
+    );
+}
