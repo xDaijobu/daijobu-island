@@ -3,7 +3,7 @@
 
 use crate::features::FEATURES;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
