@@ -432,6 +432,11 @@ impl Tabs {
         }
     }
 
+    /// Whether a tab has output that has not been shown yet.
+    pub fn has_activity(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|t| t.activity)
+    }
+
     /// New output in a background tab. Ignored for the active tab (it is being shown).
     pub fn set_activity(&mut self, id: TabId) {
         if self.active == Some(id) {

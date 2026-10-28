@@ -38,6 +38,7 @@ use dj_core::spotlight::{self as spot, Action as SpotAction, EntryKind, MenuActi
 use dj_core::sweep::{format_bytes, Category, Estimate, Phase, SweepCache, SweepCmd, SweepView};
 use dj_core::term_agents::Agent;
 use dj_core::terminal::{self as termcore, Mods};
+use dj_core::terminal_shortcuts::Shortcut;
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::tile_assist::{self, AssistKey};
 use dj_core::vitals::Vitals;
@@ -193,6 +194,7 @@ pub struct App {
     /// it, and the window that had the keyboard before it opened.
     terminal: Terminal,
     term_keyboard: bool,
+    term_shortcuts: Vec<Shortcut>,
     term_prev: isize,
     /// Where the island sits in the z-order (`[island] stay_behind` keeps it on the
     /// desktop layer while it rests).
@@ -388,6 +390,7 @@ impl App {
             assist_win: None,
             terminal,
             term_keyboard: false,
+            term_shortcuts: Vec::new(),
             term_prev: 0,
             layer: Layer::Top,
             settings_win: None,
@@ -2101,6 +2104,15 @@ impl App {
     /// has them they go back to where they were (never stuck on a window that won't take
     /// them).
     fn sync_terminal(&mut self) {
+        let shortcuts = self.terminal.shortcuts();
+        if shortcuts != self.term_shortcuts {
+            self.island.set_terminal_shortcuts(
+                shortcuts.iter().map(|s| s.id).collect(),
+                self.anim.current(),
+            );
+            self.term_shortcuts = shortcuts;
+            self.dirty = true;
+        }
         if self.term_keyboard && !self.island.terminal_open() {
             self.release_keyboard(true);
         }
@@ -3091,6 +3103,11 @@ impl Handler for App {
                         self.tile_panel = false;
                     }
                     ClickOutcome::Open(i) if FEATURES[i].id == "terminal" => self.open_terminal(),
+                    ClickOutcome::TerminalShortcut(id) => {
+                        if self.terminal.activate_shortcut(id) {
+                            self.open_terminal();
+                        }
+                    }
                     // ✕ closes; the text area starts a selection. A click into the panel
                     // also activates the island again (it answers `MA_ACTIVATE` while the
                     // panel holds the keyboard).
@@ -3537,6 +3554,7 @@ impl Handler for App {
             settings: &settings,
             tile: tile_panel,
             terminal,
+            terminal_shortcuts: &self.term_shortcuts,
             island_style: self.config.island.style(),
         };
         match renderer.render(&frame) {
