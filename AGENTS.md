@@ -16,7 +16,7 @@ Daijobu Island is a dynamic-island overlay for Windows 11, written in Rust and d
    Exception: WebView2 is allowed only as the hidden YouTube Music engine and its sign-in/browse window (`dj-music`).
 2. **The name is "Daijobu Island".** Never write "Daijōbu". The binary is `daijobu.exe`, the config dir is `~/.daijobu/` and the CLI is `dj`.
 3. **No GPL code.** WinIsland and Mole are GPL-3.0. They can be used as references for ideas and API choices only. Never copy their code or lists verbatim, and never use the name "Mole".
-4. **Build only what the stage asks for.** Features outside the current stage stay locked ("coming soon"). Don't add features nobody asked for, and suggest them instead. Screen recording was explicitly rejected.
+4. **Build only what the stage asks for.** Features outside the current stage stay locked ("coming soon"). Don't add features nobody asked for, and suggest them instead. Screen recording and OCR were explicitly rejected; OCR was removed from the roadmap on 2026-10-28.
 5. **License is Apache-2.0.** New dependencies and assets must be compatible (MIT, Apache, BSD, OFL, …). No GPL/LGPL/AGPL. Third-party assets are listed in `NOTICE`.
 6. **`unsafe` only in platform or GPU code**, each block with a `// SAFETY:` comment. `dj-core` is `#![forbid(unsafe_code)]` and has no Win32 or Skia dependency.
 
@@ -28,6 +28,12 @@ Development happens **one stage at a time**:
 2. An Orca worktree is created per stage (`stage-N-<slug>`) and an agent works there. Commit in small steps on that branch and don't push.
 3. The agent finishes by writing `task/stage-N-report.md`: an honest per-item checklist, how to run, known issues, and what was not verified.
 4. The coordinator re-checks the result (build, clippy, tests, run the exe), updates `task/progress.md`, and opens a PR into `master`.
+
+When the user requests parallel subagents, keep them within the current stage. Freeze
+shared interfaces before dispatch, assign non-overlapping file ownership, and let the
+coordinator integrate shared files and manage Git. The Snap/Clipboard dispatch plan is
+`task/stage-snap-clipboard-plan.md`; it prepares workers for a later implementation
+and does not itself dispatch them.
 
 When a stage unlocks a feature, flip its entry in `dj-core`'s feature registry from `Locked` to `Available` and handle `ClickOutcome::Open`.
 

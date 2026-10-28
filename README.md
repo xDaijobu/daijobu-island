@@ -37,14 +37,20 @@ Early development. Music (YouTube Music), the volume OSD, Vitals with Sweep, Tim
 | 5 | Vitals + Sweep: disk I/O, top processes, safe disk cleanup | ✅ done |
 | 6 | Timer / pomodoro | ✅ done |
 | 7a–7c | Screenshots: capture, annotate, floating preview stack | ✅ done |
+| 7c-2–7d | Screenshot drag-out and pin-to-screen | planned |
 | T | Terminal: shell tabs, pinned tabs, Claude and Codex tabs | ✅ merged |
 | N–N2 | Notch style and reserved top space | ✅ done |
 | V | Spotlight, standalone Settings, notch size and stay behind windows | ✅ merged, live testing pending |
-| 8 | Clipboard history | locked |
+| 8 | Clipboard history: search, pin, persistent history and paste | planned, locked |
 | 9–10 | Notifications, lyrics | locked |
 | 12a | Window tiling: zones, a layout picker in the island, a window picker | ✅ done |
 | 12b–12d | Scenes, restore-after-reboot, admin apps | locked |
 | 13 | File shelf, ambient sounds | locked |
+
+Next: screenshot drag-out, then pin-to-screen, then Clipboard history. The
+[implementation plan](task/stage-snap-clipboard-plan.md) includes stage briefs, worker
+ownership, dependencies and acceptance checks. OCR has been removed from the roadmap.
+These stages are planned; their implementation workers have not been dispatched.
 
 ## Download and run
 
@@ -59,7 +65,7 @@ These are design mockups from [`docs/plan.html`](docs/plan.html), not screenshot
 <table>
   <tr>
     <td width="50%"><img src="docs/images/concept-media.png" alt="Media"><br><b>Media.</b> Now playing from any app that reports to Windows, with a segmented VU visualizer.</td>
-    <td width="50%"><img src="docs/images/concept-snap.png" alt="Snap"><br><b>Snap.</b> Region screenshots with a loupe, annotations, blur, OCR and pin-to-screen.</td>
+    <td width="50%"><img src="docs/images/concept-snap.png" alt="Snap concept"><br><b>Snap.</b> Region screenshots with a loupe, annotations and pixelation. Pin-to-screen is planned; the early concept image predates the current scope.</td>
   </tr>
   <tr>
     <td><img src="docs/images/concept-snap-stack.png" alt="Snap stack"><br><b>Snap stack.</b> New screenshots float under the island for a few seconds. Select several and drag them straight into Discord, Explorer or a browser.</td>
