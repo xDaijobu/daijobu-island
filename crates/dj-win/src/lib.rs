@@ -13,6 +13,7 @@ compile_error!("dj-win only supports Windows");
 pub mod appbar;
 pub mod assist;
 pub mod clipboard;
+pub mod clipboard_transfer;
 pub mod drag_drop;
 pub mod hook;
 pub mod launcher;

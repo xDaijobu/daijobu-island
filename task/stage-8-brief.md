@@ -1,8 +1,17 @@
 # Stage 8 brief: Clipboard history
 
-Status: planned, after 7c-2 and 7d. Read the [coordination plan](stage-snap-clipboard-plan.md).
+Status: COMPLETE with documented native gaps; independent review, 1,633 workspace
+tests, clippy, fmt, release build and synthetic native smoke passed.
+Base: `282899d`, after Stage 7d merged in PR #30. Read the
+[coordination plan](stage-snap-clipboard-plan.md) and current
+[dispatch contract](stage-8-dispatch.md). Clipboard is unlocked in the current source;
+the [report](stage-8-report.md) records final evidence and unperformed native checks.
 Unlock Clipboard only when the working monitor, storage, UI and paste flow are integrated.
 No OCR, cloud sync, uploads or Win+V replacement hook.
+
+The user also requested investigation of taskbar/tray response latency during this
+stage. Numeric callback timings are recorded in the report; physical taskbar/tray
+click cause and improvement remain unproven. No release version bump.
 
 ## User experience
 

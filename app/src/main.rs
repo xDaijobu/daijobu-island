@@ -3,6 +3,8 @@
 
 mod app;
 mod chime;
+mod clipboard;
+mod clipboard_transfer;
 mod notch;
 mod popups;
 mod preview_store;

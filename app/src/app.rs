@@ -2,6 +2,8 @@
 //! Win32 events.
 
 use crate::chime::SystemChime;
+use crate::clipboard::{Clipboard, Event as ClipEvent};
+use crate::clipboard_transfer::{self as clip_transfer, Target as ClipTarget, Transfer};
 use crate::notch::{self, Edges};
 use crate::popups::{self, IconLoader, PopupWin, SizeLoader, SpotIndex};
 use crate::preview_store::Store;
@@ -23,6 +25,7 @@ use crate::tile::{
 };
 use crate::timer::{Timer, TIMER_DEADLINE, TIMER_DIGITS};
 use crate::vitals::{self, Cadence, Worker};
+use dj_core::clipboard_ui::Action as ClipAction;
 use dj_core::color::Rgb;
 use dj_core::config::{AnnotateConfig, Config, IslandStyle, SnapHotkey, SpotlightHotkey};
 use dj_core::features::FEATURES;
@@ -47,9 +50,9 @@ use dj_core::vitals::Vitals;
 use dj_music::art::{self, ArtResult};
 use dj_music::{Engine, MUSIC_URL};
 use dj_render::{
-    AssistCard, AssistScene, AssistSurface, EditScene, Frame, IconCache, MusicFrame, RenderError,
-    Renderer, SnapFrame, SnapOverlay, SnapScene, TerminalPanel, TextMetrics, TilePanel, TileThumb,
-    ZoneOverlay, ZoneScene,
+    AssistCard, AssistScene, AssistSurface, ClipboardPanel, EditScene, Frame, IconCache,
+    MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene, TerminalPanel,
+    TextMetrics, TilePanel, TileThumb, ZoneOverlay, ZoneScene,
 };
 use dj_win::assist::{AssistInput, Thumbnail};
 use dj_win::overlay::{self, SnapInput};
@@ -66,6 +69,8 @@ const HOTKEY_TOGGLE: i32 = 1;
 const HOTKEY_THEME: i32 = 2;
 /// Spotlight (Alt+Space by default); ids 6-19 belong to Snap, Tile and the terminal.
 const HOTKEY_SPOTLIGHT: i32 = 20;
+const HOTKEY_CLIPBOARD: i32 = 21;
+const TIMER_CLIPBOARD: usize = 13;
 const VK_SPACE: u32 = 0x20;
 const TIMER_CLOCK: usize = 1;
 const TIMER_VU: usize = 2;
@@ -86,6 +91,22 @@ const VK_VOLUME_UP: u32 = 0xAF;
 const FIRST_DT: f32 = 1.0 / 120.0;
 const MAX_DT: f32 = 0.05;
 const REGION_PAD: i32 = 2;
+
+fn clipboard_character(ch: char, ctrl: bool, alt: bool) -> bool {
+    !ch.is_control() && ((!ctrl && !alt) || (ctrl && alt))
+}
+
+#[cfg(test)]
+#[test]
+fn altgr_printable_text_reaches_search_but_shortcuts_do_not() {
+    assert!(clipboard_character('@', true, true));
+    assert!(clipboard_character('€', true, true));
+    assert!(clipboard_character('字', false, false));
+    assert!(!clipboard_character('\u{3}', true, false));
+    assert!(!clipboard_character('c', true, false));
+    assert!(!clipboard_character('1', false, true));
+    assert!(!clipboard_character('\r', true, true));
+}
 
 /// The local time now, for a saved snap's file name.
 fn local_stamp() -> Stamp {
@@ -208,6 +229,15 @@ pub struct App {
     term_keyboard: bool,
     term_shortcuts: Vec<Shortcut>,
     term_prev: isize,
+    clipboard: Option<Clipboard>,
+    clipboard_error: Option<String>,
+    clip_keyboard: bool,
+    clip_taken: bool,
+    clip_timer: bool,
+    clip_hover: Option<(f32, f32)>,
+    clip_target: Option<ClipTarget>,
+    clip_drag: Option<(u64, dj_win::drag_drop::DragPayload)>,
+    clip_watching: Option<u64>,
     /// Where the island sits in the z-order (`[island] stay_behind` keeps it on the
     /// desktop layer while it rests).
     layer: Layer,
@@ -340,6 +370,16 @@ impl App {
             pinned,
         );
         let pins = Pins::new(hwnd, &tokens, config.snap.save_dir(&profile));
+        let (clipboard, clipboard_error) = match Clipboard::new(
+            hwnd,
+            storage::data_dir().join("clipboard/history.sqlite3"),
+            profile.join("Pictures/Daijobu/Clipboard"),
+            config.clipboard.clone(),
+            std::sync::Arc::new(move || window::wake(raw)),
+        ) {
+            Ok(clipboard) => (Some(clipboard), None),
+            Err(error) => (None, Some(error)),
+        };
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -407,6 +447,15 @@ impl App {
             term_keyboard: false,
             term_shortcuts: Vec::new(),
             term_prev: 0,
+            clipboard,
+            clipboard_error,
+            clip_keyboard: false,
+            clip_taken: false,
+            clip_timer: false,
+            clip_hover: None,
+            clip_target: None,
+            clip_drag: None,
+            clip_watching: None,
             layer: Layer::Top,
             settings_win: None,
             settings_pressed: false,
@@ -454,6 +503,8 @@ impl App {
             storage::log("Ctrl+Alt+T is already taken by another app");
         }
         self.register_snap_hotkey();
+        self.clip_taken =
+            !window::register_hotkey(self.hwnd, HOTKEY_CLIPBOARD, window::MOD_CTRL_ALT, 0x56);
         // Tile: window moves of other apps, and the zone keys `[tile]` turns on.
         if !dj_win::tile::install_move_hook() {
             storage::log("tile: cannot watch window moves");
@@ -1443,6 +1494,11 @@ impl App {
             self.terminal.measure(cell, self.scale);
             self.dirty = true;
         }
+        if self.config.clipboard != old.clipboard {
+            if let Some(c) = &mut self.clipboard {
+                c.configure(self.config.clipboard.clone());
+            }
+        }
         // What actually took (a refused Run entry, a hotkey another app holds).
         let taken = self.taken();
         let config = self.config.clone();
@@ -1482,6 +1538,10 @@ impl App {
     /// Hotkeys capture open panels in place. Only the Home tile collapses its launcher
     /// before freezing, so that launcher is not part of a capture started from Home.
     fn request_snap(&mut self, from_home: bool) {
+        self.cancel_clipboard_drag();
+        if let Some(c) = &mut self.clipboard {
+            c.cancel_pending_actions();
+        }
         self.previews.cancel_drag(Instant::now());
         if self.overlay.is_some() || self.snap_pending {
             return;
@@ -2179,6 +2239,10 @@ impl App {
     /// Opens the panel, on a new tab in `at` (a folder, and an agent to run in it) when
     /// given (Spotlight's "Open in Terminal", "Claude here").
     fn open_terminal_at(&mut self, at: Option<(String, Option<Agent>)>) {
+        self.close_clipboard(false);
+        if let Some(c) = &mut self.clipboard {
+            c.close();
+        }
         let tokens = self.anim.current().clone();
         let cell = self.term_cell();
         match at {
@@ -2280,6 +2344,236 @@ impl App {
     fn over_panel(&self, x: i32, y: i32) -> bool {
         let (lx, ly) = self.island_point(x, y);
         self.island.view().osd.alpha <= 0.0 && self.island.pill_rect().contains(lx, ly)
+    }
+
+    // ---- Clipboard ----
+
+    fn clipboard_open(&self) -> bool {
+        self.island.state() == IslandState::Clipboard
+    }
+
+    fn clipboard_input(&self) -> bool {
+        self.clipboard_open() && self.clip_keyboard && self.overlay.is_none()
+    }
+
+    fn clipboard_local(lx: f32, ly: f32) -> (f32, f32) {
+        let (width, _) = layout::window_size();
+        (
+            lx - (width - layout::CLIPBOARD_W) / 2.0,
+            ly - layout::TOP_MARGIN,
+        )
+    }
+
+    fn remember_clipboard_target(&mut self) {
+        let current = if self.island.terminal_open() && window::is_foreground(self.hwnd) {
+            self.terminal.active_tab_id().map(ClipTarget::Terminal)
+        } else {
+            Transfer::capture_external()
+        };
+        if let Some(target) = current {
+            self.clip_target = Some(target);
+        } else if !window::is_foreground(self.hwnd) {
+            // A refused external target (e.g. elevated) cannot reuse another app's lease.
+            self.clip_target = None;
+        }
+        let valid = self
+            .clip_target
+            .as_ref()
+            .is_some_and(|target| match target {
+                ClipTarget::External(_) => clip_transfer::external_target_valid(target),
+                ClipTarget::Terminal(id) => {
+                    self.terminal.shortcuts().iter().any(|tab| tab.id == *id)
+                }
+            });
+        if !valid {
+            self.clip_target = None;
+        }
+    }
+
+    fn open_clipboard(&mut self) {
+        if self.overlay.is_some() || self.snap_pending {
+            return;
+        }
+        self.remember_clipboard_target();
+        if !self.visible {
+            self.set_visible(true);
+        }
+        self.release_keyboard(false);
+        if let Some(clipboard) = &mut self.clipboard {
+            clipboard.open(self.clip_target.clone());
+            if self.clip_taken {
+                clipboard.set_status(
+                    "Ctrl+Alt+V is unavailable; open Clipboard from Home or the tray.".into(),
+                );
+            }
+        }
+        self.island.show_clipboard(self.anim.current());
+        window::set_keyboard(self.hwnd, true);
+        window::take_keyboard(self.hwnd);
+        self.clip_keyboard = true;
+        self.dirty = true;
+        self.drain_clipboard();
+    }
+
+    /// Paste needs the panel hidden while its transfer continues on the worker.
+    fn hide_clipboard(&mut self) {
+        if self.clipboard_open() {
+            self.island.collapse(self.anim.current());
+        }
+        if self.clip_keyboard {
+            self.clip_keyboard = false;
+            window::set_keyboard(self.hwnd, false);
+        }
+        self.clip_hover = None;
+        self.dirty = true;
+    }
+
+    fn close_clipboard(&mut self, restore: bool) {
+        let was_open = self.clipboard_open() || self.clip_keyboard;
+        if let Some(clipboard) = &mut self.clipboard {
+            clipboard.close();
+        }
+        self.cancel_clipboard_drag();
+        if !was_open {
+            return;
+        }
+        self.hide_clipboard();
+        if restore {
+            self.restore_clipboard_target(self.clip_target.clone());
+        }
+    }
+
+    fn restore_clipboard_target(&mut self, target: Option<ClipTarget>) {
+        match target {
+            Some(ClipTarget::Terminal(id)) if self.terminal.activate_shortcut(id) => {
+                self.open_terminal()
+            }
+            Some(target @ ClipTarget::External(_)) => {
+                clip_transfer::restore_external(&target);
+            }
+            _ => {}
+        }
+    }
+
+    fn clipboard_action(&mut self, action: ClipAction) {
+        if let Some(clipboard) = &mut self.clipboard {
+            clipboard.action(action);
+        }
+        self.drain_clipboard();
+    }
+
+    fn cancel_clipboard_drag(&mut self) {
+        self.clip_drag = None;
+        if let Some(clipboard) = &mut self.clipboard {
+            if let Some(request) = clipboard.pending_drag_request() {
+                clipboard.cancel_drag_request(request);
+            }
+        }
+        if self.clip_watching.take().is_some() {
+            window::watch_drag_escape(self.hwnd, None);
+        }
+    }
+
+    fn drain_clipboard(&mut self) {
+        let events = self
+            .clipboard
+            .as_mut()
+            .map(|c| c.tick(Instant::now()))
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                ClipEvent::Redraw => {
+                    if self.clipboard_open() {
+                        self.dirty = true;
+                    }
+                }
+                ClipEvent::Close { restore } => {
+                    self.cancel_clipboard_drag();
+                    self.hide_clipboard();
+                    self.restore_clipboard_target(restore);
+                }
+                ClipEvent::HideForPaste => self.hide_clipboard(),
+                ClipEvent::ShowFeedback => {
+                    self.show_clipboard_feedback();
+                }
+                ClipEvent::TerminalPaste { tab, text } => {
+                    if self.terminal.activate_shortcut(tab) {
+                        self.open_terminal();
+                        if let Err(error) = self.terminal.paste_to_tab(tab, &text) {
+                            if let Some(c) = &mut self.clipboard {
+                                c.set_status(error);
+                            }
+                            self.show_clipboard_feedback();
+                        }
+                    } else if let Some(c) = &mut self.clipboard {
+                        c.set_status(
+                            "Copied; the original Terminal tab is no longer available.".into(),
+                        );
+                        self.show_clipboard_feedback();
+                    }
+                    self.dirty = true;
+                }
+                ClipEvent::PolicyChanged(config) => {
+                    self.config.clipboard = config;
+                    storage::save_config(&self.config);
+                    self.settings_follow_config();
+                }
+                ClipEvent::DragReady { request, payload } => {
+                    if self.clipboard_open()
+                        && self.visible
+                        && self.overlay.is_none()
+                        && !self.snap_pending
+                    {
+                        self.clip_drag = Some((request, payload));
+                    } else if let Some(c) = &mut self.clipboard {
+                        c.cancel_drag_request(request);
+                    }
+                }
+            }
+        }
+        self.sync_clipboard();
+    }
+
+    fn show_clipboard_feedback(&mut self) {
+        if self.visible && self.overlay.is_none() && !self.snap_pending {
+            self.release_keyboard(false);
+            self.island.show_clipboard(self.anim.current());
+            self.dirty = true;
+        }
+    }
+
+    fn sync_clipboard(&mut self) {
+        if self.clip_keyboard && !self.clipboard_open() {
+            if let Some(c) = &mut self.clipboard {
+                c.close();
+            }
+            self.hide_clipboard();
+        }
+        let pending = self.clipboard.as_ref().is_some_and(Clipboard::needs_tick);
+        if pending != self.clip_timer {
+            self.clip_timer = pending;
+            if pending {
+                window::set_timer(self.hwnd, TIMER_CLIPBOARD, 20);
+            } else {
+                window::kill_timer(self.hwnd, TIMER_CLIPBOARD);
+            }
+        }
+        let request = self
+            .clipboard
+            .as_ref()
+            .and_then(Clipboard::pending_drag_request);
+        if request != self.clip_watching {
+            if (request.is_some() || self.clip_watching.is_some())
+                && !window::watch_drag_escape(self.hwnd, request)
+            {
+                if let (Some(c), Some(id)) = (&mut self.clipboard, request) {
+                    c.cancel_drag_request(id);
+                }
+                self.clip_watching = None;
+                return;
+            }
+            self.clip_watching = request;
+        }
     }
 
     // ---- Tile ----
@@ -2860,6 +3154,9 @@ impl App {
     }
 
     fn set_visible(&mut self, visible: bool) {
+        if !visible {
+            self.close_clipboard(true);
+        }
         // A hidden island can't hold the keyboard: the panel closes (the shell keeps
         // running) and the keyboard goes back.
         if !visible && self.island.terminal_open() {
@@ -3084,6 +3381,8 @@ impl App {
     }
 
     fn show_tray_menu(&mut self) {
+        let prepare_started = Instant::now();
+        self.remember_clipboard_target();
         let previous = dj_win::snap_pins::focus_target();
         let themes: Vec<(String, bool)> = self
             .registry
@@ -3098,7 +3397,7 @@ impl App {
             .collect();
         let spec = MenuSpec {
             themes: &themes,
-            autostart: system::autostart_enabled(),
+            autostart: self.config.start_with_windows,
             music: MusicMenu {
                 running: self.engine.is_some(),
                 signed_in: self.session.signed_in,
@@ -3106,7 +3405,16 @@ impl App {
             previews: self.previews.can_focus(),
             pins: self.pins.can_focus(),
         };
-        match tray::show_menu(self.hwnd, &spec) {
+        let preparation = prepare_started.elapsed();
+        let (command, timings) = tray::show_menu_timed(self.hwnd, &spec);
+        storage::log(&format!(
+            "tray menu ms: prepare={} build={} activate={}",
+            preparation.as_millis(),
+            timings.construction.as_millis(),
+            timings.activation.as_millis()
+        ));
+        match command {
+            Some(MenuCommand::Clipboard) => self.open_clipboard(),
             Some(MenuCommand::ToggleVisible) => self.set_visible(!self.visible),
             Some(MenuCommand::Theme(i)) => {
                 if let Some(id) = self.registry.ids().get(i).cloned() {
@@ -3141,6 +3449,12 @@ impl App {
             return;
         }
         // Latch termination before cleanup can pump another native callback.
+        self.cancel_clipboard_drag();
+        if let Some(c) = &mut self.clipboard {
+            c.shutdown();
+        }
+        window::kill_timer(self.hwnd, TIMER_CLIPBOARD);
+        window::unregister_hotkey(self.hwnd, HOTKEY_CLIPBOARD);
         window::quit();
         self.pins.set_allowed(false);
         // Give the strip back first, or the work area stays short after we're gone.
@@ -3217,8 +3531,12 @@ impl App {
 impl Handler for App {
     fn take_drag(&mut self) -> Option<(u64, dj_win::drag_drop::DragPayload)> {
         if window::quitting() || self.snap_pending || self.overlay.is_some() || !self.visible {
+            self.cancel_clipboard_drag();
             self.previews.cancel_drag(Instant::now());
             return None;
+        }
+        if let Some(drag) = self.clip_drag.take() {
+            return Some(drag);
         }
         self.previews.take_drag(Instant::now())
     }
@@ -3228,6 +3546,14 @@ impl Handler for App {
         request: u64,
         result: Result<dj_win::drag_drop::DragOutcome, String>,
     ) {
+        if request & (1u64 << 63) != 0 {
+            if let Some(c) = &mut self.clipboard {
+                c.finish_drag(request, result);
+            }
+            self.clip_watching = None;
+            self.drain_clipboard();
+            return;
+        }
         self.previews.finish_drag(request, result, Instant::now());
     }
 
@@ -3238,9 +3564,18 @@ impl Handler for App {
         match ev {
             Event::Close => self.quit(),
             Event::DragEscape(request) => {
-                self.previews.cancel_drag_request(request, Instant::now())
+                if request & (1u64 << 63) != 0 {
+                    self.cancel_clipboard_drag();
+                } else {
+                    self.previews.cancel_drag_request(request, Instant::now());
+                }
             }
             Event::Click { x, y } => {
+                if !self.clipboard_open() {
+                    if let Some(c) = &mut self.clipboard {
+                        c.close();
+                    }
+                }
                 // The island never takes the keyboard, so the picker can't see this click
                 // as a focus loss: a click on the island leaves the picker here.
                 if self.tiler.assisting() {
@@ -3278,6 +3613,18 @@ impl Handler for App {
                         self.tile_panel = false;
                     }
                     ClickOutcome::Open(i) if FEATURES[i].id == "terminal" => self.open_terminal(),
+                    ClickOutcome::Open(i) if FEATURES[i].id == "clipboard" => self.open_clipboard(),
+                    ClickOutcome::Clipboard { x, y } => {
+                        if !self.clip_keyboard {
+                            window::set_keyboard(self.hwnd, true);
+                            window::take_keyboard(self.hwnd);
+                            self.clip_keyboard = true;
+                        }
+                        if let Some(c) = &mut self.clipboard {
+                            let action = c.view.click(x, y, false);
+                            self.clipboard_action(action);
+                        }
+                    }
                     ClickOutcome::TerminalShortcut(id) => {
                         if self.terminal.activate_shortcut(id) {
                             self.open_terminal();
@@ -3307,6 +3654,13 @@ impl Handler for App {
             }
             Event::Move { x, y } => {
                 let (lx, ly) = self.island_point(x, y);
+                if self.clipboard_open() {
+                    let hover = Some(Self::clipboard_local(lx, ly));
+                    if self.clip_hover != hover {
+                        self.clip_hover = hover;
+                        self.dirty = true;
+                    }
+                }
                 if self.island.hover(lx, ly) {
                     self.dirty = true;
                 }
@@ -3344,6 +3698,7 @@ impl Handler for App {
                 }
             }
             Event::Release => {
+                self.cancel_clipboard_drag();
                 self.island.release();
                 let outcome = self.terminal.release();
                 self.term_outcome(outcome);
@@ -3368,6 +3723,9 @@ impl Handler for App {
                 self.show_volume();
             }
             Event::Leave => {
+                if self.clip_hover.take().is_some() {
+                    self.dirty = true;
+                }
                 if self.island.clear_hover()
                     | self.tiler.clear_hover()
                     | self.terminal.clear_hover()
@@ -3378,6 +3736,13 @@ impl Handler for App {
             Event::Hotkey(HOTKEY_TOGGLE) => self.set_visible(!self.visible),
             Event::Hotkey(HOTKEY_THEME) => self.cycle_theme(),
             Event::Hotkey(HOTKEY_SPOTLIGHT) => self.toggle_spotlight(),
+            Event::Hotkey(HOTKEY_CLIPBOARD) => {
+                if self.clipboard_open() {
+                    self.clipboard_action(ClipAction::Close);
+                } else {
+                    self.open_clipboard();
+                }
+            }
             Event::Popup(PopupKind::Spotlight, input) => self.spotlight_input(input),
             Event::Popup(PopupKind::Settings, input) => self.settings_input(input),
             Event::Hotkey(HOTKEY_TERMINAL) => {
@@ -3407,11 +3772,13 @@ impl Handler for App {
             Event::TrayLeft => self.set_visible(!self.visible),
             Event::TrayRight => self.show_tray_menu(),
             Event::DpiChanged => {
+                self.cancel_clipboard_drag();
                 // The picker's zones and scale are from before.
                 self.tiler.assist_dismiss();
                 self.relayout();
             }
             Event::DisplayChange => {
+                self.cancel_clipboard_drag();
                 // The monitors changed under the frozen frames: drop the snap (and a
                 // window picker, whose zones are from before).
                 self.end_snap(End::Cancel);
@@ -3422,8 +3789,16 @@ impl Handler for App {
             Event::ThemesChanged => self.reload_themes(),
             Event::Timer(TIMER_CLOCK) => {
                 self.arm_clock_timer();
+                if let Some(c) = &mut self.clipboard {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    c.prune(now);
+                }
                 self.dirty = true;
             }
+            Event::Timer(TIMER_CLIPBOARD) => self.drain_clipboard(),
             Event::Timer(TIMER_VU) => self.dirty = true,
             Event::Timer(vitals::TIMER) => self.worker.tick(),
             Event::Timer(TIMER_SWEEP_DONE) => {
@@ -3485,6 +3860,7 @@ impl Handler for App {
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => {
+                self.drain_clipboard();
                 // The shell printed (or set a title, or exited).
                 if self.terminal.drain() && self.island.terminal_open() {
                     self.dirty = true;
@@ -3524,6 +3900,47 @@ impl Handler for App {
             }
             Event::VitalsReady => self.drain_vitals(),
             Event::SweepReady => self.drain_sweep(),
+            Event::Key {
+                vk,
+                ctrl,
+                shift,
+                alt,
+            } if self.clipboard_input() => {
+                if let Some(c) = &mut self.clipboard {
+                    let action = c.view.key(vk, ctrl, shift, alt);
+                    self.clipboard_action(action);
+                }
+            }
+            Event::Char { ch, ctrl, alt } if self.clipboard_input() => {
+                if clipboard_character(ch, ctrl, alt) {
+                    if let Some(c) = &mut self.clipboard {
+                        let action = c.view.character(ch);
+                        self.clipboard_action(action);
+                    }
+                }
+            }
+            Event::Wheel { delta, x, y } if self.clipboard_input() && self.over_panel(x, y) => {
+                if let Some(c) = &mut self.clipboard {
+                    let action = c.view.wheel(delta);
+                    self.clipboard_action(action);
+                }
+            }
+            Event::DoubleClick { x, y } if self.clipboard_input() && self.over_panel(x, y) => {
+                let (lx, ly) = self.island_point(x, y);
+                let (x, y) = Self::clipboard_local(lx, ly);
+                if let Some(c) = &mut self.clipboard {
+                    let action = c.view.click(x, y, true);
+                    self.clipboard_action(action);
+                }
+            }
+            Event::FocusLost if self.clip_keyboard => {
+                if snapper::dismiss_on_focus_loss(
+                    self.overlay.is_some(),
+                    window::is_foreground(self.hwnd),
+                ) {
+                    self.close_clipboard(false);
+                }
+            }
             // Terminal input: dj-win sends these only while the island holds the keyboard
             // (all but `DoubleClick`, which every double click sends).
             Event::Key {
@@ -3604,6 +4021,7 @@ impl Handler for App {
         self.drain_pin_requests();
         self.sync_tile();
         self.sync_terminal();
+        self.sync_clipboard();
         self.sync_layer(false);
         self.render_spotlight();
         self.render_settings();
@@ -3736,6 +4154,17 @@ impl Handler for App {
             close_hover: v.close_hover,
             tabs: &v.tabs,
         });
+        let mut unavailable_clipboard = dj_core::clipboard_ui::View::default();
+        unavailable_clipboard.status = self.clipboard_error.clone();
+        let clipboard = (view.layers.clipboard > 0.0).then(|| ClipboardPanel {
+            view: self
+                .clipboard
+                .as_ref()
+                .map(Clipboard::view)
+                .unwrap_or(&unavailable_clipboard),
+            payload: self.clipboard.as_ref().and_then(Clipboard::payload),
+            hover: self.clip_hover,
+        });
         let Some(renderer) = self.renderer.as_mut() else {
             self.last_frame = None;
             return;
@@ -3757,6 +4186,7 @@ impl Handler for App {
             settings: &settings,
             tile: tile_panel,
             terminal,
+            clipboard,
             terminal_shortcuts: &self.term_shortcuts,
             island_style: self.config.island.style(),
         };

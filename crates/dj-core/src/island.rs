@@ -1,6 +1,6 @@
 //! The island state machine: Idle pill, Home grid, the Music views, the Vitals panel with
-//! its Sweep view, the Timer views, Settings, the Tile panel, the Terminal panel, the snap
-//! thumb and the OSD overlay, driven by springs.
+//! its Sweep view, the Timer views, Settings, Tile, Terminal, Clipboard, the snap thumb
+//! and the OSD overlay, driven by springs.
 //! Time only enters through `step(dt)`, so everything here is deterministic. The timer
 //! itself (`timer::Pomodoro`) lives in the app; the island only hears whether it is active
 //! or done. Likewise the snap thumb's countdown and its shot live in the app; the island
@@ -55,10 +55,12 @@ pub enum IslandState {
     /// every click inside it is the app's to read (`ClickOutcome::Terminal`); the app
     /// closes it (the hotkey, the ✕), and the island's `collapse` returns to the rest state.
     Terminal,
+    /// Clipboard history. The app owns its controls; background activity waits below it.
+    Clipboard,
 }
 
 /// Number of content layers (one per `IslandState`).
-const LAYERS: usize = 13;
+const LAYERS: usize = 14;
 
 impl IslandState {
     /// Index into the per-content opacity springs.
@@ -77,6 +79,7 @@ impl IslandState {
             IslandState::Settings => 10,
             IslandState::TilePanel => 11,
             IslandState::Terminal => 12,
+            IslandState::Clipboard => 13,
         }
     }
 
@@ -195,6 +198,11 @@ pub enum ClickOutcome {
         x: f32,
         y: f32,
     },
+    /// A click in Clipboard panel-local pixels, anchored while the pill morphs.
+    Clipboard {
+        x: f32,
+        y: f32,
+    },
 }
 
 /// What a click on the snap thumb asks for.
@@ -226,6 +234,7 @@ pub struct Layers {
     pub settings: f32,
     pub tile: f32,
     pub terminal: f32,
+    pub clipboard: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -399,6 +408,11 @@ impl Island {
                 layout::TILE_PANEL_R,
             ),
             IslandState::Terminal => (layout::TERM_W, layout::TERM_H, layout::TERM_R),
+            IslandState::Clipboard => (
+                layout::CLIPBOARD_W,
+                layout::CLIPBOARD_H,
+                layout::CLIPBOARD_R,
+            ),
         }
     }
 
@@ -433,8 +447,8 @@ impl Island {
     }
 
     /// Pushes new timer facts. A finished session shows the alert over the rest states;
-    /// over an open panel (Home, Music, Vitals, Sweep, Timer, Tile, Terminal) it waits for
-    /// the collapse.
+    /// over an open panel (Home, Music, Vitals, Sweep, Timer, Tile, Terminal, Clipboard)
+    /// it waits for the collapse.
     pub fn set_timer(&mut self, ui: TimerUi, tokens: &ResolvedTokens) {
         if ui == self.timer {
             return;
@@ -512,6 +526,13 @@ impl Island {
         self.state == IslandState::Terminal
     }
 
+    /// Opens history without disturbing the Snap, timer or music facts below it.
+    pub fn show_clipboard(&mut self, tokens: &ResolvedTokens) {
+        if self.state != IslandState::Clipboard {
+            self.set_state(IslandState::Clipboard, tokens);
+        }
+    }
+
     /// The pill's resting size: the OSD size while it is up, else the state's size.
     /// The OSD only covers the state; it never changes it, so the state returns after.
     fn target_size(&self) -> (f32, f32, f32) {
@@ -562,6 +583,7 @@ impl Island {
         self.snap_pointer = false;
         self.gear_hover = false;
         self.snap_hover = None;
+        self.terminal_shortcut_hover = None;
     }
 
     /// Shows the volume pill (or refreshes its value and hold timer).
@@ -781,6 +803,15 @@ impl Island {
                 let (lx, ly) = Self::view_local(x, y, layout::TERM_W);
                 ClickOutcome::Terminal { x: lx, y: ly }
             }
+            IslandState::Clipboard => {
+                let (lx, ly) = Self::view_local(x, y, layout::CLIPBOARD_W);
+                // The outgoing panel may still be wider/taller during a morph.
+                if Rect::new(0.0, 0.0, layout::CLIPBOARD_W, layout::CLIPBOARD_H).contains(lx, ly) {
+                    ClickOutcome::Clipboard { x: lx, y: ly }
+                } else {
+                    ClickOutcome::Ignored
+                }
+            }
             IslandState::Settings => {
                 let (lx, ly) = Self::view_local(x, y, layout::SETTINGS_W);
                 match settings::hit(lx, ly) {
@@ -994,6 +1025,7 @@ impl Island {
                 settings: v(10),
                 tile: v(11),
                 terminal: v(12),
+                clipboard: v(13),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -1132,6 +1164,123 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_clicks_stay_panel_local_and_ignore_outgoing_content_during_morph() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.open_terminal(&t);
+        settle(&mut i, &t);
+        i.show_clipboard(&t);
+        let (ww, _) = layout::window_size();
+        let point = |x, y| ((ww - layout::CLIPBOARD_W) / 2.0 + x, layout::TOP_MARGIN + y);
+        let (x, y) = point(12.0, 25.0);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Clipboard { x: 12.0, y: 25.0 }
+        );
+        // Still in the old Terminal pill, but outside Clipboard's intended content.
+        for (lx, ly) in [(-1.0, 20.0), (400.0, 20.0), (20.0, 360.0)] {
+            let (x, y) = point(lx, ly);
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+        }
+        settle(&mut i, &t);
+        for (lx, ly) in [(0.0, 0.0), (399.0, 359.0), (200.0, 180.0)] {
+            let (x, y) = point(lx, ly);
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Clipboard { x: lx, y: ly });
+            assert_eq!(i.state(), IslandState::Clipboard);
+        }
+        assert_eq!(size(&i), (400.0, 360.0));
+        assert!(i.wants_front());
+        i.show_clipboard(&t);
+        assert!(
+            !i.is_animating(),
+            "reopening a settled panel does not redraw"
+        );
+    }
+
+    #[test]
+    fn clipboard_keeps_rest_facts_and_snap_until_collapse_and_then_settles() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_clipboard(&t);
+        i.set_music(with_track(), &t);
+        i.set_timer(DONE, &t);
+        i.show_snap(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Clipboard);
+        assert!(!IslandState::Clipboard.is_rest());
+        assert_eq!(i.view().layers.clipboard, 1.0);
+        assert_eq!((i.view().layers.snap, i.view().layers.alert), (0.0, 0.0));
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        assert!(i.wants_front(), "stay above windows throughout collapse");
+        settle(&mut i, &t);
+        assert!(!i.wants_front());
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        i.show_clipboard(&t);
+        i.set_timer(TimerUi::default(), &t);
+        i.collapse(&t);
+        assert_eq!(i.state(), IslandState::MusicCompact);
+        settle(&mut i, &t);
+        assert_eq!(i.view().layers.clipboard, 0.0);
+    }
+
+    #[test]
+    fn osd_owns_clipboard_input_then_returns_to_the_panel() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.show_clipboard(&t);
+        settle(&mut i, &t);
+        i.show_osd(vol(0.5), &t);
+        settle_pinned(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Clipboard);
+        let r = layout::osd_rect();
+        let bar = layout::OSD_BAR;
+        assert_eq!(i.click(r.x + 2.0, r.y + 2.0, &t), ClickOutcome::Ignored);
+        assert_eq!(
+            i.click(r.x + bar.x + bar.w / 2.0, r.y + bar.y + bar.h / 2.0, &t),
+            ClickOutcome::SetVolume(0.5)
+        );
+        i.release();
+        settle(&mut i, &t);
+        assert_eq!(size(&i), (400.0, 360.0));
+        assert_eq!(i.view().osd.alpha, 0.0);
+        assert_eq!(i.view().layers.clipboard, 1.0);
+        let (x, y) = center(&i);
+        assert!(matches!(i.click(x, y, &t), ClickOutcome::Clipboard { .. }));
+    }
+
+    #[test]
+    fn clipboard_clears_shortcut_hover_and_yields_to_terminal() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_terminal_shortcuts(vec![7], &t);
+        settle(&mut i, &t);
+        let slot = terminal_shortcuts::buttons(i.pill_rect(), 1)[0];
+        i.hover(slot.x + 1.0, slot.y + 1.0);
+        assert_eq!(i.view().terminal_shortcut_hover, Some(7));
+        i.show_clipboard(&t);
+        assert_eq!(i.view().terminal_shortcut_hover, None);
+        settle(&mut i, &t);
+        let (x, y) = center(&i);
+        assert!(!i.hover(x, y));
+        assert!(!i.snap_hovered());
+        assert!(!i.clear_hover());
+        i.open_terminal(&t);
+        settle(&mut i, &t);
+        assert_eq!(
+            (i.view().layers.terminal, i.view().layers.clipboard),
+            (1.0, 0.0)
+        );
+        i.show_clipboard(&t);
+        settle(&mut i, &t);
+        assert_eq!(
+            (i.view().layers.terminal, i.view().layers.clipboard),
+            (0.0, 1.0)
+        );
+    }
+
+    #[test]
     fn starts_idle_and_still() {
         let t = tokens();
         let i = Island::new(&t);
@@ -1167,15 +1316,19 @@ mod tests {
         i.click(cx, cy, &t);
         settle(&mut i, &t);
         let p = i.pill_rect();
-        let tile = layout::home_tiles()[5];
+        let index = FEATURES
+            .iter()
+            .position(|f| f.availability == Availability::Locked)
+            .unwrap();
+        let tile = layout::home_tiles()[index];
         let out = i.click(p.x + tile.x + 5.0, p.y + tile.y + 5.0, &t);
-        assert_eq!(out, ClickOutcome::Locked(5));
+        assert_eq!(out, ClickOutcome::Locked(index));
         assert_eq!(i.state(), IslandState::Home);
         assert!(i.is_animating());
         i.step(0.05, &t);
         let v = i.view();
-        assert_eq!(v.shake.map(|s| s.0), Some(5));
-        assert_eq!(v.hint.map(|h| h.0), Some(5));
+        assert_eq!(v.shake.map(|s| s.0), Some(index));
+        assert_eq!(v.hint.map(|h| h.0), Some(index));
         settle(&mut i, &t);
         assert!(i.view().shake.is_none() && i.view().hint.is_none());
     }
@@ -2288,7 +2441,7 @@ mod tests {
     fn each_state_lights_exactly_its_own_layer() {
         let t = tokens();
         type Setup = fn(&mut Island, &ResolvedTokens);
-        let states: [(IslandState, Setup); 13] = [
+        let states: [(IslandState, Setup); LAYERS] = [
             (IslandState::Idle, |_, _| {}),
             (IslandState::Home, Island::expand),
             (IslandState::MusicCompact, |i, t| {
@@ -2304,6 +2457,7 @@ mod tests {
             (IslandState::Settings, Island::open_settings),
             (IslandState::TilePanel, Island::open_tile),
             (IslandState::Terminal, Island::open_terminal),
+            (IslandState::Clipboard, Island::show_clipboard),
         ];
         assert_eq!(states.len(), LAYERS);
         for (state, setup) in states {
@@ -2326,6 +2480,7 @@ mod tests {
                 l.settings,
                 l.tile,
                 l.terminal,
+                l.clipboard,
             ];
             let want: [f32; LAYERS] =
                 std::array::from_fn(|n| if n == state.layer() { 1.0 } else { 0.0 });
@@ -2515,7 +2670,7 @@ mod tests {
         assert_eq!((v.layers.idle, v.layers.terminal), (0.0, 1.0));
         // Its own layer, after the Tile panel's, and the springs are sized for it.
         assert_eq!(IslandState::Terminal.layer(), 12);
-        assert_eq!(LAYERS, 13);
+        assert_eq!(LAYERS, 14);
         assert_eq!(
             Island::base_size(IslandState::Terminal),
             (layout::TERM_W, layout::TERM_H, layout::TERM_R)

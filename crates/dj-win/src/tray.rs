@@ -1,6 +1,7 @@
 //! Tray icon and its context menu.
 
 use crate::window::WM_TRAY;
+use std::time::{Duration, Instant};
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -19,6 +20,7 @@ const CMD_MUSIC_STOP: usize = 6;
 const CMD_SNAP_PREVIEWS: usize = 7;
 const CMD_SETTINGS: usize = 8;
 const CMD_SNAP_PINS: usize = 9;
+const CMD_CLIPBOARD: usize = 10;
 const CMD_THEME_BASE: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +37,8 @@ pub enum MenuCommand {
     SnapPins,
     /// Open the Settings window.
     Settings,
+    /// Open Clipboard history.
+    Clipboard,
     Quit,
 }
 
@@ -127,6 +131,29 @@ pub fn remove(hwnd: HWND) {
 
 /// Shows the context menu at the cursor and returns the chosen command.
 pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
+    show_menu_timed(hwnd, spec).0
+}
+
+/// Time spent opening a menu. Deliberately excludes time spent choosing an item.
+/// Only numeric durations are returned; no menu labels or user content are retained.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MenuTimings {
+    /// Menu allocation, population and cursor-position lookup.
+    pub construction: Duration,
+    /// The foreground activation immediately before TrackPopupMenu.
+    pub activation: Duration,
+}
+
+/// As [`show_menu`], with opening timings for the application's diagnostic logger.
+/// No logging or other file I/O runs before the menu is displayed.
+pub fn show_menu_timed(hwnd: HWND, spec: &MenuSpec) -> (Option<MenuCommand>, MenuTimings) {
+    let mut timings = MenuTimings::default();
+    let command = show_menu_inner(hwnd, spec, &mut timings);
+    (command, timings)
+}
+
+fn show_menu_inner(hwnd: HWND, spec: &MenuSpec, timings: &mut MenuTimings) -> Option<MenuCommand> {
+    let started = Instant::now();
     // SAFETY: the menu handles are created and destroyed in this function; every
     // string buffer lives until after the corresponding call returns.
     unsafe {
@@ -161,6 +188,7 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
         );
         append(menu, MF_STRING, CMD_TOGGLE, "Show / Hide");
         append(menu, MF_STRING, CMD_SETTINGS, "Settings…");
+        append(menu, MF_STRING, CMD_CLIPBOARD, "Clipboard");
         let _ = AppendMenuW(menu, MF_POPUP, themes.0 as usize, w!("Theme"));
         let _ = AppendMenuW(menu, MF_POPUP, music.0 as usize, w!("YouTube Music"));
         append(
@@ -186,8 +214,13 @@ pub fn show_menu(hwnd: HWND, spec: &MenuSpec) -> Option<MenuCommand> {
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
+        timings.construction = started.elapsed();
+        let activating = Instant::now();
         // Required so the menu dismisses when the user clicks elsewhere.
         let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+        timings.activation = activating.elapsed();
+        // Capture both phases before entering this modal loop: its duration
+        // includes deliberate user interaction and is not menu-opening latency.
         let cmd = TrackPopupMenu(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RIGHTALIGN,
@@ -214,6 +247,7 @@ fn command_for(id: usize) -> Option<MenuCommand> {
         CMD_SNAP_PREVIEWS => Some(MenuCommand::SnapPreviews),
         CMD_SNAP_PINS => Some(MenuCommand::SnapPins),
         CMD_SETTINGS => Some(MenuCommand::Settings),
+        CMD_CLIPBOARD => Some(MenuCommand::Clipboard),
         CMD_QUIT => Some(MenuCommand::Quit),
         n if n >= CMD_THEME_BASE => Some(MenuCommand::Theme(n - CMD_THEME_BASE)),
         _ => None,
@@ -244,11 +278,12 @@ mod tests {
         );
         assert_eq!(command_for(CMD_QUIT), Some(MenuCommand::Quit));
         assert_eq!(command_for(CMD_SETTINGS), Some(MenuCommand::Settings));
+        assert_eq!(command_for(CMD_CLIPBOARD), Some(MenuCommand::Clipboard));
         assert_eq!(command_for(CMD_SNAP_PINS), Some(MenuCommand::SnapPins));
         assert_eq!(command_for(CMD_THEME_BASE), Some(MenuCommand::Theme(0)));
         assert_eq!(command_for(CMD_THEME_BASE + 3), Some(MenuCommand::Theme(3)));
         // An id in the gap between the fixed commands and the themes is nothing.
-        assert_eq!(command_for(CMD_SNAP_PINS + 1), None);
+        assert_eq!(command_for(CMD_CLIPBOARD + 1), None);
         assert_eq!(command_for(CMD_THEME_BASE - 1), None);
     }
 
@@ -263,6 +298,8 @@ mod tests {
             CMD_MUSIC_SIGNOUT,
             CMD_MUSIC_STOP,
             CMD_SNAP_PREVIEWS,
+            CMD_SNAP_PINS,
+            CMD_CLIPBOARD,
         ];
         for (i, a) in ids.iter().enumerate() {
             assert!(*a > 0 && *a < CMD_THEME_BASE);

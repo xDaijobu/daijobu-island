@@ -1,0 +1,21 @@
+[package]
+name = "dj-clip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dj-core = { path = "../dj-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }
+png = "=0.18.1"
+windows = { workspace = true, features = [
+  "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security",
+  "Win32_Security_Cryptography", "Win32_System_Com", "Win32_System_DataExchange",
+  "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading",
+  "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

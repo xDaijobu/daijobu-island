@@ -58,7 +58,7 @@ pub const FEATURES: [Feature; 12] = [
     available("vitals", "Vitals", Icon::Vitals),
     available("timer", "Timer", Icon::Timer),
     available("snap", "Snap", Icon::Snap),
-    locked("clipboard", "Clipboard", Icon::Clipboard),
+    available("clipboard", "Clipboard", Icon::Clipboard),
     locked("notifications", "Notifications", Icon::Notifications),
     locked("lyrics", "Lyrics", Icon::Lyrics),
     // Stage T: a shell in the island. This was the locked "dj CLI" tile; it keeps the icon.
@@ -76,7 +76,7 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn ids_unique_and_only_music_osd_vitals_timer_snap_terminal_and_tile_are_available() {
+    fn ids_unique_and_stage_eight_features_are_available() {
         let ids: HashSet<_> = FEATURES.iter().map(|f| f.id).collect();
         assert_eq!(ids.len(), FEATURES.len());
         assert_eq!(FEATURES.len(), 12);
@@ -87,10 +87,19 @@ mod tests {
             .collect();
         assert_eq!(
             open,
-            ["music", "osd", "vitals", "timer", "snap", "terminal", "tile"]
+            [
+                "music",
+                "osd",
+                "vitals",
+                "timer",
+                "snap",
+                "clipboard",
+                "terminal",
+                "tile"
+            ]
         );
-        // Seven of twelve are ready; the Home footer counts them.
-        assert_eq!(open.len(), 7);
+        // Eight of twelve are ready; the Home footer counts them.
+        assert_eq!(open.len(), 8);
         assert_eq!(FEATURES[0].name, "Music");
         let tile = FEATURES.iter().find(|f| f.id == "tile").unwrap();
         assert_eq!((tile.name, tile.icon), ("Tile & Scenes", Icon::Tile));

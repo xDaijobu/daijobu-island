@@ -93,6 +93,11 @@ pub struct FocusTarget {
 }
 
 impl FocusTarget {
+    /// Returns the destination only while its captured process/thread identity remains valid.
+    pub fn validated_window(&self) -> Option<HWND> {
+        same_target(self.identity, identity(self.hwnd)).then_some(self.hwnd)
+    }
+
     /// Compares the opaque destination with a controller-owned pin HWND.
     pub fn is_window(&self, hwnd: HWND) -> bool {
         self.hwnd == hwnd

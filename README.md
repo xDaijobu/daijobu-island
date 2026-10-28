@@ -17,7 +17,7 @@
   <img src="docs/images/app-home.png" alt="Expanded island: feature grid" width="620">
 </p>
 
-<p align="center"><sub>Early app-shell screenshots. The current build also includes Music, Snap, Vitals, Timer, tiling, Terminal and Spotlight.</sub></p>
+<p align="center"><sub>Early app-shell screenshots. The current build also includes Music, Snap, Clipboard, Vitals, Timer, tiling, Terminal and Spotlight.</sub></p>
 
 ---
 
@@ -25,7 +25,7 @@
 
 ## Status
 
-Early development. Music (YouTube Music), the volume OSD, Vitals with Sweep, Timer, Snap capture and annotations, floating screenshot previews, window tiling, a terminal with tabs, Spotlight search and a standalone Settings window are available. Features get unlocked one at a time. Day-to-day progress and outstanding manual checks are tracked in [`task/progress.md`](task/progress.md).
+Early development. Music (YouTube Music), the volume OSD, Vitals with Sweep, Timer, Snap capture and annotations, floating screenshot previews, screen pins, Clipboard history, window tiling, a terminal with tabs, Spotlight search and a standalone Settings window are implemented in the current source. Clipboard passed independent review, workspace checks and synthetic native smoke; these changes do not imply a new published release. Features get unlocked one at a time. Day-to-day progress and outstanding manual checks are tracked in [`task/progress.md`](task/progress.md).
 
 | Stage | | |
 |---|---|---|
@@ -38,22 +38,24 @@ Early development. Music (YouTube Music), the volume OSD, Vitals with Sweep, Tim
 | 6 | Timer / pomodoro | ✅ done |
 | 7a–7c | Screenshots: capture, annotate, floating preview stack | ✅ done |
 | 7c-2 | Screenshot drag-out into compatible apps | implemented; desktop drag checks pending |
-| 7d | Screenshot pin-to-screen | implemented; native smoke checks passed |
+| 7d | Screenshot pin-to-screen | ✅ merged (PR #30); native smoke checks passed |
 | T | Terminal: shell tabs, pinned tabs, Claude and Codex tabs | ✅ merged |
 | N–N2 | Notch style and reserved top space | ✅ done |
 | V | Spotlight, standalone Settings, notch size and stay behind windows | ✅ merged, live testing pending |
-| 8 | Clipboard history: search, pin, persistent history and paste | planned, locked |
+| 8 | Clipboard history: search, pin, persistent history and paste | complete; native target-app/hardware gaps documented |
 | 9–10 | Notifications, lyrics | locked |
 | 12a | Window tiling: zones, a layout picker in the island, a window picker | ✅ done |
 | 12b–12d | Scenes, restore-after-reboot, admin apps | locked |
 | 13 | File shelf, ambient sounds | locked |
 
-Current work: screenshot drag-out, followed by pin-to-screen and Clipboard history. The
+Clipboard history passed review and testing, after merged screenshot drag-out
+and pin-to-screen. The
 [implementation plan](task/stage-snap-clipboard-plan.md) includes stage briefs, worker
 ownership, dependencies and acceptance checks. OCR has been removed from the roadmap.
 Stage 7c-2 passed source review, workspace checks, release build and restart/Snap-cancel
 smoke checks; its [report](task/stage-7c2-report.md) lists remaining desktop drag checks.
-The later stages remain locked until their own implementation and validation are complete.
+The [Stage 8 report](task/stage-8-report.md) records 1,633 passing tests, native
+paste/privacy/restart evidence and remaining target-app/hardware checks. Later-stage features remain locked.
 
 ## Download and run
 
@@ -68,7 +70,7 @@ These are design mockups from [`docs/plan.html`](docs/plan.html), not screenshot
 <table>
   <tr>
     <td width="50%"><img src="docs/images/concept-media.png" alt="Media"><br><b>Media.</b> Now playing from any app that reports to Windows, with a segmented VU visualizer.</td>
-    <td width="50%"><img src="docs/images/concept-snap.png" alt="Snap concept"><br><b>Snap.</b> Region screenshots with a loupe, annotations and pixelation. Pin-to-screen is planned; the early concept image predates the current scope.</td>
+    <td width="50%"><img src="docs/images/concept-snap.png" alt="Snap concept"><br><b>Snap.</b> Region screenshots with a loupe, annotations and pixelation, plus separate pin-to-screen reference windows. The early concept image predates the current scope.</td>
   </tr>
   <tr>
     <td><img src="docs/images/concept-snap-stack.png" alt="Snap stack"><br><b>Snap stack.</b> New screenshots float under the island for a few seconds. Select several and drag them straight into Discord, Explorer or a browser.</td>
@@ -108,6 +110,7 @@ target\release\daijobu.exe
 | `Ctrl+Alt+T` | Next theme |
 | `PrtSc` / `Ctrl+Space` | Start a screenshot (default primary / alternate shortcut) |
 | `Alt+Space` | Open / close Spotlight |
+| `Ctrl+Alt+V` | Open Clipboard history |
 | ``Ctrl+Alt+` `` | Open / close the terminal |
 
 The tray also offers Settings, themes, *Start with Windows* and Quit. Open Settings from the Home gear or the tray. Its General, Notch, Hotkeys, Terminal and Spotlight pages apply and save changes immediately; sliders preview while dragging and save on release. Config is stored in `~/.daijobu/config.toml`.
@@ -141,6 +144,59 @@ By default the island is a notch attached to the top edge of the screen. Choose 
 The notch also reserves a strip as tall as itself along the top of the screen, so maximized windows (and browser tabs) start below it instead of under it. Turn it off with *Reserve top space* in Settings, or `[island] reserve_top = false`.
 
 *Stay behind windows* keeps the resting island over the wallpaper and under application windows. Opening a panel or showing the volume OSD brings it forward temporarily. Reserved top space is inactive while this setting is on.
+
+### Clipboard
+
+Open **Clipboard** from Home, `Ctrl+Alt+V` or the tray. If another app owns the
+shortcut, Home and the tray remain available. History is off by default: choose
+**Enable history** to capture future copies. Enabling or restarting does not import
+the clipboard's existing content. Pause stops capture while keeping saved history
+available for search, copy and paste.
+
+Search text and use the All, Text, Images, Files or Pinned filters. Links and colours
+are text subtypes. Select a row and use **Preview** for longer text or an image;
+previews display plain text even when rich formats are retained. History survives
+restarts; pins bypass normal history expiry. Delete affects history only; Clear
+normally removes unpinned items, with a separate confirmed choice to include pins.
+
+Enter or double-click pastes to the previous target; `Shift+Enter` pastes plain text
+when available. `Ctrl+C` copies and `Ctrl+P` toggles a pin. Arrow/Page keys navigate,
+Tab reaches actions and `Alt+1`–`Alt+9` selects and pastes an available visible row.
+Paste restores the intended external window or exact island Terminal tab. If the
+target cannot accept automatic paste, the item stays copied with manual-paste
+feedback. Image-only items can be copied but cannot be pasted into Terminal.
+
+Supported content includes Unicode text with validated HTML/RTF alternatives,
+ordinary PNG/DIB images, and file/folder lists. File entries retain paths rather
+than file contents; missing files fail an explicit transfer. File copy and drag
+use copy-only effects. Drag supports one selected image or its file list; text,
+multi-row bundles and virtual files are outside this stage.
+
+An explicit image drag exports a PNG to `~/Pictures/Daijobu/Clipboard`. Exported
+files remain after a drop, cancellation, history deletion or app exit. Capturing,
+storing, pinning and previewing history do not export plaintext image files.
+
+History keeps up to 500 unpinned items for 30 days, plus up to 100 pins, within a
+512 MiB encrypted-payload budget. Per item: 1 MiB text, 4 MiB each HTML/RTF,
+32 MiB encoded images, 64 MiB decoded pixels, a 16,384-pixel maximum edge, and
+128 file paths within 256 KiB path text. Oversize content is skipped rather than
+truncated. Database overhead is separate from the payload budget.
+
+Clipboard configuration lives in `~/.daijobu/config.toml`:
+
+```toml
+[clipboard]
+enabled = false        # explicit opt-in; captures future changes only
+paused = false
+excluded_sources = []  # source executable names, e.g. ["private-app.exe"]
+```
+
+History is stored locally in `~/.daijobu/clipboard/history.sqlite3`. Payloads,
+preview/search text, source metadata, paths and thumbnails are encrypted with
+current-user Windows DPAPI before database writes; IDs, timestamps, types, pin
+flags and sizes remain metadata. Search uses decrypted data in bounded memory.
+Clipboard exclusion flags and configured source exclusions are respected. Native
+acceptance evidence and remaining target-app/hardware checks are tracked in the Stage 8 report.
 
 ### Spotlight
 
@@ -202,6 +258,7 @@ crates/dj-music   YouTube Music engine (hidden WebView2)
 crates/dj-vitals  CPU, RAM, disk, net, disk I/O, battery, top processes
 crates/dj-sweep   disk cleanup: scanners, protected-path guard, recycle, operations log
 crates/dj-capture screen capture for Snap
+crates/dj-clip    Clipboard listener, format normalization, DPAPI and SQLite history
 crates/dj-term    the terminal: alacritty_terminal's emulator over a Windows pseudo console
 ```
 
@@ -209,7 +266,7 @@ Tile and Spotlight live in the existing crates. More crates are added as their s
 
 ## Privacy
 
-No telemetry. Screenshot capture and Spotlight file indexing run locally. Music connects to YouTube Music through its WebView2 engine. Clipboard history is planned, including Windows DPAPI encryption and exclusion of content marked private by password managers.
+No telemetry. Screenshot capture, Spotlight file indexing and opt-in Clipboard history run locally. Clipboard content is encrypted at rest with current-user Windows DPAPI; capture honours supported privacy flags and configured source exclusions. There is no Clipboard cloud sync or upload. Music connects to YouTube Music through its WebView2 engine.
 
 ## Acknowledgements
 

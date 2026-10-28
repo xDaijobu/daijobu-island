@@ -297,10 +297,11 @@ impl Terminal {
     /// Select an existing live session. In particular, this never restores, restarts or
     /// creates a shell in response to a stale shortcut.
     pub fn activate_shortcut(&mut self, id: TabId) -> bool {
-        if !self
-            .sessions
-            .get(&id)
-            .is_some_and(|t| t.session.is_some() && t.exited.is_none())
+        if !self.tabs.ids().contains(&id)
+            || !self
+                .sessions
+                .get(&id)
+                .is_some_and(|t| t.session.is_some() && t.exited.is_none())
         {
             return false;
         }
@@ -308,6 +309,31 @@ impl Terminal {
         self.skip_char = false;
         self.tabs.activate(id);
         true
+    }
+
+    /// The exact currently selected live tab, suitable for a later Clipboard target.
+    pub fn active_tab_id(&self) -> Option<TabId> {
+        let id = self.tabs.active()?;
+        self.sessions
+            .get(&id)
+            .filter(|t| t.session.is_some() && t.exited.is_none())
+            .map(|_| id)
+    }
+
+    /// Selects and pastes into this existing live session only. A stale target never
+    /// falls back to another tab or starts a shell, and no Enter is appended.
+    pub fn paste_to_tab(&mut self, id: TabId, text: &str) -> Result<(), String> {
+        if !self.activate_shortcut(id) {
+            return Err("Terminal target is no longer live".into());
+        }
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .and_then(|t| t.session.as_mut())
+            .ok_or_else(|| "Terminal target is no longer live".to_string())?;
+        let bytes = term::paste_bytes(text, session.modes());
+        Self::send(session.as_mut(), bytes);
+        Ok(())
     }
 
     /// New `[terminal]` settings (from the Settings window). Tabs opened from now on use
@@ -1244,6 +1270,81 @@ mod tests {
     fn palette() -> Palette {
         let reg = ThemeRegistry::with_builtins();
         term::palette(reg.get(DEFAULT_THEME).unwrap())
+    }
+
+    #[test]
+    fn clipboard_target_requires_a_live_session_and_never_starts_one() {
+        let mut r = Rig::new();
+        assert_eq!(r.term.active_tab_id(), None);
+        assert!(r.term.paste_to_tab(1, "no target").is_err());
+        assert!(r.spawns.borrow().opts.is_empty());
+        r.spawns.borrow_mut().fail = true;
+        r.open();
+        let failed = r.term.active_id().unwrap();
+        assert_eq!(r.term.active_tab_id(), None);
+        assert!(r.term.paste_to_tab(failed, "do not retry").is_err());
+        assert_eq!(r.spawns.borrow().opts.len(), 1);
+    }
+
+    #[test]
+    fn clipboard_paste_selects_the_exact_background_tab_and_uses_its_bracketed_mode() {
+        let mut r = Rig::new();
+        r.open();
+        let target = r.term.active_tab_id().unwrap();
+        let first = r.shell();
+        first.borrow_mut().modes.bracketed_paste = true;
+        first.borrow_mut().selection = Some((0, 0, false));
+        r.term.new_tab();
+        let other = r.shell();
+        *r.clip.borrow_mut() = Some("unrelated clipboard".into());
+        r.term.paste_to_tab(target, "café\n日\u{1b}[31m").unwrap();
+        assert_eq!(r.term.active_tab_id(), Some(target));
+        assert_eq!(
+            first.borrow().writes,
+            ["\u{1b}[200~café\r日[31m\u{1b}[201~".as_bytes().to_vec()]
+        );
+        assert!(first.borrow().selection.is_none());
+        assert_eq!(first.borrow().at_bottom, 1);
+        assert!(other.borrow().writes.is_empty());
+        assert_eq!(r.spawns.borrow().opts.len(), 2);
+        assert_eq!(r.clip.borrow().as_deref(), Some("unrelated clipboard"));
+    }
+
+    #[test]
+    fn clipboard_paste_rejects_exited_removed_and_unknown_tabs_without_touching_another() {
+        let mut r = Rig::new();
+        r.open();
+        let target = r.term.active_tab_id().unwrap();
+        let first = r.shell();
+        r.term.new_tab();
+        let other_id = r.term.active_tab_id();
+        let other = r.shell();
+        first.borrow_mut().events.push(TermEvent::Exited(Some(0)));
+        r.term.drain();
+        assert!(r.term.paste_to_tab(target, "exited").is_err());
+        assert_eq!(r.term.active_tab_id(), other_id);
+        r.term.close_tab(target);
+        for id in [target, u64::MAX] {
+            assert!(r.term.paste_to_tab(id, "removed").is_err());
+            assert_eq!(r.term.active_tab_id(), other_id);
+        }
+        assert!(first.borrow().writes.is_empty());
+        assert!(other.borrow().writes.is_empty());
+        assert_eq!(other.borrow().at_bottom, 0);
+        assert_eq!(r.spawns.borrow().opts.len(), 2);
+    }
+
+    #[test]
+    fn clipboard_plain_paste_has_no_extra_enter_and_empty_paste_does_not_send() {
+        let mut r = Rig::new();
+        r.open();
+        let target = r.term.active_tab_id().unwrap();
+        r.term.paste_to_tab(target, "one\r\ntwo\tthree").unwrap();
+        assert_eq!(r.writes(), [b"one\rtwo\tthree".to_vec()]);
+        r.term.paste_to_tab(target, "").unwrap();
+        r.term.paste_to_tab(target, "\0\u{1b}").unwrap();
+        assert_eq!(r.writes(), [b"one\rtwo\tthree".to_vec()]);
+        assert_eq!(r.shell().borrow().at_bottom, 1);
     }
 
     #[test]
