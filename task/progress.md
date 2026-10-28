@@ -28,7 +28,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 | S | **Settings (minimal)**: gear icon on Home, settings panel in the island: auto-startup toggle, Snap hotkey + alt hotkey chips | ✅ | `stage-s-work` | user-requested · Sonnet 5.5 agent · live test with the user · [`stage-s-report.md`](stage-s-report.md) · press-to-record later |
 | N | **Notch style**: the island attached to the top edge like an iPhone 13 / MacBook notch (Settings choice, default notch) | ✅ | PR #14 (merged) | user-requested while 7b runs · coordinator skeleton + 4 parallel Opus subagents · live test passed · [`stage-n-report.md`](stage-n-report.md) |
 | N2 | **Reserve top space**: the notch registers a top AppBar so maximized windows (Chrome tabs) start below it (Settings switch, default on) | ✅ | `xDaijobu/stage-n2-appbar` | user-requested · built by the coordinator · live-checked by the coordinator |
-| T | **Terminal**: a real shell (PowerShell) inside the island, like VS Code's integrated terminal; drops from the notch on Ctrl+Alt+`, keeps running when closed | 🟡 built, live test pending | `xDaijobu/stage-t-terminal` | user-requested · coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 932 tests · [`stage-t-plan.md`](stage-t-plan.md) · [`stage-t-report.md`](stage-t-report.md) |
+| T | **Terminal**: a real shell (PowerShell) inside the island, like VS Code's integrated terminal; drops from the notch on Ctrl+Alt+`, keeps running when closed | ✅ done (T, T2 tabs, T3 agent tabs) | `xDaijobu/stage-t-terminal` | user-requested · coordinator (Opus 5.5) + 4 parallel Sonnet 5.5 workers · 1084 tests · PR #20 · [`stage-t-plan.md`](stage-t-plan.md) · [`stage-t-report.md`](stage-t-report.md) · [`stage-t3-plan.md`](stage-t3-plan.md) · [`stage-t3-report.md`](stage-t3-report.md) |
 | 8 | Clipboard history | 🔒 | — | |
 | 9 | Notifications | 🔒 | — | needs sparse MSIX |
 | 10 | Lyrics | 🔒 | — | |
@@ -716,20 +716,31 @@ Headless, as before: fmt, clippy, test and release only; no exe, no real windows
   - `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release`.
 
 ### Tabs (T2, asked for on 2026-10-27 before the merge; same PR)
-- [ ] **Tab bar** in the header (in place of the title):
+- [x] **Tab bar** in the header (in place of the title):
   - Pinned tabs sit left and are compact, regular ones shrink to fit; at most 12, and "+" is hidden at the limit.
   - The active tab is highlighted. A dot marks new output in a background tab; an exited shell is shown as such.
-- [ ] **Actions:**
+- [x] **Actions:**
   - Click switches; "+" opens a new tab (default shell, home).
   - ✕ on the active or hovered regular tab, or a middle click, closes it and ends its shell.
   - The last tab closed closes the panel, and the next open starts a new tab.
-- [ ] **Menu (island-styled), on right-click:** Pin / Unpin, Close, Close others, Close to the right. The last two never close pinned tabs.
-- [ ] **Drag and drop:** a press that moves 4 px drags the tab; others make room and the drop reorders. Pinned and regular tabs never mix, and a drag never counts as a click.
-- [ ] **Keys (never sent to the shell):** Ctrl+Shift+T new, Ctrl+Shift+W close, Ctrl+Tab / Ctrl+Shift+Tab next / previous, Ctrl+Shift+1…9 jump. Ctrl+Alt+1…9 stay Tile's.
-- [ ] **Pinned tabs survive an island restart** (`~/.daijobu/terminal-tabs.toml`: name, shell, arguments, folder).
+- [x] **Menu (island-styled), on right-click:** Pin / Unpin, Close, Close others, Close to the right. The last two never close pinned tabs.
+- [x] **Drag and drop:** a press that moves 4 px drags the tab; others make room and the drop reorders. Pinned and regular tabs never mix, and a drag never counts as a click.
+- [x] **Keys (never sent to the shell):** Ctrl+Shift+T new, Ctrl+Shift+W close, Ctrl+Tab / Ctrl+Shift+Tab next / previous, Ctrl+Shift+1…9 jump. Ctrl+Alt+1…9 stay Tile's.
+- [x] **Pinned tabs survive an island restart** (`~/.daijobu/terminal-tabs.toml`: name, shell, arguments, folder).
   - They come back when the terminal is opened, and their shells start then.
   - The folder is the one the tab started in, since PowerShell doesn't report a later `cd`.
-- [ ] **Tests:** the tab model (every operation, the active-tab rules, layout, hit testing, drag across the group boundary, the menu, shortcuts, the pinned file) and the drawing on CPU raster.
+- [x] **Tests:** the tab model (every operation, the active-tab rules, layout, hit testing, drag across the group boundary, the menu, shortcuts, the pinned file) and the drawing on CPU raster.
+
+### Agent tabs (T3, asked for on 2026-10-28; same PR)
+- [x] **"+" opens a menu:** Terminal / Claude · yolo / Codex · yolo. Ctrl+Shift+T stays a plain shell, and there are no new keys.
+- [x] **Yolo flags, the same as Orca's `agentDefaultArgs`:** `claude --dangerously-skip-permissions` and `codex --dangerously-bypass-approvals-and-sandbox`.
+  - The agent runs inside PowerShell (`-NoExit -Command`), since the npm shims are `.ps1` files.
+  - When the agent quits, the tab stays at a prompt.
+- [x] **The agent starts in the active tab's folder.**
+  - A prompt hook in every PowerShell tab reports the folder with OSC 9;9, and a scanner on the pty's read side in `dj-term` picks it up.
+  - When nothing has been reported, the tab's start folder is used, and if that is gone, the configured folder.
+- [x] **Pinned agent tabs** are saved with `agent` and come back as the same agent after a restart.
+- [x] **Tests:** 1084 pass, including one real-PowerShell OSC round trip. Live-tested by the coordinator and then by the user.
 
 ### Out of scope
 Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim, htop) beyond the wheel; IME composition; ligatures; an elevated shell; a resizable panel; cursor blink; a Settings row.
@@ -746,6 +757,12 @@ Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim,
 ### Log
 - 2026-10-27: defined with the user. Answers: the panel drops from the notch (not full width, not resizable); the session keeps running when closed; PowerShell by default, configurable; the dj CLI is discarded. The coordinator proposed hide-on-blur (configurable), Ctrl+Alt+` (Ctrl+` belongs to VS Code), and alacritty_terminal plus our own Skia renderer.
 - 2026-10-27: built on `xDaijobu/stage-t-terminal`: four Sonnet 5.5 workers (core, dj-term, render, win) from [`stage-t-plan.md`](stage-t-plan.md), paused once by a usage limit and resumed; wiring by the coordinator. Live check found and fixed: Ctrl+C ignored when the island inherits "ignore Ctrl+C" from its launcher, and Nerd-font prompt icons drawn as boxes. A Sonnet review of the wiring led to six small fixes. fmt, clippy, 932 tests and release pass; acceptance 1, 2, 4 (Ctrl+C), 5, 6, 7 checked live. **User live test pending** (real keyboard, clipboard, hide on blur). See [`stage-t-report.md`](stage-t-report.md).
+- 2026-10-27: T2 tabs built (two Sonnet workers plus coordinator wiring) and checked live.
+- 2026-10-28: T3 agent tabs.
+  - A spike first proved that ConPTY forwards OSC 9;9.
+  - Two Sonnet workers built the core and the cwd tap; the coordinator did the wiring.
+  - The coordinator's live test fixed the Codex folder fallback and an exe-path tab title.
+  - The user tested T, T2 and T3 and asked for the merge; PR #20 was merged.
 
 ---
 
