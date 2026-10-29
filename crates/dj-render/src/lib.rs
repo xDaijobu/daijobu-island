@@ -33,7 +33,7 @@ mod vitals;
 
 pub use assist::{AssistCard, AssistScene, AssistSurface};
 pub use clipboard::ClipboardPanel;
-pub use gpu::{RenderError, Renderer};
+pub use gpu::{graphics_memory_counters, RenderError, Renderer};
 pub use markup::{render_output, TextMetrics};
 pub use paint::{Frame, MusicFrame};
 pub use popup::{IconCache, PopupRenderer};

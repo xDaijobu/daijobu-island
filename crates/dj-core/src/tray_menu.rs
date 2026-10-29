@@ -10,6 +10,7 @@ pub enum MenuCommand {
     SnapPins,
     Settings,
     Clipboard,
+    DeveloperMemory,
     Quit,
 }
 
@@ -77,6 +78,7 @@ impl Menu {
             root: vec![
                 Row::action("Show / Hide", ToggleVisible, true, false),
                 Row::action("Settings…", Settings, true, false),
+                Row::action("Developer memory…", DeveloperMemory, true, false),
                 Row::action("Clipboard", Clipboard, true, false),
                 Row::group(
                     "Theme",
@@ -233,10 +235,10 @@ mod tests {
     #[test]
     fn navigation_skips_disabled_wraps_and_preserves_actions() {
         let mut m = menu(false, false);
-        m.select(4);
+        m.select(5);
         m.step(true);
-        assert_eq!(m.selected, Some(7));
-        assert!(m.rows()[7].checked);
+        assert_eq!(m.selected, Some(8));
+        assert!(m.rows()[8].checked);
         assert_eq!(m.activate(), Some(MenuCommand::ToggleAutostart));
         m.step(true);
         assert_eq!(m.activate(), Some(MenuCommand::Quit));
@@ -244,13 +246,13 @@ mod tests {
         assert_eq!(m.activate(), Some(MenuCommand::ToggleVisible));
         assert_eq!(m.hit(20.0, 48.0), Some(0));
         assert_eq!(m.hit(0.0, 48.0), None);
-        assert_eq!(m.hit(20.0, 48.0 + 5.0 * ROW_HEIGHT), None);
+        assert_eq!(m.hit(20.0, 48.0 + 6.0 * ROW_HEIGHT), None);
     }
 
     #[test]
     fn submenus_scroll_and_back_retains_parent() {
         let mut m = menu(false, false);
-        m.select(3);
+        m.select(4);
         assert_eq!(m.activate(), None);
         assert_eq!(m.title(), "Theme");
         assert!(m.rows()[4].checked);
@@ -260,7 +262,7 @@ mod tests {
         m.step(true);
         assert_eq!(m.offset, 0);
         assert!(m.back());
-        assert_eq!(m.selected, Some(3));
+        assert_eq!(m.selected, Some(4));
         assert!(!m.back());
     }
 
@@ -274,6 +276,7 @@ mod tests {
                 vec![
                     MenuCommand::ToggleVisible,
                     MenuCommand::Settings,
+                    MenuCommand::DeveloperMemory,
                     MenuCommand::Clipboard,
                     MenuCommand::SnapPreviews,
                     MenuCommand::SnapPins,
@@ -281,7 +284,7 @@ mod tests {
                     MenuCommand::Quit
                 ]
             );
-            m.select(4);
+            m.select(5);
             m.activate();
             assert!(m.rows()[0].enabled);
             assert_eq!(m.rows()[1].enabled, running || signed_in);

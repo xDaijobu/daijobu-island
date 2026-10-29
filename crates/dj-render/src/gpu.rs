@@ -1,7 +1,7 @@
 //! D3D12 device, composition swap chain, DirectComposition tree and Skia wiring.
 //!
 //! The swap chain is created once at the largest state's size; the pill animates
-//! inside it, so there is never a `ResizeBuffers`. A DPI change rebuilds everything.
+//! inside it, so there is never a `ResizeBuffers`. A DPI change rebuilds the chain.
 //! The Snap overlay (`snap::SnapOverlay`) builds its own device and chain with the same
 //! helpers, per snap.
 
@@ -14,6 +14,8 @@ use skia_safe::gpu::{
     surfaces, FlushInfo, Protected, SurfaceOrigin,
 };
 use skia_safe::{Color, ColorType, Surface};
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 use windows::core::Interface;
 use windows::Win32::Foundation::{DXGI_STATUS_OCCLUDED, HWND};
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
@@ -36,6 +38,60 @@ use windows::Win32::Graphics::Dxgi::{
 };
 
 const BUFFERS: usize = 2;
+
+type SharedGpu = Rc<RefCell<Gpu>>;
+
+thread_local! {
+    static SHARED_GPU: RefCell<Weak<RefCell<Gpu>>> = const { RefCell::new(Weak::new()) };
+    static LIVE_CONTEXTS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn acquire_shared<T>(
+    slot: &RefCell<Weak<T>>,
+    valid: impl FnOnce(&T) -> bool,
+    create: impl FnOnce() -> Result<T, RenderError>,
+) -> Result<Rc<T>, RenderError> {
+    if let Some(owner) = slot.borrow().upgrade().filter(|owner| valid(owner)) {
+        return Ok(owner);
+    }
+    let owner = Rc::new(create()?);
+    *slot.borrow_mut() = Rc::downgrade(&owner);
+    Ok(owner)
+}
+
+pub(crate) fn shared_gpu() -> Result<SharedGpu, RenderError> {
+    SHARED_GPU.with(|slot| {
+        acquire_shared(
+            slot,
+            |gpu| gpu.borrow().is_valid(),
+            || Gpu::new().map(RefCell::new),
+        )
+    })
+}
+
+pub fn graphics_memory_counters() -> Vec<dj_core::dev_memory::Row> {
+    use dj_core::dev_memory::{bytes, Row};
+    let mut rows = vec![Row::resource(
+        "Unique graphics contexts",
+        format!("{} contexts", LIVE_CONTEXTS.with(Cell::get)),
+        "Live contexts on UI thread, including independent capture/tile/preview/pins; count, not RAM.",
+    )];
+    SHARED_GPU.with(|slot| {
+        if let Some(gpu) = slot.borrow().upgrade() {
+            let usage = gpu.borrow().ctx.resource_cache_usage();
+            rows.push(Row::resource(
+                "Shared island/popup graphics cache",
+                format!("{} GPU", bytes(Some(usage.resource_bytes as u64))),
+                format!(
+                    "1 shared context, {} renderers, {} cached resources; counted once. Excludes driver/upload pools; not process RAM.",
+                    Rc::strong_count(&gpu) - 1,
+                    usage.resource_count
+                ),
+            ));
+        }
+    });
+    rows
+}
 
 #[derive(Debug)]
 pub enum RenderError {
@@ -92,6 +148,7 @@ impl Gpu {
             };
             let ctx = gpu::direct_contexts::make_d3d(&backend, None)
                 .ok_or_else(|| RenderError::Setup("Skia D3D context".into()))?;
+            LIVE_CONTEXTS.with(|count| count.set(count.get() + 1));
             Ok(Self {
                 ctx,
                 queue,
@@ -99,6 +156,17 @@ impl Gpu {
                 factory,
             })
         }
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        // SAFETY: device remains owned by self throughout this read-only COM call.
+        unsafe { self._device.GetDeviceRemovedReason().is_ok() }
+    }
+}
+
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        LIVE_CONTEXTS.with(|count| count.set(count.get() - 1));
     }
 }
 
@@ -160,9 +228,14 @@ impl Chain {
 
             let mut surfaces = Vec::with_capacity(BUFFERS);
             for i in 0..BUFFERS {
-                let resource = swap_chain
-                    .GetBuffer(i as u32)
-                    .map_err(setup("swap chain buffer"))?;
+                let resource = match swap_chain.GetBuffer(i as u32) {
+                    Ok(resource) => resource,
+                    Err(error) => {
+                        surfaces.clear();
+                        gpu.ctx.flush_submit_and_sync_cpu();
+                        return Err(setup("swap chain buffer")(error));
+                    }
+                };
                 let target = backend_render_targets::make_d3d(
                     (width as i32, height as i32),
                     &TextureResourceInfo {
@@ -183,8 +256,12 @@ impl Chain {
                     ColorType::BGRA8888,
                     None,
                     None,
-                )
-                .ok_or_else(|| RenderError::Setup("wrap swap chain buffer".into()))?;
+                );
+                let Some(surface) = surface else {
+                    surfaces.clear();
+                    gpu.ctx.flush_submit_and_sync_cpu();
+                    return Err(RenderError::Setup("wrap swap chain buffer".into()));
+                };
                 surfaces.push(surface);
             }
             Ok(Self {
@@ -229,8 +306,8 @@ pub struct Renderer {
     // Field order is drop order: Skia objects go before the D3D objects they use, and
     // `Drop` clears the chain's surfaces before any of them.
     painter: Painter,
-    gpu: Gpu,
     chain: Chain,
+    gpu: SharedGpu,
     width: u32,
     height: u32,
 }
@@ -238,9 +315,9 @@ pub struct Renderer {
 impl Renderer {
     /// `width`/`height` are the window's client size in device pixels.
     pub fn new(hwnd: isize, width: u32, height: u32) -> Result<Self, RenderError> {
-        let mut gpu = Gpu::new()?;
-        let chain = Chain::new(&mut gpu, hwnd, width, height)?;
         let painter = Painter::new().map_err(RenderError::Setup)?;
+        let gpu = shared_gpu()?;
+        let chain = Chain::new(&mut gpu.borrow_mut(), hwnd, width, height)?;
         Ok(Self {
             painter,
             gpu,
@@ -248,6 +325,55 @@ impl Renderer {
             width,
             height,
         })
+    }
+
+    pub fn memory_counters(&self) -> Vec<dj_core::dev_memory::Row> {
+        use dj_core::dev_memory::{bytes, Row};
+        vec![
+            Row::resource(
+                "Island renderer",
+                format!(
+                    "~{} GPU",
+                    bytes(Some(
+                        u64::from(self.width)
+                            * u64::from(self.height)
+                            * 4
+                            * self.chain.surfaces.len() as u64
+                    ))
+                ),
+                format!(
+                    "{} display buffers draw island; pixel estimate excludes alignment.",
+                    self.chain.surfaces.len()
+                ),
+            ),
+            self.painter.fonts.memory_counters(),
+            Row::resource(
+                "Music artwork",
+                format!(
+                    "~{} pixels",
+                    bytes(Some(
+                        self.painter
+                            .art
+                            .as_ref()
+                            .map_or(0, |i| i.width() as u64 * i.height() as u64 * 4)
+                    ))
+                ),
+                "Album cover shown in player; estimate excludes decoded copies/cache.",
+            ),
+            Row::resource(
+                "Screenshot thumbnail",
+                format!(
+                    "~{} pixels",
+                    bytes(Some(
+                        self.painter
+                            .snap_shot
+                            .as_ref()
+                            .map_or(0, |i| i.width() as u64 * i.height() as u64 * 4)
+                    ))
+                ),
+                "Small last-capture preview; pixel estimate, not allocation.",
+            ),
+        ]
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -286,10 +412,14 @@ impl Renderer {
 
     /// Draws one frame and presents it (`Present(1)` paces animation to vsync).
     pub fn render(&mut self, frame: &Frame) -> Result<(), RenderError> {
+        let mut gpu = self.gpu.borrow_mut();
+        if !gpu.is_valid() {
+            return Err(RenderError::DeviceLost);
+        }
         let canvas = self.chain.back_buffer().canvas();
         canvas.clear(Color::TRANSPARENT);
         self.painter.paint(canvas, frame);
-        self.chain.present(&mut self.gpu.ctx)
+        self.chain.present(&mut gpu.ctx)
     }
 }
 
@@ -297,8 +427,9 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         // Wait for in-flight GPU work, then release the wrapped buffers before the
         // swap chain goes away.
+        let mut gpu = self.gpu.borrow_mut();
         self.chain.surfaces.clear();
-        self.gpu.ctx.flush_submit_and_sync_cpu();
+        gpu.ctx.flush_submit_and_sync_cpu();
     }
 }
 
@@ -331,5 +462,50 @@ fn pick_adapter(factory: &IDXGIFactory4) -> Result<(IDXGIAdapter1, ID3D12Device)
         device
             .map(|d| (warp, d))
             .ok_or_else(|| RenderError::Setup("D3D12 device".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_owner_reuses_live_context_without_pinning_last_owner() {
+        let slot = RefCell::new(Weak::new());
+        let first = acquire_shared(&slot, |_| true, || Ok(RefCell::new(7))).unwrap();
+        let second = acquire_shared(&slot, |_| true, || panic!("unexpected recreation")).unwrap();
+        assert!(Rc::ptr_eq(&first, &second));
+        assert!(first.try_borrow_mut().is_ok());
+        let borrow = first.borrow_mut();
+        assert!(second.try_borrow_mut().is_err());
+        drop(borrow);
+        drop(first);
+        assert_eq!(*second.borrow(), 7);
+        drop(second);
+        assert!(slot.borrow().upgrade().is_none());
+        let reopened = acquire_shared(&slot, |_| true, || Ok(RefCell::new(9))).unwrap();
+        assert_eq!(*reopened.borrow(), 9);
+    }
+
+    #[test]
+    fn invalid_context_replaced_without_invalidating_old_surface_owner() {
+        let slot = RefCell::new(Weak::new());
+        let old = acquire_shared(&slot, |_| true, || Ok(1)).unwrap();
+        let replacement = acquire_shared(&slot, |_| false, || Ok(2)).unwrap();
+        assert!(!Rc::ptr_eq(&old, &replacement));
+        assert_eq!(*old, 1);
+        let popup = acquire_shared(&slot, |_| true, || panic!("unexpected recreation")).unwrap();
+        assert!(Rc::ptr_eq(&replacement, &popup));
+        drop(old);
+        assert_eq!(*popup, 2);
+    }
+
+    #[test]
+    fn failed_context_replacement_preserves_existing_owner() {
+        let slot = RefCell::new(Weak::new());
+        let old = acquire_shared(&slot, |_| true, || Ok(1)).unwrap();
+        let failed = acquire_shared(&slot, |_| false, || Err(RenderError::DeviceLost));
+        assert!(matches!(failed, Err(RenderError::DeviceLost)));
+        assert!(Rc::ptr_eq(&old, &slot.borrow().upgrade().unwrap()));
     }
 }

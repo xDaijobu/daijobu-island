@@ -4,7 +4,7 @@
 
 use crate::fonts::{Fonts, Weight};
 use crate::fx::Effects;
-use crate::gpu::{Chain, Gpu, RenderError};
+use crate::gpu::{shared_gpu, Chain, Gpu, RenderError};
 use crate::paint::{col, draw_text, fill_paint, stroke_paint, text_width};
 use dj_core::color::Rgb;
 use dj_core::layout::Rect as LRect;
@@ -18,6 +18,7 @@ use skia_safe::{
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 
 /// Opacity of a control that does nothing right now.
 pub(crate) const DIMMED: f32 = 0.4;
@@ -209,6 +210,13 @@ pub struct IconCache {
 }
 
 impl IconCache {
+    pub fn pixel_bytes_estimate(&self) -> u64 {
+        self.map
+            .values()
+            .map(|i| i.width() as u64 * i.height() as u64 * 4)
+            .sum()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -261,13 +269,13 @@ impl IconCache {
 
 // ---------------------------------------------------------------------------------------
 
-/// The GPU side of a popup window (Settings or Spotlight): its own device, a premultiplied
+/// The GPU side of a popup window: shared island context, a premultiplied
 /// composition swap chain (transparent margins stay transparent) and fonts.
 pub struct PopupRenderer {
     // Field order is drop order; `Drop` clears the surfaces first.
     fonts: Fonts,
-    gpu: Gpu,
     chain: Option<Chain>,
+    gpu: Rc<RefCell<Gpu>>,
     hwnd: isize,
     size: (u32, u32),
 }
@@ -279,9 +287,9 @@ fn missing() -> RenderError {
 impl PopupRenderer {
     /// `w` x `h` are the window's client size in device px.
     pub fn new(hwnd: isize, w: u32, h: u32) -> Result<Self, RenderError> {
-        let mut gpu = Gpu::new()?;
-        let chain = Chain::new(&mut gpu, hwnd, w, h)?;
         let fonts = Fonts::new().map_err(RenderError::Setup)?;
+        let gpu = shared_gpu()?;
+        let chain = Chain::new(&mut gpu.borrow_mut(), hwnd, w, h)?;
         Ok(Self {
             fonts,
             gpu,
@@ -293,16 +301,18 @@ impl PopupRenderer {
 
     /// Rebuilds the swap chain for a new client size (a DPI change). No-op if unchanged.
     pub fn resize(&mut self, w: u32, h: u32) -> Result<(), RenderError> {
-        if (w, h) == self.size {
+        if (w, h) == self.size && self.chain.is_some() && self.gpu.borrow().is_valid() {
             return Ok(());
         }
+        let gpu = shared_gpu()?;
         // The old chain (and its DirectComposition target) must be gone before the new one
         // binds the same window.
         if let Some(mut old) = self.chain.take() {
             old.surfaces.clear();
-            self.gpu.ctx.flush_submit_and_sync_cpu();
+            self.gpu.borrow_mut().ctx.flush_submit_and_sync_cpu();
         }
-        self.chain = Some(Chain::new(&mut self.gpu, self.hwnd, w, h)?);
+        self.gpu = gpu;
+        self.chain = Some(Chain::new(&mut self.gpu.borrow_mut(), self.hwnd, w, h)?);
         self.size = (w, h);
         Ok(())
     }
@@ -314,6 +324,8 @@ impl PopupRenderer {
         s: f32,
     ) -> Result<(), RenderError> {
         use dj_core::tray_menu::{MARGIN, ROW_HEIGHT, WIDTH};
+        self.resize(self.size.0, self.size.1)?;
+        let mut gpu = self.gpu.borrow_mut();
         let chain = self.chain.as_mut().ok_or_else(missing)?;
         let canvas = chain.back_buffer().canvas();
         canvas.clear(Color::TRANSPARENT);
@@ -440,7 +452,267 @@ impl PopupRenderer {
                 &fill_paint(col(t.text_dim, 1.0)),
             );
         }
-        chain.present(&mut self.gpu.ctx)
+        chain.present(&mut gpu.ctx)
+    }
+
+    pub fn memory_counters(&self) -> Vec<dj_core::dev_memory::Row> {
+        use dj_core::dev_memory::{bytes, Row};
+        let surfaces = self.chain.as_ref().map_or(0, |c| c.surfaces.len());
+        vec![
+            Row::resource(
+                "Display buffers",
+                format!(
+                    "~{} GPU",
+                    bytes(Some(
+                        u64::from(self.size.0) * u64::from(self.size.1) * 4 * surfaces as u64
+                    ))
+                ),
+                format!("{surfaces} buffers compose popup; pixel estimate excludes alignment."),
+            ),
+            self.fonts.memory_counters(),
+        ]
+    }
+
+    pub fn render_memory(
+        &mut self,
+        rows: &[dj_core::dev_memory::Row],
+        offset: usize,
+        t: &ResolvedTokens,
+        s: f32,
+        logical: (f32, f32),
+    ) -> Result<(), RenderError> {
+        self.resize(self.size.0, self.size.1)?;
+        let mut gpu = self.gpu.borrow_mut();
+        let chain = self.chain.as_mut().ok_or_else(missing)?;
+        let canvas = chain.back_buffer().canvas();
+        canvas.clear(Color::TRANSPARENT);
+        paint_panel(
+            canvas,
+            t,
+            s,
+            LRect::new(8.0, 8.0, logical.0 - 16.0, logical.1 - 16.0),
+            12.0,
+        );
+        use dj_core::dev_memory::{bytes, visible_rows, BODY_TOP, ROW_HEIGHT};
+        let font = self.fonts.font(&t.font_label, Weight::Medium, 12.0 * s);
+        let heading = self.fonts.font(&t.font_label, Weight::SemiBold, 18.0 * s);
+        let width = logical.0 - 48.0;
+        let wide = width >= 740.0;
+        let text = |value: &str, x: f32, y: f32, w: f32, ink: Rgb| {
+            canvas.save();
+            canvas.clip_rect(
+                Rect::from_xywh(x * s, (y - 15.0) * s, w.max(1.0) * s, 20.0 * s),
+                ClipOp::Intersect,
+                true,
+            );
+            let mut label = value.to_string();
+            if text_width(&font, &label, 0.0) > w * s {
+                while !label.is_empty() && text_width(&font, &format!("{label}…"), 0.0) > w * s {
+                    label.pop();
+                }
+                label.push('…');
+            }
+            draw_text(
+                canvas,
+                &font,
+                &label,
+                x * s,
+                y * s,
+                0.0,
+                &fill_paint(col(ink, 1.0)),
+            );
+            canvas.restore();
+        };
+        draw_text(
+            canvas,
+            &heading,
+            "Memory diagnostics",
+            24.0 * s,
+            40.0 * s,
+            0.0,
+            &fill_paint(col(t.text, 1.0)),
+        );
+        for (label, x) in [
+            ("Refresh · R", logical.0 - 218.0),
+            ("Close · Esc", logical.0 - 110.0),
+        ] {
+            canvas.draw_round_rect(
+                Rect::from_xywh(x * s, 53.0 * s, 98.0 * s, 30.0 * s),
+                5.0 * s,
+                5.0 * s,
+                &fill_paint(col(t.surface2, 1.0)),
+            );
+            text(label, x + 8.0, 73.0, 84.0, ink_on(t, t.surface2));
+        }
+        text(
+            "Live · max 1 Hz · read-only",
+            24.0,
+            70.0,
+            (width - 220.0).max(1.0),
+            t.accent,
+        );
+        text("Memory = resident RAM · Commit = private committed backing · Peak = highest resident RAM", 24.0, 100.0, width, t.text_dim);
+        let name_w = if wide { width * 0.40 } else { width * 0.55 };
+        let memory_x = 24.0 + name_w;
+        canvas.draw_rect(
+            Rect::from_xywh(20.0 * s, 114.0 * s, (logical.0 - 40.0) * s, 29.0 * s),
+            &fill_paint(col(t.surface1, 1.0)),
+        );
+        text(
+            "Name / PID / purpose",
+            30.0,
+            134.0,
+            name_w - 12.0,
+            t.text_dim,
+        );
+        text(
+            "Memory / usage ↓",
+            memory_x,
+            134.0,
+            if wide { width * 0.22 } else { width * 0.45 },
+            t.text_dim,
+        );
+        if wide {
+            text(
+                "Private commit",
+                24.0 + width * 0.64,
+                134.0,
+                width * 0.18,
+                t.text_dim,
+            );
+            text(
+                "Peak WS",
+                24.0 + width * 0.83,
+                134.0,
+                width * 0.17,
+                t.text_dim,
+            );
+        }
+        let count = visible_rows(logical.1);
+        canvas.save();
+        canvas.clip_rect(
+            Rect::from_xywh(
+                20.0 * s,
+                BODY_TOP * s,
+                (logical.0 - 40.0) * s,
+                (logical.1 - BODY_TOP - 35.0).max(1.0) * s,
+            ),
+            ClipOp::Intersect,
+            true,
+        );
+        for (i, row) in rows.iter().skip(offset).take(count).enumerate() {
+            let y = BODY_TOP + i as f32 * ROW_HEIGHT;
+            if row.section || i % 2 == 0 {
+                canvas.draw_rect(
+                    Rect::from_xywh(20.0 * s, y * s, (logical.0 - 40.0) * s, ROW_HEIGHT * s),
+                    &fill_paint(col(t.surface1, if row.section { 0.9 } else { 0.45 })),
+                );
+            }
+            let name = row
+                .pid
+                .map_or_else(|| row.name.clone(), |pid| format!("{}  ·  {pid}", row.name));
+            text(
+                &name,
+                30.0,
+                y + 20.0,
+                name_w - 16.0,
+                if row.section { t.accent } else { t.text },
+            );
+            if !row.section {
+                let usage = if row.pid.is_some() {
+                    bytes(row.memory)
+                } else {
+                    row.usage.clone()
+                };
+                text(
+                    &usage,
+                    memory_x,
+                    y + 20.0,
+                    if wide { width * 0.22 } else { width * 0.45 },
+                    t.text,
+                );
+                if wide && row.pid.is_some() {
+                    text(
+                        &bytes(row.private_commit),
+                        24.0 + width * 0.64,
+                        y + 20.0,
+                        width * 0.18,
+                        t.text,
+                    );
+                    text(
+                        &bytes(row.peak),
+                        24.0 + width * 0.83,
+                        y + 20.0,
+                        width * 0.17,
+                        t.text,
+                    );
+                }
+            }
+            let detail = if !wide && row.pid.is_some() {
+                format!(
+                    "{} · Commit {} · Peak {}",
+                    row.description,
+                    bytes(row.private_commit),
+                    bytes(row.peak)
+                )
+            } else {
+                row.description.clone()
+            };
+            let mut remaining = detail.as_str();
+            for line in 0..2 {
+                let mut end = 0;
+                for (j, ch) in remaining.char_indices() {
+                    let next = j + ch.len_utf8();
+                    if text_width(&font, &remaining[..next], 0.0) > (width - 16.0) * s {
+                        break;
+                    }
+                    end = next;
+                }
+                if end == 0 {
+                    break;
+                }
+                text(
+                    if line == 1 {
+                        remaining
+                    } else {
+                        &remaining[..end]
+                    },
+                    30.0,
+                    y + 38.0 + line as f32 * 17.0,
+                    width - 16.0,
+                    t.text_dim,
+                );
+                remaining = remaining[end..].trim_start();
+                if remaining.is_empty() {
+                    break;
+                }
+            }
+        }
+        canvas.restore();
+        text(
+            &format!(
+                "{}–{} of {} · Wheel / ↑ ↓ / PgUp PgDn · KB = 1,000 bytes",
+                if rows.is_empty() { 0 } else { offset + 1 },
+                (offset + count).min(rows.len()),
+                rows.len()
+            ),
+            24.0,
+            logical.1 - 18.0,
+            width,
+            t.text_dim,
+        );
+        if rows.len() > count {
+            let track = (logical.1 - BODY_TOP - 40.0).max(1.0);
+            let thumb = (track * count as f32 / rows.len() as f32).max(12.0);
+            let y = BODY_TOP + (track - thumb) * offset as f32 / (rows.len() - count) as f32;
+            canvas.draw_round_rect(
+                Rect::from_xywh((logical.0 - 17.0) * s, y * s, 3.0 * s, thumb * s),
+                1.5 * s,
+                1.5 * s,
+                &fill_paint(col(t.accent, 0.8)),
+            );
+        }
+        chain.present(&mut gpu.ctx)
     }
 
     pub fn render_settings(
@@ -449,10 +721,12 @@ impl PopupRenderer {
         tokens: &ResolvedTokens,
         scale: f32,
     ) -> Result<(), RenderError> {
+        self.resize(self.size.0, self.size.1)?;
+        let mut gpu = self.gpu.borrow_mut();
         let chain = self.chain.as_mut().ok_or_else(missing)?;
         let canvas = chain.back_buffer().canvas();
         crate::settings_window::paint_settings(canvas, &mut self.fonts, tokens, scale, view);
-        chain.present(&mut self.gpu.ctx)
+        chain.present(&mut gpu.ctx)
     }
 
     pub fn render_spotlight(
@@ -462,10 +736,12 @@ impl PopupRenderer {
         scale: f32,
         icons: &IconCache,
     ) -> Result<(), RenderError> {
+        self.resize(self.size.0, self.size.1)?;
+        let mut gpu = self.gpu.borrow_mut();
         let chain = self.chain.as_mut().ok_or_else(missing)?;
         let canvas = chain.back_buffer().canvas();
         crate::spotlight::paint_spotlight(canvas, &mut self.fonts, tokens, scale, view, icons);
-        chain.present(&mut self.gpu.ctx)
+        chain.present(&mut gpu.ctx)
     }
 }
 
@@ -474,7 +750,7 @@ impl Drop for PopupRenderer {
         if let Some(c) = self.chain.as_mut() {
             c.surfaces.clear();
         }
-        self.gpu.ctx.flush_submit_and_sync_cpu();
+        self.gpu.borrow_mut().ctx.flush_submit_and_sync_cpu();
     }
 }
 

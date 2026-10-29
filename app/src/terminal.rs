@@ -33,12 +33,18 @@ pub trait Backend {
     fn has_selection(&self) -> bool;
     fn selection_text(&self) -> Option<String>;
     fn modes(&self) -> Modes;
+    fn memory_counters(&self) -> Option<(usize, usize, usize)> {
+        None
+    }
     fn screen(&self, palette: &Palette, focused: bool) -> Screen;
     /// Whether it printed since the last call, and its title / bell / exit events.
     fn drain(&mut self) -> (bool, Vec<TermEvent>);
 }
 
 impl Backend for dj_term::Session {
+    fn memory_counters(&self) -> Option<(usize, usize, usize)> {
+        dj_term::Session::memory_counters(self)
+    }
     fn write(&self, bytes: Vec<u8>) {
         dj_term::Session::write(self, bytes);
     }
@@ -245,6 +251,22 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    pub fn memory_counters(&self) -> dj_core::dev_memory::Row {
+        let live = self
+            .sessions
+            .values()
+            .filter_map(|t| t.session.as_ref())
+            .count();
+        let counters: Vec<_> = self
+            .sessions
+            .values()
+            .filter_map(|t| t.session.as_ref()?.memory_counters())
+            .collect();
+        let history: usize = counters.iter().map(|(_, _, h)| h).sum();
+        let cells: usize = counters.iter().map(|(c, r, h)| c * (r + h)).sum();
+        dj_core::dev_memory::Row::resource("Terminal scrollback", format!("{history} lines · {cells} cells"), format!("Keeps shell output for scrolling. {} tabs / {live} backends; {}/{live} readable, busy skipped. Counts, not allocated RAM.", self.sessions.len(), counters.len()))
+    }
+
     pub fn new(
         config: TerminalConfig,
         spawner: Box<dyn Spawner>,

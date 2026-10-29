@@ -5,6 +5,7 @@ mod app;
 mod chime;
 mod clipboard;
 mod clipboard_transfer;
+mod dev_memory;
 mod notch;
 mod popups;
 mod preview_store;

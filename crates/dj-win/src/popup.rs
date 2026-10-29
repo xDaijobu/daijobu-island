@@ -27,6 +27,7 @@ pub enum PopupKind {
     Settings,
     Spotlight,
     Tray,
+    DeveloperMemory,
 }
 
 impl PopupKind {
@@ -35,6 +36,7 @@ impl PopupKind {
             PopupKind::Settings => w!("DaijobuSettingsWindow"),
             PopupKind::Spotlight => w!("DaijobuSpotlightWindow"),
             PopupKind::Tray => w!("DaijobuTrayMenu"),
+            PopupKind::DeveloperMemory => w!("DaijobuDeveloperMemory"),
         }
     }
     fn title(self) -> PCWSTR {
@@ -42,12 +44,14 @@ impl PopupKind {
             PopupKind::Settings => w!("Daijobu Island Settings"),
             PopupKind::Spotlight => w!("Daijobu Island Spotlight"),
             PopupKind::Tray => w!("Daijobu Island menu"),
+            PopupKind::DeveloperMemory => w!("Daijobu Island developer memory"),
         }
     }
     fn from_param(p: isize) -> Self {
         match p {
             1 => PopupKind::Spotlight,
             2 => PopupKind::Tray,
+            3 => PopupKind::DeveloperMemory,
             _ => PopupKind::Settings,
         }
     }
@@ -56,6 +60,7 @@ impl PopupKind {
             PopupKind::Settings => 0,
             PopupKind::Spotlight => 1,
             PopupKind::Tray => 2,
+            PopupKind::DeveloperMemory => 3,
         }
     }
 }
@@ -184,7 +189,9 @@ pub fn key_mods(ctrl: bool, shift: bool, alt: bool) -> (bool, bool, bool) {
 pub fn create(kind: PopupKind, x: i32, y: i32, w: i32, h: i32) -> Result<HWND> {
     HIGH_SURROGATE.with(|s| s.set(None));
     let ex = match kind {
-        PopupKind::Settings => WS_EX_NOREDIRECTIONBITMAP | WS_EX_APPWINDOW,
+        PopupKind::Settings | PopupKind::DeveloperMemory => {
+            WS_EX_NOREDIRECTIONBITMAP | WS_EX_APPWINDOW
+        }
         PopupKind::Spotlight | PopupKind::Tray => {
             WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
         }
@@ -531,7 +538,12 @@ mod tests {
 
     #[test]
     fn kind_param_round_trips() {
-        for k in [PopupKind::Settings, PopupKind::Spotlight, PopupKind::Tray] {
+        for k in [
+            PopupKind::Settings,
+            PopupKind::Spotlight,
+            PopupKind::Tray,
+            PopupKind::DeveloperMemory,
+        ] {
             assert_eq!(PopupKind::from_param(k.as_param()), k);
         }
     }

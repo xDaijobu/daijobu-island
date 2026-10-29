@@ -8,6 +8,34 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 
 ---
 
+## Stage Dev Memory: developer diagnostics and approved RAM optimization (review passed; manual acceptance pending)
+
+Independent review found no blockers. User authorized commit, PR, merge and release on 2026-10-29. Integration revalidation passed fmt check, locked workspace clippy/all-targets with warnings denied, locked workspace tests and locked optimized memory-opt build. Existing app untouched; native RAM savings, under-100MB target and smoothness remain unverified.
+
+- [x] Share island/popup GPU context on UI thread with safe swapchain lifetimes, warm opens and unchanged vsync/spring code; independent native lifetime/recovery review pending.
+- [x] Report unique graphics contexts and pooled cache once without duplicate backing; three ownership/replacement regression tests added.
+- [x] fmt, workspace clippy/all-targets -D warnings, 1,647 workspace tests, optimized memory-opt build and diff whitespace checks passed.
+- [ ] Runtime under-100MB goal, warm reopen/spring smoothness, DPI and device-loss recovery require independent coordinator verification. No saved-RAM claim from code alone.
+
+Optimization executable: `C:/Users/UseR/orca/projects/daijobu-island/target/stage-t4/memory-opt/daijobu.exe`; running earlier executable untouched. Details and exact limits in stage report.
+
+Optimization scope approved 2026-10-28: preserve diagnostics; no working-set trimming, per-frame purges, desktop actions, app lifecycle operations or Git mutations. Three observed 32 MiB write-combine blocks are not proven context allocations. Other capture/tile/preview contexts and font sharing stay outside narrow change.
+
+Worktree: `stage-dev-memory`, base `f700575`. Brief: [stage-dev-memory-brief.md](stage-dev-memory-brief.md).
+
+- [x] Opt-in Settings/tray developer diagnostics, native Skia popup using active theme.
+- [x] Read-only worker samples at most once per second only while visible; app and identity-verified descendants, honest unavailable/error states. Close cancels further work; already-entered native calls finish.
+- [x] Working set, private working set where available, private commit and peak labels; shared-memory total caveat.
+- [x] Real bounded internal counters with exact/estimate labels, no false allocation sum or sensitive contents; partial instrumentation limits documented.
+- [x] Bounded navigation/refresh, pure-logic and read-only sampler tests.
+- [x] Formatting, workspace clippy/all-targets, 1,644 workspace tests and separate optimized build passed; [report](stage-dev-memory-report.md), no desktop actions or Git mutations.
+
+User refinement: Task Manager-style structured process/resource rows, decimal adaptive KB/MB/GB, resident-memory sorting, per-resource purpose descriptions and responsive columns; reviewer wheel/error-feedback findings fixed with regressions. Native sampler review found no blocking metric/ancestry issue.
+
+Executable: `C:/Users/UseR/orca/projects/daijobu-island/target/stage-t4/dev-memory-list/daijobu.exe`. Refined UI review and live appearance/cadence/descendant checks remain pending; running original build untouched.
+
+Acceptance: developer can inspect process attribution and internal retained-data counters without collecting clipboard/terminal text, titles or command lines. Closed diagnostics performs zero sampling. Native denied/exited/reused identities are not silently attributed. Manual visual/runtime acceptance remains coordinator-owned.
+
 ## Stages
 
 | # | Stage | Status | Worktree / branch | Notes |

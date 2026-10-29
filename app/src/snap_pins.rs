@@ -234,6 +234,10 @@ pub struct Pins {
 }
 
 impl Pins {
+    pub fn memory_counters(&self) -> dj_core::dev_memory::Row {
+        dj_core::dev_memory::Row::resource("Pinned screenshots", format!("{} exact data", dj_core::dev_memory::bytes(Some(self.inner.state.bytes()))), format!("{} floating image references; unique payload ledger includes operation holds and shares data with stack.", self.inner.entries.len()))
+    }
+
     pub fn new(owner: HWND, tokens: &ResolvedTokens, save_dir: PathBuf) -> Self {
         let raw = owner.0 as isize;
         Self {

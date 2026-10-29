@@ -996,6 +996,18 @@ pub struct Previews {
 }
 
 impl Previews {
+    pub fn memory_counters(&self) -> dj_core::dev_memory::Row {
+        let bytes: u64 = self
+            .model
+            .stack
+            .items()
+            .iter()
+            .filter_map(|i| self.model.payload(i.id))
+            .map(|p| p.bytes())
+            .sum();
+        dj_core::dev_memory::Row::resource("Screenshot stack", format!("{} exact data", dj_core::dev_memory::bytes(Some(bytes))), format!("{} recent captures for copy/save; {} thumbnails. Pixel + PNG lengths; shared with pins/preview, not additive.", self.model.stack.items().len(), self.uploaded.len()))
+    }
+
     pub fn new(mut model: Model, owner: HWND, tokens: &ResolvedTokens) -> Self {
         let raw = owner.0 as isize;
         model.drag_store = Some(DragStore::new(Box::new(move || window::wake(raw))));
