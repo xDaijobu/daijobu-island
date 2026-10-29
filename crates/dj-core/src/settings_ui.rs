@@ -67,6 +67,7 @@ impl Page {
 pub enum RowKey {
     // General
     Autostart,
+    DeveloperMode,
     Theme,
     // Notch
     Style,
@@ -302,7 +303,13 @@ const fn def(key: RowKey, page: Page, label: &'static str, hint: &'static str) -
 }
 
 /// Every row, in page order.
-const ROWS: [RowDef; 18] = [
+const ROWS: [RowDef; 19] = [
+    def(
+        RowKey::DeveloperMode,
+        Page::General,
+        "Developer mode",
+        "Open memory diagnostics; disable to stop sampling",
+    ),
     def(
         RowKey::Autostart,
         Page::General,
@@ -478,6 +485,7 @@ fn slider_text(key: RowKey, v: f32) -> String {
 /// Whether row `key`'s setting is the same in `a` and `b`.
 fn field_eq(a: &Config, b: &Config, key: RowKey) -> bool {
     match key {
+        RowKey::DeveloperMode => a.developer_mode == b.developer_mode,
         RowKey::Autostart => a.start_with_windows == b.start_with_windows,
         RowKey::Theme => a.theme == b.theme,
         RowKey::Style => a.island.style == b.island.style,
@@ -501,6 +509,7 @@ fn field_eq(a: &Config, b: &Config, key: RowKey) -> bool {
 /// Copies row `key`'s setting from `src` into `dst`.
 fn copy_field(dst: &mut Config, src: &Config, key: RowKey) {
     match key {
+        RowKey::DeveloperMode => dst.developer_mode = src.developer_mode,
         RowKey::Autostart => dst.start_with_windows = src.start_with_windows,
         RowKey::Theme => dst.theme = src.theme.clone(),
         RowKey::Style => dst.island.style = src.island.style.clone(),
@@ -842,6 +851,9 @@ impl SettingsDoc {
     fn control(&self, key: RowKey) -> Control {
         let c = &self.pending;
         match key {
+            RowKey::DeveloperMode => Control::Toggle {
+                on: c.developer_mode,
+            },
             RowKey::Autostart => Control::Toggle {
                 on: c.start_with_windows,
             },
@@ -1067,6 +1079,7 @@ impl SettingsDoc {
         let theme_id = themes.get(next_theme).map(|t| t.0.clone());
         let next_spot = self.spotlight_chip().next();
         self.mutate(|c| match key {
+            RowKey::DeveloperMode => c.developer_mode = !c.developer_mode,
             RowKey::Autostart => c.start_with_windows = !c.start_with_windows,
             RowKey::Theme => {
                 if let Some(id) = theme_id {
@@ -1462,6 +1475,17 @@ mod tests {
             apply: r.apply.or(p.apply),
             close: r.close || p.close,
         }
+    }
+
+    #[test]
+    fn developer_mode_defaults_off_and_requires_explicit_toggle() {
+        let mut d = doc();
+        assert!(!d.pending().developer_mode);
+        let out = click_row(&mut d, RowKey::DeveloperMode);
+        assert!(out.persist);
+        assert!(out.apply.unwrap().developer_mode);
+        assert!(click_row(&mut d, RowKey::DeveloperMode).persist);
+        assert!(!d.pending().developer_mode);
     }
 
     fn click_row(d: &mut SettingsDoc, key: RowKey) -> Outcome {

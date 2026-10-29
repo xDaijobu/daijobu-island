@@ -12,6 +12,7 @@ pub mod clipboard_types;
 pub mod clipboard_ui;
 pub mod color;
 pub mod config;
+pub mod dev_memory;
 pub mod features;
 pub mod health;
 pub mod island;

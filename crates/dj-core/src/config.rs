@@ -12,6 +12,7 @@ pub struct Config {
     /// Theme id (file stem for user themes).
     pub theme: String,
     pub start_with_windows: bool,
+    pub developer_mode: bool,
     pub island: IslandConfig,
     pub music: MusicConfig,
     pub osd: OsdConfig,
@@ -805,6 +806,7 @@ impl Default for Config {
         Self {
             theme: crate::theme::DEFAULT_THEME.to_string(),
             start_with_windows: false,
+            developer_mode: false,
             island: IslandConfig::default(),
             music: MusicConfig::default(),
             osd: OsdConfig::default(),
@@ -881,6 +883,7 @@ mod tests {
         let c = Config {
             theme: "paper-zine".into(),
             start_with_windows: true,
+            developer_mode: true,
             island: IslandConfig {
                 style: "pill".into(),
                 reserve_top: false,

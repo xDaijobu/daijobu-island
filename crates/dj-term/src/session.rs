@@ -296,6 +296,11 @@ impl Session {
     /// The visible grid with colours resolved through `palette`. `focused: false` turns a block
     /// cursor into `HollowBlock`. The palette is remembered to answer the shell's colour
     /// queries (OSC 4/10/11), which need a first call before they get a reply.
+    pub fn memory_counters(&self) -> Option<(usize, usize, usize)> {
+        let term = self.term.try_lock_unfair()?;
+        Some((term.columns(), term.screen_lines(), term.history_size()))
+    }
+
     pub fn screen(&self, palette: &Palette, focused: bool) -> Screen {
         self.shared.set_palette(palette);
         screen::build_screen(&self.term.lock(), palette, focused)

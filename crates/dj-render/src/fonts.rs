@@ -66,6 +66,21 @@ pub struct Fonts {
 }
 
 impl Fonts {
+    pub(crate) fn memory_counters(&self) -> dj_core::dev_memory::Row {
+        let source: usize = [
+            GEIST_REGULAR,
+            GEIST_MEDIUM,
+            GEIST_SEMIBOLD,
+            MONO_REGULAR,
+            MONO_MEDIUM,
+            DOTO,
+        ]
+        .iter()
+        .map(|b| b.len())
+        .sum();
+        dj_core::dev_memory::Row::resource("Fonts", format!("{} source", dj_core::dev_memory::bytes(Some(source as u64))), format!("Draw UI/terminal text. {} embedded, {} resolved, {} cell, {} fallback entries; source length, not decoded RAM.", self.embedded.len(), self.resolved.len(), self.cell_faces.len(), self.fallbacks.len()))
+    }
+
     pub fn new() -> Result<Self, String> {
         let mgr = FontMgr::default();
         let mut embedded = HashMap::new();

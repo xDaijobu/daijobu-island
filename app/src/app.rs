@@ -245,6 +245,7 @@ pub struct App {
     settings_win: Option<(PopupWin, SettingsDoc)>,
     /// The Settings window's left button is down (motion drags a slider).
     settings_pressed: bool,
+    diagnostics: crate::dev_memory::Diagnostics,
     tray_menu: Option<(PopupWin, dj_core::tray_menu::Menu)>,
     tray_previous: Option<dj_win::snap_pins::FocusTarget>,
     tray_pressed: Option<usize>,
@@ -462,6 +463,7 @@ impl App {
             layer: Layer::Top,
             settings_win: None,
             settings_pressed: false,
+            diagnostics: crate::dev_memory::Diagnostics::default(),
             tray_menu: None,
             tray_previous: None,
             tray_pressed: None,
@@ -1462,6 +1464,13 @@ impl App {
             new.start_with_windows = old.start_with_windows;
         }
         self.config = new;
+        if self.config.developer_mode != old.developer_mode {
+            if self.config.developer_mode {
+                self.open_memory();
+            } else {
+                self.diagnostics.close(self.hwnd);
+            }
+        }
         let save_dir = self.save_target().0;
         self.pins.set_save_dir(save_dir);
         if persist {
@@ -3386,6 +3395,109 @@ impl App {
         }
     }
 
+    fn open_memory(&mut self) {
+        if self.diagnostics.visible() {
+            if let Some(win) = &self.diagnostics.win {
+                popup::show(win.hwnd);
+            }
+            return;
+        }
+        let ((left, top, width, height), dpi) =
+            dj_win::snap_pins::work_area_at(overlay::cursor_pos());
+        let scale = dpi.max(96) as f32 / 96.0;
+        let logical = (
+            crate::dev_memory::WIDTH.min(width as f32 / scale),
+            crate::dev_memory::HEIGHT.min(height as f32 / scale),
+        );
+        let x = left + ((width - (logical.0 * scale) as i32) / 2).max(0);
+        let y = top + ((height - (logical.1 * scale) as i32) / 2).max(0);
+        let Some(mut win) = PopupWin::create(
+            PopupKind::DeveloperMemory,
+            x,
+            y,
+            logical.0,
+            logical.1,
+            scale,
+        ) else {
+            return;
+        };
+        win.shown = true;
+        self.diagnostics.logical = logical;
+        self.diagnostics.win = Some(win);
+        self.refresh_memory();
+        if let Some(win) = &self.diagnostics.win {
+            popup::show(win.hwnd);
+        }
+        window::set_timer(self.hwnd, crate::dev_memory::TIMER, 1000);
+        self.diagnostics.request(self.hwnd);
+    }
+
+    fn refresh_memory(&mut self) {
+        if !self.diagnostics.visible() {
+            return;
+        }
+        use dj_core::dev_memory::{bytes, Row};
+        let mut internal = dj_render::graphics_memory_counters();
+        if let Some(r) = &self.renderer {
+            internal.extend(r.memory_counters());
+        }
+        for (label, popup) in [
+            ("Diagnostics", self.diagnostics.win.as_ref()),
+            ("Settings", self.settings_win.as_ref().map(|(w, _)| w)),
+            ("Tray", self.tray_menu.as_ref().map(|(w, _)| w)),
+            ("Spotlight", self.spot_win.as_ref()),
+        ] {
+            if let Some(win) = popup {
+                if let Some(r) = &win.renderer {
+                    internal.extend(r.memory_counters().into_iter().map(|mut row| {
+                        row.name = format!("{label} · {}", row.name);
+                        row.description = format!(
+                            "{} · {}",
+                            if win.shown {
+                                "Visible"
+                            } else {
+                                "Retained while hidden"
+                            },
+                            row.description
+                        );
+                        row
+                    }));
+                }
+            }
+        }
+        internal.push(Row::resource(
+            "Spotlight icons",
+            format!(
+                "~{} pixels",
+                bytes(Some(self.icon_cache.pixel_bytes_estimate()))
+            ),
+            format!(
+                "{} cached icons make app search quick; estimate excludes cache overhead.",
+                self.icon_cache.len()
+            ),
+        ));
+        internal.push(Row::resource(
+            "Spotlight search index",
+            format!("{} entries", self.spot_index.entries.len()),
+            "App/file search metadata; count only, memory allocation not measured.",
+        ));
+        internal.push(self.previews.memory_counters());
+        internal.push(self.pins.memory_counters());
+        internal.push(self.terminal.memory_counters());
+        let clip = self
+            .clipboard
+            .as_ref()
+            .and_then(|c| c.payload())
+            .map_or(0, |p| p.retained_bytes());
+        internal.push(Row::resource("Clipboard selection", format!("{} exact data", bytes(Some(clip as u64))), "Selected history item ready for preview/paste; shared leases possible. Excludes database/cache/queues."));
+        internal.push(Row::resource("Other native resources", "Not measured", "Capture/pin GPU surfaces, decoded font/image heaps and terminal allocation capacity are outside these counters."));
+        self.diagnostics.refresh_rows(internal);
+        if let Some(w) = self.diagnostics.win.as_mut() {
+            w.dirty = true;
+        }
+        self.diagnostics.render(self.anim.current());
+    }
+
     fn show_tray_menu(&mut self) {
         let prepare_started = Instant::now();
         self.remember_clipboard_target();
@@ -3608,6 +3720,12 @@ impl App {
                 self.pins.show_keyboard(self.tray_previous);
             }
             Some(MenuCommand::Settings) => self.open_settings_window(),
+            Some(MenuCommand::DeveloperMemory) => {
+                self.config.developer_mode = true;
+                storage::save_config(&self.config);
+                self.settings_follow_config();
+                self.open_memory();
+            }
             Some(MenuCommand::Quit) => self.quit(),
             None => {}
         }
@@ -3649,6 +3767,7 @@ impl App {
         window::unregister_hotkey(self.hwnd, HOTKEY_THEME);
         window::unregister_hotkey(self.hwnd, HOTKEY_SPOTLIGHT);
         self.close_settings_window();
+        self.diagnostics.close(self.hwnd);
         self.close_tray_menu();
         if let Some((win, _)) = self.tray_menu.take() {
             win.destroy();
@@ -3919,6 +4038,18 @@ impl Handler for App {
             Event::Popup(PopupKind::Spotlight, input) => self.spotlight_input(input),
             Event::Popup(PopupKind::Settings, input) => self.settings_input(input),
             Event::Popup(PopupKind::Tray, input) => self.tray_menu_input(input),
+            Event::Popup(PopupKind::DeveloperMemory, input) => {
+                if self.diagnostics.input(input) {
+                    self.diagnostics.close(self.hwnd);
+                } else {
+                    let refresh = matches!(input, PopupInput::Key { vk: 0x52, .. })
+                        || matches!(input, PopupInput::Press { x, y } if self.diagnostics.win.as_ref().is_some_and(|w| { let (x, y) = w.local(x, y); (self.diagnostics.logical.0 - 218.0..self.diagnostics.logical.0 - 120.0).contains(&x) && (53.0..83.0).contains(&y) }));
+                    if refresh {
+                        self.diagnostics.request(self.hwnd);
+                    }
+                    self.diagnostics.render(self.anim.current());
+                }
+            }
             Event::Hotkey(HOTKEY_TERMINAL) => {
                 if self.island.terminal_open() {
                     self.close_terminal(true);
@@ -3971,6 +4102,10 @@ impl Handler for App {
                     c.prune(now);
                 }
                 self.dirty = true;
+            }
+            Event::Timer(crate::dev_memory::TIMER) => {
+                self.diagnostics.request(self.hwnd);
+                self.diagnostics.render(self.anim.current());
             }
             Event::Timer(TIMER_CLIPBOARD) => self.drain_clipboard(),
             Event::Timer(TIMER_VU) => self.dirty = true,
@@ -4041,6 +4176,9 @@ impl Handler for App {
                 }
                 self.drain_art();
                 self.drain_spotlight();
+                if self.diagnostics.take() {
+                    self.refresh_memory();
+                }
                 // A card saved the thumb's shot: the thumb reads "open" too.
                 let mut saved = self.previews.drain(Instant::now());
                 let pin_saved = self.pins.drain();
@@ -4246,6 +4384,10 @@ impl Handler for App {
             self.render_settings();
             self.render_spotlight();
             self.render_tray_menu();
+            if let Some(w) = self.diagnostics.win.as_mut() {
+                w.dirty = true;
+            }
+            self.diagnostics.render(self.anim.current());
         }
         // The preview stack follows the island's edge and its theme, and draws only when
         // it has something new (a ring tick or a spring can come without the island).
