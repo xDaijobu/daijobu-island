@@ -8,6 +8,10 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 
 ---
 
+## Release v0.3.1 (2026-10-29)
+
+Patch release after feature PR #34 merged at `9335f13`: developer diagnostics, adaptive memory table, shared island/popup UI-thread graphics context, plus themed tray and queue-wake fix from PR #33. Workspace version 0.3.1 and manifest 0.3.1.0; no dependency upgrades. Release gates: fmt check, workspace clippy/all-targets with warnings denied, 1,647 tests, optimized release build. Portable ZIP follows v0.3.0 contents: executable, README, LICENSE, NOTICE, asset licenses and app-local Visual C++ runtime DLLs; standalone executable and SHA256SUMS.txt also published. Existing app remained untouched. Build used unlocked `memory-release` profile inheriting release after `memory-opt/daijobu.exe` was locked. Final workspace rerun passed 1,647 tests; preceding rerun intermittently failed existing `conpty_round_trip_echo_then_exited` waiting for Exited, with no source change before full green rerun. ZIP integrity, exact allowlist and executable SHA-256 identity verified; VC runtime DLLs unchanged from published v0.3.0. No new native RAM, under-100MB, smoothness, DPI or device-loss verification claimed; exact limits in stage report.
+
 ## Stage Dev Memory: developer diagnostics and approved RAM optimization (review passed; manual acceptance pending)
 
 Independent review found no blockers. User authorized commit, PR, merge and release on 2026-10-29. Integration revalidation passed fmt check, locked workspace clippy/all-targets with warnings denied, locked workspace tests and locked optimized memory-opt build. Existing app untouched; native RAM savings, under-100MB target and smoothness remain unverified.
