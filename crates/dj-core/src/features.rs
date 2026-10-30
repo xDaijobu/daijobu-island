@@ -59,7 +59,7 @@ pub const FEATURES: [Feature; 12] = [
     available("timer", "Timer", Icon::Timer),
     available("snap", "Snap", Icon::Snap),
     available("clipboard", "Clipboard", Icon::Clipboard),
-    locked("notifications", "Notifications", Icon::Notifications),
+    available("notifications", "Notifications", Icon::Notifications),
     locked("lyrics", "Lyrics", Icon::Lyrics),
     // Stage T: a shell in the island. This was the locked "dj CLI" tile; it keeps the icon.
     available("terminal", "Terminal", Icon::Cli),
@@ -94,12 +94,13 @@ mod tests {
                 "timer",
                 "snap",
                 "clipboard",
+                "notifications",
                 "terminal",
                 "tile"
             ]
         );
-        // Eight of twelve are ready; the Home footer counts them.
-        assert_eq!(open.len(), 8);
+        // Nine of twelve are ready; the Home footer counts them.
+        assert_eq!(open.len(), 9);
         assert_eq!(FEATURES[0].name, "Music");
         let tile = FEATURES.iter().find(|f| f.id == "tile").unwrap();
         assert_eq!((tile.name, tile.icon), ("Tile & Scenes", Icon::Tile));

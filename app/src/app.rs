@@ -5,6 +5,7 @@ use crate::chime::SystemChime;
 use crate::clipboard::{Clipboard, Event as ClipEvent};
 use crate::clipboard_transfer::{self as clip_transfer, Target as ClipTarget, Transfer};
 use crate::notch::{self, Edges};
+use crate::notifications::{ActivationResult, InternalTarget, Notifications, TIMER_TOAST};
 use crate::popups::{self, IconLoader, PopupWin, SizeLoader, SpotIndex};
 use crate::preview_store::Store;
 use crate::previews::{self, Model, Previews, TIMER_SNAP_STACK};
@@ -32,6 +33,7 @@ use dj_core::features::FEATURES;
 use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, SnapAction, TimerAction};
 use dj_core::layout;
 use dj_core::music::{cover_accent, MusicMsg, Session};
+use dj_core::notifications::Action as NotificationAction;
 use dj_core::osd::Volume;
 use dj_core::settings::{self, SettingsAction, SettingsView};
 use dj_core::settings_ui::{self as sui, SettingsDoc, Taken};
@@ -229,6 +231,7 @@ pub struct App {
     term_keyboard: bool,
     term_shortcuts: Vec<Shortcut>,
     term_prev: isize,
+    notifications: Notifications,
     clipboard: Option<Clipboard>,
     clipboard_error: Option<String>,
     clip_keyboard: bool,
@@ -385,6 +388,7 @@ impl App {
             Ok(clipboard) => (Some(clipboard), None),
             Err(error) => (None, Some(error)),
         };
+        let notifications = Notifications::new(raw, &config.notifications);
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -452,6 +456,7 @@ impl App {
             term_keyboard: false,
             term_shortcuts: Vec::new(),
             term_prev: 0,
+            notifications,
             clipboard,
             clipboard_error,
             clip_keyboard: false,
@@ -1510,6 +1515,10 @@ impl App {
             self.terminal.measure(cell, self.scale);
             self.dirty = true;
         }
+        if self.config.notifications != old.notifications {
+            self.notifications.configure(&self.config.notifications);
+            self.dirty = true;
+        }
         if self.config.clipboard != old.clipboard {
             if let Some(c) = &mut self.clipboard {
                 c.configure(self.config.clipboard.clone());
@@ -2365,6 +2374,90 @@ impl App {
     fn over_panel(&self, x: i32, y: i32) -> bool {
         let (lx, ly) = self.island_point(x, y);
         self.island.view().osd.alpha <= 0.0 && self.island.pill_rect().contains(lx, ly)
+    }
+
+    // ---- Notifications ----
+
+    fn open_notifications(&mut self) {
+        self.notifications.refresh_access();
+        self.notifications.drain(Instant::now());
+        self.notifications.center.hide_toast();
+        self.island
+            .set_notification_toast(false, self.anim.current());
+        self.island.open_notifications(self.anim.current());
+        self.dirty = true;
+    }
+
+    fn notification_action(&mut self, action: NotificationAction) {
+        self.notifications.refresh_access();
+        match action {
+            NotificationAction::Close => self.island.expand(self.anim.current()),
+            NotificationAction::Toggle => {
+                let mut config = self.config.clone();
+                config.notifications.enabled = !config.notifications.enabled;
+                self.apply_config(config, true);
+            }
+            NotificationAction::RequestAccess => self.notifications.request_access(),
+            NotificationAction::Dismiss(key) => self.notifications.dismiss(key),
+            NotificationAction::Activate(key) => {
+                match self.notifications.activate(key) {
+                    ActivationResult::OpenedSourceApp => {
+                        self.notifications.center.hide_toast();
+                        self.island
+                            .set_notification_toast(false, self.anim.current());
+                        // Native app activation already chose focus; collapsing never
+                        // takes the keyboard back from that app.
+                        self.island.collapse(self.anim.current());
+                    }
+                    ActivationResult::Internal(InternalTarget::TerminalTab(tab)) => {
+                        // Resolve only a currently running tab; never spawn a shell
+                        // or execute notification text when a target is stale.
+                        if self.terminal.activate_shortcut(tab) {
+                            self.notifications.center.hide_toast();
+                            self.island
+                                .set_notification_toast(false, self.anim.current());
+                            self.open_terminal();
+                        } else {
+                            self.notifications.notice =
+                                Some("The notification's session is no longer available");
+                            self.open_notifications();
+                        }
+                    }
+                    ActivationResult::Unavailable => self.open_notifications(),
+                }
+            }
+            NotificationAction::Previous => {
+                self.notifications.center.page = self.notifications.center.page.saturating_sub(1);
+            }
+            NotificationAction::Next => {
+                self.notifications.center.page += 1;
+                self.notifications.center.clamp_page();
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn sync_notifications(&mut self) {
+        let now = Instant::now();
+        let old = self.notifications.center.toast().map(|n| n.key);
+        let can_present = self.visible
+            && self.overlay.is_none()
+            && !self.snap_pending
+            && self.island.can_present_notification();
+        self.notifications.center.advance(now, can_present);
+        let new = self.notifications.center.toast().map(|n| n.key);
+        self.island
+            .set_notification_toast(new.is_some(), self.anim.current());
+        if old != new {
+            self.dirty = true;
+        }
+        Self::arm_once(
+            self.hwnd,
+            TIMER_TOAST,
+            &mut self.notifications.armed,
+            self.notifications.center.deadline(),
+            now,
+        );
     }
 
     // ---- Clipboard ----
@@ -3747,6 +3840,8 @@ impl App {
             c.shutdown();
         }
         window::kill_timer(self.hwnd, TIMER_CLIPBOARD);
+        window::kill_timer(self.hwnd, TIMER_TOAST);
+        self.notifications.configure(&Default::default());
         window::unregister_hotkey(self.hwnd, HOTKEY_CLIPBOARD);
         window::quit();
         self.pins.set_allowed(false);
@@ -3911,6 +4006,22 @@ impl Handler for App {
                         self.tile_panel = false;
                     }
                     ClickOutcome::Open(i) if FEATURES[i].id == "terminal" => self.open_terminal(),
+                    ClickOutcome::Open(i) if FEATURES[i].id == "notifications" => {
+                        self.open_notifications()
+                    }
+                    ClickOutcome::Notifications { x, y, toast } => {
+                        if toast {
+                            if let Some(action) = self.notifications.center.toast_hit(x, y) {
+                                self.notification_action(action);
+                            }
+                        } else if let Some(action) =
+                            self.notifications
+                                .center
+                                .hit(x, y, self.notifications.access())
+                        {
+                            self.notification_action(action);
+                        }
+                    }
                     ClickOutcome::Open(i) if FEATURES[i].id == "clipboard" => self.open_clipboard(),
                     ClickOutcome::Clipboard { x, y } => {
                         if !self.clip_keyboard {
@@ -4113,6 +4224,10 @@ impl Handler for App {
                 self.diagnostics.request(self.hwnd);
                 self.diagnostics.render(self.anim.current());
             }
+            Event::Timer(TIMER_TOAST) => {
+                window::kill_timer(self.hwnd, TIMER_TOAST);
+                self.notifications.armed = None;
+            }
             Event::Timer(TIMER_CLIPBOARD) => self.drain_clipboard(),
             Event::Timer(TIMER_VU) => self.dirty = true,
             Event::Timer(vitals::TIMER) => self.worker.tick(),
@@ -4175,6 +4290,9 @@ impl Handler for App {
             Event::Timer(_) => {}
             Event::Music => self.drain_engine(),
             Event::Wake => {
+                if self.notifications.drain(Instant::now()) {
+                    self.dirty = true;
+                }
                 self.drain_clipboard();
                 let picker_was_open = self.terminal.folder_picker_open();
                 // The shell printed (or set a title, or exited).
@@ -4349,6 +4467,7 @@ impl Handler for App {
         self.sync_tile();
         self.sync_terminal();
         self.sync_clipboard();
+        self.sync_notifications();
         self.sync_layer(false);
         self.render_spotlight();
         self.render_settings();
@@ -4524,6 +4643,12 @@ impl Handler for App {
             tile: tile_panel,
             terminal,
             clipboard,
+            notifications: Some(dj_render::NotificationPanel {
+                center: &self.notifications.center,
+                access: self.notifications.access(),
+                enabled: self.config.notifications.enabled,
+                notice: self.notifications.notice,
+            }),
             terminal_shortcuts: &self.term_shortcuts,
             island_style: self.config.island.style(),
         };

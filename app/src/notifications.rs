@@ -1,0 +1,288 @@
+//! App-owned notification controller. The native adapter owns Windows identity;
+//! internal producers register typed targets and opaque tokens with this controller.
+
+use dj_core::config::NotificationsConfig;
+use dj_core::notifications::{
+    Access, Activation, ActivationToken, Admission, NotificationCenter, NotificationInput,
+    NotificationKey, HISTORY_LIMIT,
+};
+use dj_core::term_tabs::TabId;
+use dj_win::notifications::{Listener, NativeNotification};
+use std::collections::VecDeque;
+use std::time::Instant;
+
+pub const TIMER_TOAST: usize = 17;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // typed integration target; next track owns internal producers
+pub enum InternalTarget {
+    TerminalTab(TabId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationResult {
+    OpenedSourceApp,
+    Internal(InternalTarget),
+    Unavailable,
+}
+
+#[derive(Default)]
+struct Activations(VecDeque<(NotificationKey, ActivationToken, InternalTarget)>);
+impl Activations {
+    fn register(&mut self, key: NotificationKey, token: ActivationToken, target: InternalTarget) {
+        if !matches!(key, NotificationKey::Internal(_)) {
+            return;
+        }
+        self.0.retain(|(k, t, _)| *k != key && *t != token);
+        self.0.push_front((key, token, target));
+        self.0.truncate(HISTORY_LIMIT);
+    }
+    fn resolve(&self, key: NotificationKey, token: ActivationToken) -> Option<InternalTarget> {
+        self.0
+            .iter()
+            .find(|(k, t, _)| *k == key && *t == token)
+            .map(|(_, _, target)| *target)
+    }
+}
+
+pub struct Notifications {
+    pub center: NotificationCenter,
+    native: Listener,
+    config: NotificationsConfig,
+    current: Vec<NativeNotification>,
+    initial: bool,
+    watermark: i64,
+    activations: Activations,
+    pub notice: Option<&'static str>,
+    pub armed: Option<Instant>,
+}
+
+impl Notifications {
+    pub fn new(hwnd: isize, config: &NotificationsConfig) -> Self {
+        let mut this = Self {
+            center: NotificationCenter::default(),
+            native: Listener::new(hwnd),
+            config: NotificationsConfig::default(),
+            current: Vec::new(),
+            initial: true,
+            watermark: i64::MIN,
+            activations: Activations::default(),
+            notice: None,
+            armed: None,
+        };
+        this.configure(config);
+        this
+    }
+
+    pub fn configure(&mut self, config: &NotificationsConfig) {
+        self.center.configure_windows(config.enabled);
+        self.center.configure_internal(config.internal_enabled);
+        if !config.internal_enabled {
+            self.activations.0.clear();
+        }
+        if self.config.enabled != config.enabled {
+            self.native.configure(config.enabled);
+            self.current.clear();
+            self.initial = true;
+            self.watermark = i64::MIN;
+        }
+        self.config = config.clone();
+        self.notice = None;
+    }
+
+    pub fn access(&self) -> Access {
+        self.native.access()
+    }
+
+    pub fn refresh_access(&mut self) {
+        if self.native.refresh_access() && self.access() != Access::Listening {
+            self.purge_windows();
+        }
+    }
+
+    fn purge_windows(&mut self) {
+        for item in self.current.drain(..) {
+            self.center.remove(item.input.key);
+        }
+        self.initial = true;
+    }
+
+    pub fn request_access(&mut self) {
+        self.native.request_access();
+    }
+
+    pub fn drain(&mut self, now: Instant) -> bool {
+        let update = self.native.drain();
+        let changed = update.access.is_some() || update.snapshot.is_some();
+        if self.access() != Access::Listening {
+            self.purge_windows();
+        }
+        if let Some(snapshot) = update
+            .snapshot
+            .filter(|_| self.access() == Access::Listening)
+        {
+            for old in &self.current {
+                if !snapshot.iter().any(|n| n.input.key == old.input.key) {
+                    self.center.remove(old.input.key);
+                }
+            }
+            for n in &snapshot {
+                if self.initial
+                    || (n.created() <= self.watermark && self.center.get(n.input.key).is_none())
+                {
+                    self.center.admit_history(n.input.clone(), now);
+                } else {
+                    self.center.admit(n.input.clone(), now);
+                }
+            }
+            if let Some(latest) = snapshot.iter().map(NativeNotification::created).max() {
+                self.watermark = self.watermark.max(latest);
+            }
+            self.current = snapshot;
+            self.initial = false;
+        }
+        changed
+    }
+
+    /// Integration seam: register trusted key/token/target before admission.
+    /// The caller must own the target; activation checks the key-token pair again.
+    #[allow(dead_code)] // consumed by the next integration track
+    pub fn register_activation(
+        &mut self,
+        key: NotificationKey,
+        token: ActivationToken,
+        target: InternalTarget,
+    ) {
+        self.activations.register(key, token, target);
+    }
+
+    #[allow(dead_code)] // consumed by the next integration track
+    pub fn admit(&mut self, mut input: NotificationInput, now: Instant) -> Admission {
+        if let Activation::Internal(token) = input.activation {
+            if self.activations.resolve(input.key, token).is_none() {
+                input.activation = Activation::None;
+            }
+        }
+        self.center.admit(input, now)
+    }
+
+    pub fn dismiss(&mut self, key: NotificationKey) {
+        if let NotificationKey::Windows(id) = key {
+            if !self.native.dismiss(id) {
+                self.notice = Some("Windows could not dismiss this notification");
+                self.refresh_access();
+                return;
+            }
+        }
+        self.center.remove(key);
+        self.current.retain(|n| n.input.key != key);
+        self.activations.0.retain(|(k, _, _)| *k != key);
+        self.notice = None;
+    }
+
+    pub fn activate(&mut self, key: NotificationKey) -> ActivationResult {
+        match self.center.activate(key) {
+            Some(Activation::OpenSourceApp) => {
+                let opened = self
+                    .current
+                    .iter()
+                    .find(|n| n.input.key == key)
+                    .cloned()
+                    .is_some_and(|n| self.native.open_source(&n));
+                self.notice = (!opened).then_some(
+                    "Source app could not be opened; desktop apps may not support activation",
+                );
+                if opened {
+                    return ActivationResult::OpenedSourceApp;
+                }
+            }
+            Some(Activation::Internal(token)) => {
+                if let Some(target) = self.activations.resolve(key, token) {
+                    self.notice = None;
+                    return ActivationResult::Internal(target);
+                }
+                self.notice = Some("The notification's session is no longer available");
+            }
+            _ => self.notice = Some("No source-app action is available"),
+        }
+        ActivationResult::Unavailable
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_admits_internal_without_windows_and_rejects_unregistered_tokens() {
+        let config = NotificationsConfig {
+            enabled: false,
+            internal_enabled: true,
+        };
+        let mut controller = Notifications::new(0, &config);
+        let now = Instant::now();
+        let input = |id, token| NotificationInput {
+            key: NotificationKey::Internal(id),
+            source: "Trusted adapter".into(),
+            title: "Ready".into(),
+            body: "cmd /c unsafe-text-is-presentation".into(),
+            activation: Activation::Internal(ActivationToken(token)),
+        };
+        assert_eq!(controller.access(), Access::Disabled);
+        controller.admit(input(1, 5), now);
+        assert_eq!(
+            controller.center.activate(NotificationKey::Internal(1)),
+            None
+        );
+        assert_eq!(
+            controller.activate(NotificationKey::Internal(1)),
+            ActivationResult::Unavailable
+        );
+        assert!(controller.notice.is_some());
+        controller.register_activation(
+            NotificationKey::Internal(2),
+            ActivationToken(6),
+            InternalTarget::TerminalTab(9),
+        );
+        controller.admit(input(2, 6), now);
+        assert_eq!(
+            controller.activate(NotificationKey::Internal(2)),
+            ActivationResult::Internal(InternalTarget::TerminalTab(9))
+        );
+        controller.configure(&NotificationsConfig::default());
+        assert!(controller.center.history().is_empty());
+        assert!(controller.activations.0.is_empty());
+    }
+    #[test]
+    fn internal_activation_is_bounded_and_bound_to_both_key_and_token() {
+        let mut registry = Activations::default();
+        let key = NotificationKey::Internal(1);
+        registry.register(key, ActivationToken(2), InternalTarget::TerminalTab(3));
+        assert_eq!(
+            registry.resolve(key, ActivationToken(2)),
+            Some(InternalTarget::TerminalTab(3))
+        );
+        assert_eq!(
+            registry.resolve(NotificationKey::Internal(4), ActivationToken(2)),
+            None
+        );
+        registry.register(
+            NotificationKey::Windows(1),
+            ActivationToken(5),
+            InternalTarget::TerminalTab(3),
+        );
+        assert_eq!(
+            registry.resolve(NotificationKey::Windows(1), ActivationToken(5)),
+            None
+        );
+        for n in 10..200 {
+            registry.register(
+                NotificationKey::Internal(n),
+                ActivationToken(n),
+                InternalTarget::TerminalTab(3),
+            );
+        }
+        assert_eq!(registry.0.len(), HISTORY_LIMIT);
+        assert_eq!(registry.resolve(key, ActivationToken(2)), None);
+    }
+}

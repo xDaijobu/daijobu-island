@@ -68,6 +68,8 @@ pub enum RowKey {
     // General
     Autostart,
     DeveloperMode,
+    NotificationsEnabled,
+    InternalNotificationsEnabled,
     Theme,
     // Notch
     Style,
@@ -303,7 +305,19 @@ const fn def(key: RowKey, page: Page, label: &'static str, hint: &'static str) -
 }
 
 /// Every row, in page order.
-const ROWS: [RowDef; 19] = [
+const ROWS: [RowDef; 21] = [
+    def(
+        RowKey::InternalNotificationsEnabled,
+        Page::General,
+        "Internal notifications",
+        "Allow app-owned notifications independently of Windows access",
+    ),
+    def(
+        RowKey::NotificationsEnabled,
+        Page::General,
+        "Windows notifications",
+        "Opt in to memory-only history; permission status is in Notifications",
+    ),
     def(
         RowKey::DeveloperMode,
         Page::General,
@@ -485,6 +499,10 @@ fn slider_text(key: RowKey, v: f32) -> String {
 /// Whether row `key`'s setting is the same in `a` and `b`.
 fn field_eq(a: &Config, b: &Config, key: RowKey) -> bool {
     match key {
+        RowKey::InternalNotificationsEnabled => {
+            a.notifications.internal_enabled == b.notifications.internal_enabled
+        }
+        RowKey::NotificationsEnabled => a.notifications.enabled == b.notifications.enabled,
         RowKey::DeveloperMode => a.developer_mode == b.developer_mode,
         RowKey::Autostart => a.start_with_windows == b.start_with_windows,
         RowKey::Theme => a.theme == b.theme,
@@ -509,6 +527,10 @@ fn field_eq(a: &Config, b: &Config, key: RowKey) -> bool {
 /// Copies row `key`'s setting from `src` into `dst`.
 fn copy_field(dst: &mut Config, src: &Config, key: RowKey) {
     match key {
+        RowKey::InternalNotificationsEnabled => {
+            dst.notifications.internal_enabled = src.notifications.internal_enabled
+        }
+        RowKey::NotificationsEnabled => dst.notifications.enabled = src.notifications.enabled,
         RowKey::DeveloperMode => dst.developer_mode = src.developer_mode,
         RowKey::Autostart => dst.start_with_windows = src.start_with_windows,
         RowKey::Theme => dst.theme = src.theme.clone(),
@@ -851,6 +873,12 @@ impl SettingsDoc {
     fn control(&self, key: RowKey) -> Control {
         let c = &self.pending;
         match key {
+            RowKey::InternalNotificationsEnabled => Control::Toggle {
+                on: c.notifications.internal_enabled,
+            },
+            RowKey::NotificationsEnabled => Control::Toggle {
+                on: c.notifications.enabled,
+            },
             RowKey::DeveloperMode => Control::Toggle {
                 on: c.developer_mode,
             },
@@ -1079,6 +1107,10 @@ impl SettingsDoc {
         let theme_id = themes.get(next_theme).map(|t| t.0.clone());
         let next_spot = self.spotlight_chip().next();
         self.mutate(|c| match key {
+            RowKey::InternalNotificationsEnabled => {
+                c.notifications.internal_enabled = !c.notifications.internal_enabled
+            }
+            RowKey::NotificationsEnabled => c.notifications.enabled = !c.notifications.enabled,
             RowKey::DeveloperMode => c.developer_mode = !c.developer_mode,
             RowKey::Autostart => c.start_with_windows = !c.start_with_windows,
             RowKey::Theme => {
@@ -1705,6 +1737,13 @@ mod tests {
     fn toggles_flip_on_press() {
         let mut d = doc();
         for (key, get) in [
+            (
+                RowKey::NotificationsEnabled,
+                (|c: &Config| c.notifications.enabled) as fn(&Config) -> bool,
+            ),
+            (RowKey::InternalNotificationsEnabled, |c| {
+                c.notifications.internal_enabled
+            }),
             (
                 RowKey::Autostart,
                 (|c: &Config| c.start_with_windows) as fn(&Config) -> bool,

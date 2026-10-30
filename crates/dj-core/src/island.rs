@@ -57,10 +57,12 @@ pub enum IslandState {
     Terminal,
     /// Clipboard history. The app owns its controls; background activity waits below it.
     Clipboard,
+    Notifications,
+    NotificationToast,
 }
 
 /// Number of content layers (one per `IslandState`).
-const LAYERS: usize = 14;
+const LAYERS: usize = 16;
 
 impl IslandState {
     /// Index into the per-content opacity springs.
@@ -80,6 +82,8 @@ impl IslandState {
             IslandState::TilePanel => 11,
             IslandState::Terminal => 12,
             IslandState::Clipboard => 13,
+            IslandState::Notifications => 14,
+            IslandState::NotificationToast => 15,
         }
     }
 
@@ -93,6 +97,7 @@ impl IslandState {
                 | IslandState::TimerCompact
                 | IslandState::TimerAlert
                 | IslandState::SnapThumb
+                | IslandState::NotificationToast
         )
     }
 }
@@ -203,6 +208,11 @@ pub enum ClickOutcome {
         x: f32,
         y: f32,
     },
+    Notifications {
+        x: f32,
+        y: f32,
+        toast: bool,
+    },
 }
 
 /// What a click on the snap thumb asks for.
@@ -235,6 +245,8 @@ pub struct Layers {
     pub tile: f32,
     pub terminal: f32,
     pub clipboard: f32,
+    pub notifications: f32,
+    pub notification_toast: f32,
 }
 
 /// What the renderer needs to draw one frame of the island. Window-logical px.
@@ -272,6 +284,7 @@ pub struct Island {
     timer: TimerUi,
     /// A snap thumb is up (until the app's countdown ends or it is dismissed).
     snap: bool,
+    notification_toast: bool,
     /// The pointer is over the snap thumb, and the button under it.
     snap_pointer: bool,
     snap_hover: Option<SnapAction>,
@@ -307,6 +320,7 @@ impl Island {
             music: MusicUi::default(),
             timer: TimerUi::default(),
             snap: false,
+            notification_toast: false,
             snap_pointer: false,
             snap_hover: None,
             gear_hover: false,
@@ -325,7 +339,10 @@ impl Island {
     /// rest state, while the OSD shows, and while the pill springs are still collapsing
     /// back to a rest size after leaving one of those, so it doesn't sink mid-collapse.
     pub fn wants_front(&self) -> bool {
-        !self.state.is_rest() || self.osd.is_visible() || self.front
+        !self.state.is_rest()
+            || self.state == IslandState::NotificationToast
+            || self.osd.is_visible()
+            || self.front
     }
 
     /// Sets the resting (Idle) size in logical px (the app passes
@@ -408,6 +425,16 @@ impl Island {
                 layout::TILE_PANEL_R,
             ),
             IslandState::Terminal => (layout::TERM_W, layout::TERM_H, layout::TERM_R),
+            IslandState::Notifications => (
+                crate::notifications::PANEL_W,
+                crate::notifications::PANEL_H,
+                32.0,
+            ),
+            IslandState::NotificationToast => (
+                crate::notifications::TOAST_W,
+                crate::notifications::TOAST_H,
+                28.0,
+            ),
             IslandState::Clipboard => (
                 layout::CLIPBOARD_W,
                 layout::CLIPBOARD_H,
@@ -424,6 +451,8 @@ impl Island {
             IslandState::SnapThumb
         } else if self.timer.done {
             IslandState::TimerAlert
+        } else if self.notification_toast {
+            IslandState::NotificationToast
         } else if self.music.has_track {
             IslandState::MusicCompact
         } else if self.timer.active {
@@ -440,6 +469,23 @@ impl Island {
         if self.state.is_rest() && self.state != rest {
             self.set_state(rest, tokens);
         }
+    }
+
+    /// Open panels and higher-priority alerts keep notifications queued.
+    pub fn can_present_notification(&self) -> bool {
+        self.state.is_rest() && !self.snap && !self.timer.done && !self.osd.is_visible()
+    }
+
+    pub fn set_notification_toast(&mut self, shown: bool, tokens: &ResolvedTokens) {
+        self.notification_toast = shown;
+        if shown {
+            self.front = true;
+        }
+        self.settle_rest(tokens);
+    }
+
+    pub fn open_notifications(&mut self, tokens: &ResolvedTokens) {
+        self.set_state(IslandState::Notifications, tokens);
     }
 
     pub fn timer_ui(&self) -> TimerUi {
@@ -803,6 +849,25 @@ impl Island {
                 let (lx, ly) = Self::view_local(x, y, layout::TERM_W);
                 ClickOutcome::Terminal { x: lx, y: ly }
             }
+            IslandState::Notifications | IslandState::NotificationToast => {
+                let toast = self.state == IslandState::NotificationToast;
+                let w = if toast {
+                    crate::notifications::TOAST_W
+                } else {
+                    crate::notifications::PANEL_W
+                };
+                let (x, y) = Self::view_local(x, y, w);
+                let h = if toast {
+                    crate::notifications::TOAST_H
+                } else {
+                    crate::notifications::PANEL_H
+                };
+                if Rect::new(0.0, 0.0, w, h).contains(x, y) {
+                    ClickOutcome::Notifications { x, y, toast }
+                } else {
+                    ClickOutcome::Ignored
+                }
+            }
             IslandState::Clipboard => {
                 let (lx, ly) = Self::view_local(x, y, layout::CLIPBOARD_W);
                 // The outgoing panel may still be wider/taller during a morph.
@@ -1026,6 +1091,8 @@ impl Island {
                 tile: v(11),
                 terminal: v(12),
                 clipboard: v(13),
+                notifications: v(14),
+                notification_toast: v(15),
             },
             hover: self.hover,
             shake: self.shake.map(|(i, t)| {
@@ -1047,6 +1114,63 @@ impl Island {
 mod tests {
     use super::*;
     use crate::theme::{ThemeRegistry, DEFAULT_THEME};
+
+    #[test]
+    fn notifications_wait_below_panels_and_alerts_then_settle_without_animation() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.open_notifications(&t);
+        i.set_notification_toast(true, &t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Notifications);
+        assert!(!i.can_present_notification());
+        let p = i.pill_rect();
+        assert!(matches!(
+            i.click(p.x + 30.0, p.y + 110.0, &t),
+            ClickOutcome::Notifications { toast: false, .. }
+        ));
+        i.collapse(&t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::NotificationToast);
+        assert_eq!((i.pill_rect().w, i.pill_rect().h), (360.0, 72.0));
+        assert!(i.wants_front());
+        i.show_snap(&t);
+        assert_eq!(i.state(), IslandState::SnapThumb);
+        i.hide_snap(&t);
+        assert_eq!(i.state(), IslandState::NotificationToast);
+        i.set_timer(
+            TimerUi {
+                active: true,
+                done: true,
+            },
+            &t,
+        );
+        assert_eq!(i.state(), IslandState::TimerAlert);
+        i.set_notification_toast(false, &t);
+        i.set_timer(TimerUi::default(), &t);
+        settle(&mut i, &t);
+        assert_eq!(i.state(), IslandState::Idle);
+        assert!(!i.is_animating());
+    }
+
+    #[test]
+    fn notifications_tile_routes_open_without_locked_feedback() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.expand(&t);
+        settle(&mut i, &t);
+        let index = FEATURES
+            .iter()
+            .position(|f| f.id == "notifications")
+            .unwrap();
+        let tile = layout::home_tiles()[index];
+        let p = i.pill_rect();
+        assert_eq!(
+            i.click(p.x + tile.x + 10.0, p.y + tile.y + 10.0, &t),
+            ClickOutcome::Open(index)
+        );
+        assert!(i.view().hint.is_none());
+    }
 
     fn tokens() -> ResolvedTokens {
         ThemeRegistry::with_builtins()
@@ -2458,6 +2582,10 @@ mod tests {
             (IslandState::TilePanel, Island::open_tile),
             (IslandState::Terminal, Island::open_terminal),
             (IslandState::Clipboard, Island::show_clipboard),
+            (IslandState::Notifications, Island::open_notifications),
+            (IslandState::NotificationToast, |i, t| {
+                i.set_notification_toast(true, t)
+            }),
         ];
         assert_eq!(states.len(), LAYERS);
         for (state, setup) in states {
@@ -2481,6 +2609,8 @@ mod tests {
                 l.tile,
                 l.terminal,
                 l.clipboard,
+                l.notifications,
+                l.notification_toast,
             ];
             let want: [f32; LAYERS] =
                 std::array::from_fn(|n| if n == state.layer() { 1.0 } else { 0.0 });
@@ -2670,7 +2800,7 @@ mod tests {
         assert_eq!((v.layers.idle, v.layers.terminal), (0.0, 1.0));
         // Its own layer, after the Tile panel's, and the springs are sized for it.
         assert_eq!(IslandState::Terminal.layer(), 12);
-        assert_eq!(LAYERS, 14);
+        assert_eq!(LAYERS, 16);
         assert_eq!(
             Island::base_size(IslandState::Terminal),
             (layout::TERM_W, layout::TERM_H, layout::TERM_R)
