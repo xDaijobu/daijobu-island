@@ -367,12 +367,13 @@ impl App {
         for e in errors {
             storage::log(&format!("terminal tabs: {e}"));
         }
-        let terminal = Terminal::new(
+        let mut terminal = Terminal::new(
             config.terminal.clone(),
             Box::new(SessionSpawner { hwnd: raw }),
             Box::new(TextClipboard { owner: raw }),
             pinned,
         );
+        terminal.enable_folders(raw, storage::read_terminal_folders());
         let pins = Pins::new(hwnd, &tokens, config.snap.save_dir(&profile));
         let (clipboard, clipboard_error) = match Clipboard::new(
             hwnd,
@@ -2316,6 +2317,11 @@ impl App {
     /// has them they go back to where they were (never stuck on a window that won't take
     /// them).
     fn sync_terminal(&mut self) {
+        if let Some(text) = self.terminal.take_folder_save() {
+            self.dirty |= self
+                .terminal
+                .folder_save_result(storage::save_terminal_folders(&text));
+        }
         let shortcuts = self.terminal.shortcuts();
         if shortcuts != self.term_shortcuts {
             self.island.set_terminal_shortcuts(
@@ -4170,8 +4176,15 @@ impl Handler for App {
             Event::Music => self.drain_engine(),
             Event::Wake => {
                 self.drain_clipboard();
+                let picker_was_open = self.terminal.folder_picker_open();
                 // The shell printed (or set a title, or exited).
                 if self.terminal.drain() && self.island.terminal_open() {
+                    self.dirty = true;
+                }
+                if picker_was_open && !self.terminal.folder_picker_open() && self.term_keyboard {
+                    // Browse temporarily loses focus. Reflect the owner's actual state
+                    // after dialog completion without taking focus from another app.
+                    self.terminal.set_focused(window::is_foreground(self.hwnd));
                     self.dirty = true;
                 }
                 self.drain_art();
@@ -4307,6 +4320,8 @@ impl Handler for App {
                     self.terminal
                         .set_focused(foreground && self.overlay.is_none());
                     self.dirty = true;
+                } else if self.terminal.folder_picker_open() {
+                    self.terminal.set_focused(false);
                 } else if self.terminal.config().hide_on_blur {
                     self.close_terminal(false);
                 } else {
@@ -4474,6 +4489,7 @@ impl Handler for App {
             notice: v.notice.as_deref(),
             close_hover: v.close_hover,
             tabs: &v.tabs,
+            chooser: v.chooser.as_ref(),
         });
         let mut unavailable_clipboard = dj_core::clipboard_ui::View::default();
         unavailable_clipboard.status = self.clipboard_error.clone();

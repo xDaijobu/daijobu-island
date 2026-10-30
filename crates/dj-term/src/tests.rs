@@ -1297,6 +1297,56 @@ fn spawning_a_missing_program_is_an_error_not_a_panic() {
     }
 }
 
+#[test]
+fn explicit_missing_or_file_cwd_is_rejected_without_home_fallback() {
+    let root = scratch_dir("invalid-cwd");
+    let file = root.join("file");
+    std::fs::write(&file, b"not a directory").unwrap();
+    for cwd in [root.join("missing"), file] {
+        let mut options = opts("cmd.exe", &["/d", "/c", "exit"]);
+        options.cwd = Some(cwd);
+        let (wake, _rx) = waker();
+        let error = Session::spawn(&options, wake).err().expect("invalid cwd");
+        assert!(error.contains("Working folder"), "{error}");
+    }
+    std::fs::remove_file(root.join("file")).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[test]
+fn conpty_explicit_cwd_preserves_spaces_unicode_and_metacharacters() {
+    let root = scratch_dir("explicit-cwd");
+    let cwd = root.join("space 日本語 & '$()'");
+    std::fs::create_dir(&cwd).unwrap();
+    // The command is constant: the path is supplied only through native cwd.
+    let mut options = opts("cmd.exe", &["/d", "/c", "chcp 65001>nul & cd"]);
+    options.cwd = Some(cwd.clone());
+    options.cols = 240;
+    let (wake, rx) = waker();
+    let mut session = Session::spawn(&options, wake).expect("spawn in explicit cwd");
+    // Wide glyphs occupy an extra blank cell; that spacer is layout, not path data.
+    let path_text = |s: &Screen| -> String {
+        s.cells
+            .iter()
+            .filter(|c| !c.style.spacer)
+            .map(|c| c.ch)
+            .collect()
+    };
+    let (screen, events) = wait_for(&mut session, &rx, Duration::from_secs(15), |s, ev| {
+        path_text(s).contains(cwd.to_str().unwrap())
+            && ev.iter().any(|e| matches!(e, TermEvent::Exited(_)))
+    });
+    assert!(
+        path_text(&screen).contains(cwd.to_str().unwrap()),
+        "{}",
+        text(&screen)
+    );
+    assert!(events.contains(&TermEvent::Exited(Some(0))), "{events:?}");
+    drop(session);
+    std::fs::remove_dir(cwd).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
 // ---------------------------------------------------------------- cwd capture
 
 #[test]

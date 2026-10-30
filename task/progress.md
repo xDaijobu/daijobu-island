@@ -8,6 +8,23 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 
 ---
 
+## Stage Terminal Folders (review resolved; native manual acceptance pending)
+
+Worktree: `stage-terminal-folders`, base `9335f13`. Brief: [stage-terminal-folders-brief.md](stage-terminal-folders-brief.md).
+
+- [x] Pre-launch Shell / Claude / Codex chooser for initial empty open and new sessions; editable folder, Browse, Open, cancel and keyboard/mouse navigation.
+- [x] Last successful folder per profile and bounded folder MRU in local config; Clear history removes both, never reads command/conversation history.
+- [x] Validate existing absolute directories; pass native cwd only, preserve live tabs and existing agent profiles.
+- [x] Explicit Browse uses owned STA worker, completion wake, no idle polling or shared GPU changes.
+- [x] Fourteen pure/fake/raster/native regressions; fmt check, workspace clippy/all-targets with warnings denied and 1,661 full workspace tests passed (0 ignored/filtered). Serial test execution follows a pre-existing concurrent ConPTY exit-event timeout, with every previously excluded native/process case included.
+- [x] Optimized release-inheriting `terminal-folders` build passed using shared `target/stage-t4`; executable built without launching or disturbing the running app.
+- [x] Independent P2 findings fixed: 2 MiB pre-parse history read cap, six-entry dedup work bound, display-only Unicode cap before fit and single bulk insertion preserving full cwd.
+- [x] Completion review fixed chooser re-entry retaining stale validation, persistence warnings surviving successful saves and terminal focus state remaining stale after native picker completion. Hide cancels validation; native explicit local cwd with spaces/Unicode/metacharacters and missing/file cwd rejection verified without providers.
+
+Executable: `C:/Users/UseR/orca/projects/daijobu-island/target/stage-t4/terminal-folders/daijobu.exe` (not launched). [Report](stage-terminal-folders-report.md) records exact files, commands, the existing native test flake and manual limits including final synchronous ConPTY startup/network-path latency.
+
+Acceptance: no chooser-driven spawn until Open, invalid paths keep chooser with feedback, switches never relocate sessions; spaces/Unicode/UNC stay path data. Standard test shells and hidden-window tests are authorized by the current verification request; no real Claude/Codex agents or running-app lifecycle actions. Changes remain uncommitted for coordinator-owned integration, merge and worktree cleanup. Native visual/picker/hardware acceptance remains manual.
+
 ## Stage Dev Memory: developer diagnostics and approved RAM optimization (review passed; manual acceptance pending)
 
 Independent review found no blockers. User authorized commit, PR, merge and release on 2026-10-29. Integration revalidation passed fmt check, locked workspace clippy/all-targets with warnings denied, locked workspace tests and locked optimized memory-opt build. Existing app untouched; native RAM savings, under-100MB target and smoothness remain unverified.

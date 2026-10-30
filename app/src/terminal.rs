@@ -3,6 +3,8 @@
 //! the clipboard are traits, so the tests drive it with fakes; the app plugs in `dj_term`
 //! and `dj_win::clipboard`.
 
+mod folders;
+
 use dj_core::config::TerminalConfig;
 use dj_core::layout::{TERM_CLOSE, TERM_HEADER_H, TERM_TEXT};
 use dj_core::line_edit::LineEdit;
@@ -11,6 +13,7 @@ use dj_core::term_tabs::{
     self as tabs, MenuAction, PinnedTab, Press, Release, TabBarView, TabId, TabKey, Tabs,
 };
 use dj_core::terminal::{self as term, KeyAction, Modes, Mods, Palette, Screen, WheelAccum};
+use dj_core::terminal_folders::ChooserView;
 use dj_core::terminal_shortcuts::Shortcut;
 use dj_term::{SpawnOptions, TermEvent};
 use std::collections::HashMap;
@@ -141,6 +144,7 @@ pub struct View {
     pub notice: Option<String>,
     pub close_hover: bool,
     pub tabs: TabBarView,
+    pub chooser: Option<ChooserView>,
 }
 
 /// What a tab's shell is started with (kept to restart it, and to save a pinned tab).
@@ -248,6 +252,7 @@ pub struct Terminal {
     /// A touchpad's small wheel steps add up to whole lines.
     wheel: WheelAccum,
     rename: Option<Rename>,
+    folders: folders::Folders,
 }
 
 impl Terminal {
@@ -291,6 +296,7 @@ impl Terminal {
             close_hover: false,
             wheel: WheelAccum::default(),
             rename: None,
+            folders: folders::Folders::default(),
         }
     }
 
@@ -379,6 +385,17 @@ impl Terminal {
     /// default tab is opened besides this one.
     pub fn open_in(&mut self, cell: (u16, u16), scale: f32, dir: String, agent: Option<Agent>) {
         self.restore_pinned(cell, scale);
+        if self.folders.enabled {
+            self.choose_folder(
+                match agent {
+                    Some(Agent::Claude) => 1,
+                    Some(Agent::Codex) => 2,
+                    None => 0,
+                },
+                Some(dir),
+            );
+            return;
+        }
         let mut spec = match agent {
             Some(a) => self.agent_spec(a),
             None => self.config_spec(),
@@ -433,6 +450,10 @@ impl Terminal {
 
     /// The panel is going away: a press or a drag in progress, and the menu, end.
     pub fn on_hide(&mut self) {
+        if !self.folder_picker_open() {
+            self.folders.chooser = None;
+            self.folders.cancel_validation();
+        }
         self.rename = None;
         self.tabs.cancel();
         self.tabs.close_menu();
@@ -452,6 +473,9 @@ impl Terminal {
 
     /// A new regular tab with the configured shell, made active. False at the limit.
     fn new_tab(&mut self) -> bool {
+        if self.folders.enabled {
+            return self.choose_folder(0, None);
+        }
         self.add_tab(self.config_spec(), None, false)
     }
 
@@ -459,6 +483,9 @@ impl Terminal {
     /// configured one when that is unknown or gone). The agents are npm PowerShell shims, so
     /// the tab is the configured shell if it is PowerShell, else Windows PowerShell.
     fn new_agent_tab(&mut self, agent: Agent) -> bool {
+        if self.folders.enabled {
+            return self.choose_folder(if agent == Agent::Claude { 1 } else { 2 }, None);
+        }
         let mut spec = self.agent_spec(agent);
         // The folder the active shell last reported, else the one it started in (an agent
         // tab that has not reached a prompt yet has reported nothing).
@@ -512,7 +539,7 @@ impl Terminal {
         let cwd = if tab.spec.cwd.trim().is_empty() {
             std::env::var_os("USERPROFILE").map(PathBuf::from)
         } else {
-            Some(PathBuf::from(tab.spec.cwd.trim()))
+            Some(PathBuf::from(&tab.spec.cwd))
         };
         let (program, mut args) = dj_term::resolve_shell(&tab.spec.shell, &tab.spec.args);
         // PowerShell reports its folder at every prompt, and runs the tab's agent if it has one.
@@ -665,6 +692,9 @@ impl Terminal {
     pub fn key(&mut self, vk: u16, mods: Mods) -> Outcome {
         // A char only ever follows its own key, so a new key ends any skip.
         self.skip_char = false;
+        if self.folders.chooser.is_some() {
+            return self.folder_key(vk, mods);
+        }
         if self.rename.is_some() {
             return self.rename_key(vk, mods);
         }
@@ -714,6 +744,9 @@ impl Terminal {
     pub fn char(&mut self, ch: char, mods: Mods) -> Outcome {
         if std::mem::take(&mut self.skip_char) {
             return Outcome::None;
+        }
+        if self.folders.chooser.is_some() {
+            return self.folder_char(ch, mods);
         }
         if let Some(rename) = self.rename.as_mut() {
             if !mods.ctrl && !mods.alt && !ch.is_control() {
@@ -845,6 +878,9 @@ impl Terminal {
     /// The left button went down at a panel-local point: the panel's close button, the
     /// tab bar (or the open tab menu), or the start of a selection.
     pub fn press(&mut self, x: f32, y: f32) -> Outcome {
+        if self.folders.chooser.is_some() {
+            return self.folder_press(x, y);
+        }
         if self.rename.is_some() {
             if tabs::RENAME_SAVE.contains(x, y) {
                 return self.finish_rename(true);
@@ -924,7 +960,7 @@ impl Terminal {
 
     /// A double click selects the word under the pointer.
     pub fn double_click(&mut self, x: f32, y: f32) -> Outcome {
-        if self.rename.is_some() {
+        if self.rename.is_some() || self.folders.chooser.is_some() {
             return Outcome::None;
         }
         if Self::in_header(y) || self.tabs.menu_open() {
@@ -942,7 +978,7 @@ impl Terminal {
     }
 
     pub fn drag(&mut self, x: f32, y: f32) -> Outcome {
-        if self.rename.is_some() {
+        if self.rename.is_some() || self.folders.chooser.is_some() {
             return Outcome::None;
         }
         self.pointer = (x, y);
@@ -965,7 +1001,7 @@ impl Terminal {
 
     /// The left button went up (where the pointer last was).
     pub fn release(&mut self) -> Outcome {
-        if self.rename.is_some() {
+        if self.rename.is_some() || self.folders.chooser.is_some() {
             return Outcome::None;
         }
         self.selecting = false;
@@ -985,7 +1021,7 @@ impl Terminal {
 
     /// Right click: on a tab, its menu; elsewhere, copies a selection or pastes.
     pub fn right_click(&mut self, x: f32, y: f32) -> Outcome {
-        if self.rename.is_some() {
+        if self.rename.is_some() || self.folders.chooser.is_some() {
             return Outcome::None;
         }
         if Self::in_header(y) || self.tabs.menu_open() {
@@ -1008,7 +1044,7 @@ impl Terminal {
 
     /// Middle click: closes the regular tab under the pointer.
     pub fn middle_click(&mut self, x: f32, y: f32) -> Outcome {
-        if self.rename.is_some() {
+        if self.rename.is_some() || self.folders.chooser.is_some() {
             return Outcome::None;
         }
         match self.tabs.middle_click(x, y) {
@@ -1018,7 +1054,11 @@ impl Terminal {
     }
 
     pub fn wheel(&mut self, delta: i32, x: f32, y: f32) -> Outcome {
-        if self.rename.is_some() || self.tabs.menu_open() || Self::in_header(y) {
+        if self.folders.chooser.is_some()
+            || self.rename.is_some()
+            || self.tabs.menu_open()
+            || Self::in_header(y)
+        {
             return Outcome::None;
         }
         let Some((col, row, _)) = self.cell_at(x, y) else {
@@ -1052,7 +1092,7 @@ impl Terminal {
     /// needs a frame.
     pub fn drain(&mut self) -> bool {
         let active = self.active_id();
-        let mut changed = false;
+        let mut changed = self.drain_picker() | self.drain_folder_validation();
         for (id, tab) in self.sessions.iter_mut() {
             let saved_name = self.tabs.is_pinned(*id).then(|| tab.name());
             let Some(s) = tab.session.as_mut() else {
@@ -1107,9 +1147,14 @@ impl Terminal {
         View {
             title: tab.map_or_else(|| "terminal".to_string(), Tab::name),
             screen,
-            notice: tab.and_then(Tab::notice),
+            notice: self
+                .folders
+                .save_error
+                .clone()
+                .or_else(|| tab.and_then(Tab::notice)),
             close_hover: self.close_hover,
             tabs,
+            chooser: self.folder_view(),
         }
     }
 
@@ -1292,6 +1337,131 @@ mod tests {
     fn palette() -> Palette {
         let reg = ThemeRegistry::with_builtins();
         term::palette(reg.get(DEFAULT_THEME).unwrap())
+    }
+
+    #[test]
+    fn folder_chooser_launches_only_on_open_and_keeps_live_tabs() {
+        let mut r = Rig::new();
+        r.term
+            .enable_folders(0, dj_core::terminal_folders::History::default());
+        r.open();
+        assert!(r.spawns.borrow().opts.is_empty());
+        r.term.char('x', NONE);
+        r.term.key(VK_RETURN, NONE);
+        r.term.wait_folder_validation();
+        assert!(r.spawns.borrow().opts.is_empty());
+        assert!(!r.term.folder_view().unwrap().error.is_empty());
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("space 日本語 & '$()'");
+        std::fs::create_dir(&path).unwrap();
+        for profile in 0..3 {
+            r.term
+                .choose_folder(profile, Some(path.to_str().unwrap().to_string()));
+            r.term.key(VK_RETURN, NONE);
+            r.term.wait_folder_validation();
+            assert!(r.term.folder_view().is_none());
+            let o = last_spawn(&r);
+            assert_eq!(o.cwd.as_deref(), Some(path.as_path()));
+            assert!(o.args.iter().all(|a| !a.contains("space 日本語")));
+            assert!(r.writes().is_empty());
+        }
+        assert_eq!(r.spawns.borrow().opts.len(), 3);
+        let id = r.term.active_id().unwrap();
+        r.term.open((8, 17), 1.0);
+        r.term.key(0x09, CTRL);
+        assert!(r.term.folder_view().is_none());
+        assert_eq!(r.spawns.borrow().opts.len(), 3);
+        assert_ne!(r.term.active_id(), Some(id));
+        let saved = r.term.take_folder_save().unwrap();
+        let h = dj_core::terminal_folders::History::parse(&saved);
+        assert_eq!(h.recent.len(), 1);
+        assert!(h.last.iter().all(|p| p == path.to_str().unwrap()));
+        r.term.choose_folder(0, None);
+        let clear = dj_core::terminal_folders::row(7);
+        r.term.press(clear.x + 1.0, clear.y + 1.0);
+        assert_eq!(
+            dj_core::terminal_folders::History::parse(&r.term.take_folder_save().unwrap()),
+            dj_core::terminal_folders::History::default()
+        );
+        r.term.key(0x1b, NONE);
+        assert!(r.term.folder_view().is_none());
+        assert_eq!(r.spawns.borrow().opts.len(), 3);
+    }
+
+    #[test]
+    fn folder_hidden_validation_cannot_launch_stale_request() {
+        let mut r = Rig::new();
+        r.term
+            .enable_folders(0, dj_core::terminal_folders::History::default());
+        r.term
+            .choose_folder(0, Some(std::env::temp_dir().to_str().unwrap().into()));
+        r.term.key(VK_RETURN, NONE);
+        r.term.on_hide();
+        r.term.drain();
+        assert!(r.spawns.borrow().opts.is_empty());
+        assert!(r.term.folder_view().is_none());
+    }
+
+    #[test]
+    fn folder_reentry_cannot_launch_previous_validation() {
+        let mut r = Rig::new();
+        r.term
+            .enable_folders(0, dj_core::terminal_folders::History::default());
+        let path = std::env::temp_dir().to_str().unwrap().to_string();
+        r.term.choose_folder(0, Some(path.clone()));
+        r.term.key(VK_RETURN, NONE);
+        r.term.open_in((8, 17), 1.0, path, Some(Agent::Codex));
+        r.term.wait_folder_validation();
+        assert!(r.spawns.borrow().opts.is_empty());
+        assert!(r.term.folder_view().unwrap().rows[2].starts_with('●'));
+        r.term.key(VK_RETURN, NONE);
+        r.term.wait_folder_validation();
+        assert_eq!(r.spawns.borrow().opts.len(), 1);
+        assert!(r.term.folder_view().is_none());
+    }
+
+    #[test]
+    fn folder_save_feedback_clears_after_success_in_and_outside_chooser() {
+        let mut r = Rig::new();
+        r.term
+            .enable_folders(0, dj_core::terminal_folders::History::default());
+        assert!(r.term.folder_save_result(Err("Cannot save".into())));
+        r.open();
+        assert_eq!(r.term.folder_view().unwrap().error, "Cannot save");
+        assert!(r.term.folder_save_result(Ok(())));
+        assert!(r.term.folder_view().unwrap().error.is_empty());
+        r.term.folder_save_result(Err("Cannot save".into()));
+        r.term.char('x', NONE);
+        r.term.key(VK_RETURN, NONE);
+        r.term.wait_folder_validation();
+        assert_eq!(
+            r.term.folder_view().unwrap().error,
+            "Enter an absolute folder path."
+        );
+        r.term.on_hide();
+        assert!(r.term.folder_save_result(Err("Cannot save again".into())));
+        assert_eq!(
+            r.term.view(&palette()).notice.as_deref(),
+            Some("Cannot save again")
+        );
+        assert!(r.term.folder_save_result(Ok(())));
+        assert!(r.term.view(&palette()).notice.is_none());
+        assert!(!r.term.folder_save_result(Ok(())));
+    }
+
+    #[test]
+    fn folder_spawn_failure_keeps_chooser_without_history() {
+        let mut r = Rig::new();
+        r.term
+            .enable_folders(0, dj_core::terminal_folders::History::default());
+        r.spawns.borrow_mut().fail = true;
+        let path = std::env::temp_dir().to_str().unwrap().to_string();
+        r.term.choose_folder(0, Some(path));
+        r.term.key(VK_RETURN, NONE);
+        r.term.wait_folder_validation();
+        assert!(!r.term.folder_view().unwrap().error.is_empty());
+        assert!(r.term.take_folder_save().is_none());
+        assert!(r.term.tabs.is_empty());
     }
 
     #[test]

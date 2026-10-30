@@ -16,6 +16,7 @@ pub mod clipboard;
 pub mod clipboard_transfer;
 pub mod dev_memory;
 pub mod drag_drop;
+pub mod folder_picker;
 pub mod hook;
 pub mod launcher;
 pub mod overlay;

@@ -50,6 +50,7 @@ pub struct TerminalPanel<'a> {
     /// The tab bar (drawn in the header in place of `title`) and the open tab menu. With no
     /// tabs the header shows `title` as it always did.
     pub tabs: &'a TabBarView,
+    pub chooser: Option<&'a dj_core::terminal_folders::ChooserView>,
 }
 
 /// Header and notice text: `font_label`, medium, this size in logical px, with the Tile
@@ -232,6 +233,15 @@ fn is_invisible(ch: char) -> bool {
 /// Draws the terminal panel's content inside `at`: the panel's rect at its final size, in
 /// window logical px (as `paint_tile_panel` takes it), at `scale` device px per logical px.
 /// Clipped to `at`; the grid and what sits on it are clipped to `TERM_TEXT` too.
+fn folder_display_text(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut display: String = chars.by_ref().take(160).collect();
+    if chars.next().is_some() {
+        display.push('…');
+    }
+    display
+}
+
 pub(crate) fn paint_terminal(
     canvas: &Canvas,
     fonts: &mut Fonts,
@@ -246,6 +256,54 @@ pub(crate) fn paint_terminal(
     canvas.clip_rect(area, ClipOp::Intersect, false);
 
     header(canvas, fonts, t, area, s, p);
+    if let Some(chooser) = p.chooser {
+        let font = fonts.font(&t.font_label, Weight::Medium, 12.0 * s);
+        let ink = fill_paint(col(t.text, 1.0));
+        draw_text(
+            canvas,
+            &font,
+            "New session · Tab / Shift+Tab to navigate · Enter to choose · Esc to cancel",
+            area.left + 24.0 * s,
+            area.top + 57.0 * s,
+            0.0,
+            &ink,
+        );
+        for (index, label) in chooser.rows.iter().enumerate() {
+            let r = dj_core::terminal_folders::row(index);
+            let rect = Rect::from_xywh(area.left + r.x * s, area.top + r.y * s, r.w * s, r.h * s);
+            if index == chooser.focus {
+                canvas.draw_rect(rect, &fill_paint(col(t.surface2, 1.0)));
+            }
+            canvas.save();
+            canvas.clip_rect(rect, ClipOp::Intersect, true);
+            let label = folder_display_text(label);
+            let label = fit(&font, &label, 0.0, rect.width() - 16.0 * s);
+            draw_text(
+                canvas,
+                &font,
+                &label,
+                rect.left + 8.0 * s,
+                rect.top + 19.0 * s,
+                0.0,
+                &ink,
+            );
+            canvas.restore();
+        }
+        let y = 82.0 + chooser.rows.len() as f32 * 22.0;
+        let error = folder_display_text(&chooser.error);
+        let error = fit(&font, &error, 0.0, 720.0 * s);
+        draw_text(
+            canvas,
+            &font,
+            &error,
+            area.left + 24.0 * s,
+            area.top + y * s,
+            0.0,
+            &ink,
+        );
+        canvas.restore_to_count(base);
+        return;
+    }
 
     let inner = canvas.save();
     let text = Rect::new(
@@ -1569,6 +1627,42 @@ mod tests {
         Style::default()
     }
 
+    #[test]
+    fn folder_display_bounds_huge_unicode_without_changing_source() {
+        let path = format!("C:\\{}", "😀日本語".repeat(32767));
+        let original = path.clone();
+        let display = folder_display_text(&path);
+        assert_eq!(display.chars().count(), 161);
+        assert!(display.ends_with('…'));
+        assert_eq!(path, original);
+        assert_eq!(folder_display_text("日本語"), "日本語");
+        assert_eq!(folder_display_text(&"日".repeat(160)), "日".repeat(160));
+    }
+
+    #[test]
+    fn folder_chooser_rows_and_errors_fit_all_themes_and_scales() {
+        for t in themes() {
+            for s in SCALES {
+                let pal = dj_core::terminal::palette(&t);
+                let sc = Screen::blank(80, 20, &pal);
+                let view = dj_core::terminal_folders::ChooserView {
+                    rows: (0..14)
+                        .map(|n| format!("{n}: C:\\space 日本語 {}", "long ".repeat(100)))
+                        .collect(),
+                    focus: 13,
+                    error: "Cannot open folder: access denied".into(),
+                };
+                let p = TerminalPanel {
+                    chooser: Some(&view),
+                    ..panel(&sc, &pal)
+                };
+                let (shot, g) = render(&t, &p, s);
+                assert_eq!(shot.lit_outside(shot.whole(), &[g.panel]), None);
+                assert!(shot.lit_in(g.rect(dj_core::terminal_folders::row(13))) > 20);
+            }
+        }
+    }
+
     /// The tab view of a panel with no tabs: the header shows the title.
     static NO_TABS: TabBarView = TabBarView {
         tabs: Vec::new(),
@@ -1588,6 +1682,7 @@ mod tests {
             notice: None,
             close_hover: false,
             tabs: &NO_TABS,
+            chooser: None,
         }
     }
 

@@ -109,6 +109,64 @@ pub fn save_terminal_tabs(toml: &str) {
     }
 }
 
+pub fn read_terminal_folders() -> dj_core::terminal_folders::History {
+    let text =
+        fs::File::open(data_dir().join("terminal-folders.toml")).and_then(read_folder_history);
+    match text {
+        Ok(text) => dj_core::terminal_folders::History::parse(&text),
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log(&format!(
+                    "Cannot read folder history; using empty history: {e}"
+                ));
+            }
+            dj_core::terminal_folders::History::default()
+        }
+    }
+}
+
+fn read_folder_history(reader: impl std::io::Read) -> std::io::Result<String> {
+    use std::io::Read;
+    let limit = dj_core::terminal_folders::MAX_HISTORY_BYTES;
+    let mut bytes = Vec::new();
+    reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Folder history exceeds 2 MiB.",
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+pub fn save_terminal_folders(text: &str) -> Result<(), String> {
+    fs::write(data_dir().join("terminal-folders.toml"), text)
+        .map_err(|e| format!("Could not save folder history: {e}"))
+}
+
 pub fn log(msg: &str) {
     dj_win::system::log(msg);
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    #[test]
+    fn history_reader_caps_bytes_and_rejects_partial_or_invalid_text() {
+        let limit = dj_core::terminal_folders::MAX_HISTORY_BYTES;
+        let mut input = std::io::Cursor::new(vec![b'x'; limit * 2]);
+        assert_eq!(
+            read_folder_history(&mut input).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(input.position(), limit as u64 + 1);
+        assert_eq!(
+            read_folder_history(&b"recent = []"[..]).unwrap(),
+            "recent = []"
+        );
+        assert!(read_folder_history(&[0xff][..]).is_err());
+        let text = "日".repeat(limit / 3 + 1);
+        assert!(read_folder_history(text.as_bytes()).is_err());
+    }
 }

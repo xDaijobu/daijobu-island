@@ -122,6 +122,11 @@ impl Session {
         opts: &SpawnOptions,
         wake: Box<dyn Fn() + Send + Sync>,
     ) -> Result<Session, String> {
+        if let Some(cwd) = &opts.cwd {
+            if !cwd.is_dir() {
+                return Err("Working folder does not exist or is inaccessible.".into());
+            }
+        }
         let located = shell::locate_program(&opts.program)
             .ok_or_else(|| format!("shell not found: {}", opts.program))?;
         let (cols, rows) = clamp_dims(opts.cols, opts.rows);
@@ -144,7 +149,7 @@ impl Session {
                 shell::quote_program(&located.to_string_lossy()),
                 opts.args.clone(),
             )),
-            working_directory: shell::pick_cwd(opts.cwd.as_deref()),
+            working_directory: opts.cwd.clone().or_else(|| shell::pick_cwd(None)),
             // Read what the shell printed just before it exited ("exit", `cmd /c echo`).
             drain_on_exit: true,
             // What Alacritty advertises; harmless to Windows programs, useful to Git's tools.

@@ -224,6 +224,14 @@ Terminal and agent actions start a new island terminal tab in the folder itself 
 
 Use the **+** menu for a new Terminal, Claude or Codex tab. Tabs can be reordered, closed and pinned; pinned tabs start in the background automatically after a restart, with their saved order, names, shell arguments and agent type. PowerShell tabs also restore their last reported folder. Their live shortcuts appear beside the clock without opening Terminal first. Unpinned tabs are not restored. This starts new processes; terminal scrollback, running commands and agent conversations are not restored.
 
+New sessions open a folder chooser before starting. Choose Shell, Claude or Codex,
+edit the folder or use **Browse**, then select **Open**. The chooser remembers the
+last successful folder per profile and six recent folders; **Clear history** removes
+those saved paths. Spotlight supplies its selected folder. Existing tabs, pinned
+restore and session restart keep their own folders. Native Browse interactions,
+UNC paths and long paths still have manual checks listed in the
+[stage report](task/stage-terminal-folders-report.md).
+
 Claude and Codex must be installed separately. Their tabs run in **yolo mode**, bypassing approval prompts (and Codex's sandbox); pinned agent tabs restart in that mode too.
 
 The mouse wheel scrolls shell history. Programs that enable terminal mouse tracking receive wheel events at the pointer's cell instead, so they can scroll their own content. Full-screen programs without mouse tracking receive up/down keys when alternate-scroll mode is enabled.
