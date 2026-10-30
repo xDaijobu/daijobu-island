@@ -564,6 +564,8 @@ impl App {
             Ok(m) => self.mixer = Some(m),
             Err(e) => storage::log(&format!("volume endpoint: {e}")),
         }
+        self.island
+            .set_music_volume_available(self.mixer.as_ref().and_then(|m| m.read()).is_some());
         // Without an endpoint the keys would be swallowed and do nothing, so the flyout stays.
         if self.config.osd.replace_volume_flyout && self.mixer.is_some() {
             hook::set_volume_keys(true);
@@ -575,7 +577,13 @@ impl App {
 
     /// Shows the OSD with the endpoint's current level and mute state.
     fn show_volume(&mut self) {
-        let Some((level, muted)) = self.mixer.as_ref().and_then(|m| m.read()) else {
+        let volume = self.mixer.as_ref().and_then(|m| m.read());
+        self.island.set_music_volume_available(volume.is_some());
+        self.dirty = true;
+        if self.island.state() == IslandState::MusicExpanded {
+            return;
+        }
+        let Some((level, muted)) = volume else {
             return;
         };
         let tokens = self.anim.current().clone();
@@ -4235,6 +4243,10 @@ impl Handler for App {
                         storage::log(&format!("volume endpoint: {e}"));
                     }
                 }
+                self.island.set_music_volume_available(
+                    self.mixer.as_ref().and_then(|m| m.read()).is_some(),
+                );
+                self.dirty = true;
             }
             Event::VolumeKey(vk) => {
                 if let Some(m) = self.mixer.as_ref() {
@@ -4483,6 +4495,16 @@ impl Handler for App {
                     }
                 }
             }
+            Event::Wheel { delta, x, y }
+                if self.island.state() == IslandState::MusicExpanded && self.over_panel(x, y) =>
+            {
+                let (x, y) = self.island_point(x, y);
+                if let Some((level, _)) = self.mixer.as_ref().and_then(|m| m.read()) {
+                    if let Some(level) = self.island.music_volume_wheel(x, y, delta, level) {
+                        self.set_level(level);
+                    }
+                }
+            }
             Event::Wheel { delta, x, y } if self.clipboard_input() && self.over_panel(x, y) => {
                 if let Some(c) = &mut self.clipboard {
                     let action = c.view.wheel(delta);
@@ -4699,6 +4721,11 @@ impl Handler for App {
             },
             accent,
             pos,
+            volume: self
+                .mixer
+                .as_ref()
+                .and_then(|m| m.read())
+                .map(|(level, muted)| Volume { level, muted }),
         };
         let estimate = self.estimate();
         let timer = self.timer.view(now);

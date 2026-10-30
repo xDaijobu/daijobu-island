@@ -483,7 +483,7 @@
     <tr><th>State</th><th>Ukuran @100% DPI</th><th>Radius</th><th>Isi</th></tr>
     <tr><td>Idle</td><td class="m">128 × 32</td><td class="m">16</td><td>jam mono dan lamp status</td></tr>
     <tr><td>Music compact</td><td class="m">224 × 36</td><td class="m">18</td><td>art 24 (r6) di kiri, static play/pause status di kanan</td></tr>
-    <tr><td>Music expanded</td><td class="m">400 × 184</td><td class="m">32</td><td>art 88, judul 15 / artis 12, scrubber 4, tombol 34</td></tr>
+    <tr><td>Music expanded</td><td class="m">400 × 216</td><td class="m">32</td><td>art 88, judul 15 / artis 12, scrubber 4, tombol 34; Windows volume click/drag + percent below lyrics, live endpoint updates without opening OSD</td></tr>
     <tr><td>OSD volume</td><td class="m">220 × 40</td><td class="m">20</td><td>ikon, track 4 px, angka mono. Hilang 1.5 s setelah perubahan terakhir</td></tr>
     <tr><td>Notifikasi</td><td class="m">360 × 72</td><td class="m">28</td><td>ikon 40, judul 13, body 12 (maks 2 baris), 4 s</td></tr>
     <tr><td>Timer compact</td><td class="m">172 × 36</td><td class="m">18</td><td>ring 18 dan angka Doto 18</td></tr>
@@ -837,7 +837,7 @@ function drawWall(){
 const S={
   idle:{w:128,h:32,r:16,label:'idle'},
   media:{w:224,h:36,r:18,label:'music'},
-  mediaX:{w:400,h:184,r:32,label:'music · expanded'},
+  mediaX:{w:400,h:216,r:32,label:'music · expanded'},
   volume:{w:220,h:40,r:20,label:'OSD volume'},
   notif:{w:360,h:72,r:28,label:'notifikasi'},
   timer:{w:172,h:36,r:18,label:'timer'},

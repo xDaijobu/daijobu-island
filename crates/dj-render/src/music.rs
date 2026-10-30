@@ -1,5 +1,5 @@
 //! The Music views: the compact pill (224 x 36, plus the timer overlay while a timer
-//! runs), the expanded player (400 x 184) and its native session status. Same layout rules as
+//! runs), the expanded player (400 x 216) and its native session status. Same layout rules as
 //! the Home grid: content is anchored to the pill's top-centre, so it holds still while
 //! the pill springs around it.
 
@@ -325,6 +325,49 @@ impl Painter {
         }
 
         let btn = self.fonts.font(&t.font_label, Weight::Medium, 9.0 * s);
+        let volume_label = match m.volume {
+            Some(v) if v.muted => "Windows volume (muted)",
+            Some(_) => "Windows volume",
+            None => "Audio unavailable",
+        };
+        let volume_font = self.fonts.font(&t.font_label, Weight::Regular, 8.0 * s);
+        draw_text(
+            canvas,
+            &volume_font,
+            volume_label,
+            ox + 16.0 * s,
+            oy + 173.0 * s,
+            0.0,
+            &fill_paint(dim),
+        );
+        let vr = at(lay::ME_VOLUME);
+        let bar = Rect::from_xywh(vr.left, vr.center_y() - 2.0 * s, vr.width(), 4.0 * s);
+        canvas.draw_rrect(
+            RRect::new_rect_xy(bar, 2.0 * s, 2.0 * s),
+            &fill_paint(col(t.surface2, 1.0)),
+        );
+        if let Some(volume) = m.volume {
+            let level = volume.level.clamp(0.0, 1.0);
+            let ink = if volume.muted { dim } else { accent };
+            let done = Rect::from_xywh(bar.left, bar.top, bar.width() * level, bar.height());
+            canvas.draw_rrect(RRect::new_rect_xy(done, 2.0 * s, 2.0 * s), &fill_paint(ink));
+            canvas.draw_circle(
+                (bar.left + bar.width() * level, bar.center_y()),
+                4.0 * s,
+                &fill_paint(ink),
+            );
+            let percent = format!("{:.0}%", level * 100.0);
+            let width = text_width(&font_time, &percent, 0.0);
+            draw_text(
+                canvas,
+                &font_time,
+                &percent,
+                ox + 384.0 * s - width,
+                oy + 173.0 * s,
+                0.0,
+                &fill_paint(text),
+            );
+        }
         let status = if m.now.is_none() && m.ui.available {
             "Start playback in an external player"
         } else {

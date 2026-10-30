@@ -131,10 +131,10 @@ pub enum Event {
         ctrl: bool,
         alt: bool,
     },
-    /// The wheel turned over the island while it has the keyboard. `delta` is in
+    /// The wheel turned over the island, including non-activating Music. `delta` is in
     /// `WHEEL_DELTA` units (120 per notch), positive when the wheel is rolled away from the
     /// user (scroll up). `x` and `y` are client coordinates in device pixels. Sent only in
-    /// keyboard mode.
+    /// any keyboard mode; the app filters by panel and pointer location.
     Wheel {
         delta: i32,
         x: i32,
@@ -770,7 +770,7 @@ fn consumed(msg: u32, wp: usize, keyboard_on: bool) -> bool {
 /// to their event. Everything is `None` outside keyboard mode. `high` is the pending high
 /// surrogate (see `join_utf16`). The left button is not here: see `left_press`.
 fn translate(msg: u32, wp: usize, lp: isize, ctx: &Ctx, high: &mut Option<u16>) -> Option<Event> {
-    if !ctx.keyboard {
+    if !ctx.keyboard && msg != WM_MOUSEWHEEL {
         return None;
     }
     let Mods { ctrl, shift, alt } = ctx.mods;
@@ -816,7 +816,7 @@ fn translate(msg: u32, wp: usize, lp: isize, ctx: &Ctx, high: &mut Option<u16>) 
 /// keys and the client origin it needs (and only when it needs them).
 fn translate_live(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<Event> {
     let keyboard = KEYBOARD.with(Cell::get);
-    if !keyboard {
+    if !keyboard && msg != WM_MOUSEWHEEL {
         return None;
     }
     let mods = if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN | WM_CHAR | WM_SYSCHAR) {
@@ -1535,7 +1535,6 @@ mod tests {
             (WM_SYSKEYDOWN, 0x73),
             (WM_CHAR, 0x61),
             (WM_SYSCHAR, 0x61),
-            (WM_MOUSEWHEEL, wheel_wp(120, 0)),
             (WM_RBUTTONDOWN, 2),
             (WM_KILLFOCUS, 0),
             (WM_ACTIVATE, WA_INACTIVE as usize),
@@ -1546,6 +1545,10 @@ mod tests {
         let mut high = None;
         assert_eq!(translate(WM_CHAR, 0xD83D, 0, &c, &mut high), None);
         assert_eq!(high, None);
+        assert_eq!(
+            tr(WM_MOUSEWHEEL, wheel_wp(120, 0), lp(5, 5), &c),
+            wheel_ev(120, 5, 5)
+        );
     }
 
     #[test]

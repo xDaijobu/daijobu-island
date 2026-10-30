@@ -1052,3 +1052,8 @@ Scope and acceptance: [stage-9f-brief.md](stage-9f-brief.md).
 - [x] Match compact and expanded playback glyphs: Pause while playing, Play while paused.
 - [x] fmt/clippy/build passed; workspace tests passed except existing native pipe flake, full dj-win retry passed. Delivered and launched; compact screenshot unavailable through Orca. See report.
 Scope: [stage-9g-brief.md](stage-9g-brief.md).
+
+## Stage 9h - Music volume slider (complete)
+- [x] Labelled Windows volume slider with click/drag/scroll, percentage and live endpoint updates.
+- [x] Preserve Music panel, seek and standalone OSD; disable unavailable audio.
+- [x] 1,738 workspace tests before scroll follow-up, then 2 core and 30 native-window tests; fmt/clippy/optimized build passed. Delivered with live visual review; see [report](stage-9h-report.md). [Brief](stage-9h-brief.md).

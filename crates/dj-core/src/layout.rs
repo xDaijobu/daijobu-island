@@ -62,7 +62,7 @@ pub const MUSIC_COMPACT_H: f32 = 36.0;
 pub const MUSIC_COMPACT_R: f32 = 18.0;
 /// Native Music expanded.
 pub const MUSIC_EXP_W: f32 = 400.0;
-pub const MUSIC_EXP_H: f32 = 184.0;
+pub const MUSIC_EXP_H: f32 = 216.0;
 pub const MUSIC_EXP_R: f32 = 32.0;
 
 /// Compact elements, relative to the pill's top-left.
@@ -81,11 +81,12 @@ pub const ME_NEXT: Rect = Rect::new(204.0, 72.0, 34.0, 34.0);
 /// Scrubber hit area; the bar itself is drawn 4 px tall in its middle.
 pub const ME_SCRUB: Rect = Rect::new(16.0, 108.0, 368.0, 14.0);
 pub const ME_STATUS: Rect = Rect::new(16.0, 138.0, 368.0, 16.0);
-pub const ME_BTN_OPEN: Rect = Rect::new(16.0, 158.0, 112.0, 20.0);
-pub const ME_BTN_SPOTIFY: Rect = Rect::new(136.0, 158.0, 112.0, 20.0);
+pub const ME_VOLUME: Rect = Rect::new(136.0, 158.0, 194.0, 24.0);
+pub const ME_BTN_OPEN: Rect = Rect::new(16.0, 190.0, 112.0, 20.0);
+pub const ME_BTN_SPOTIFY: Rect = Rect::new(136.0, 190.0, 112.0, 20.0);
 pub const ME_RETRY: Rect = Rect::new(246.0, 76.0, 60.0, 26.0);
 pub const ME_SETUP: Rect = Rect::new(308.0, 76.0, 76.0, 26.0);
-pub const ME_BTN_HOME: Rect = Rect::new(258.0, 158.0, 126.0, 20.0);
+pub const ME_BTN_HOME: Rect = Rect::new(258.0, 190.0, 126.0, 20.0);
 
 /// Timer panel (opened from the Home tile or Timer compact).
 pub const TIMER_W: f32 = 400.0;
