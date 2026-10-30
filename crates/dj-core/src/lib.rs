@@ -33,6 +33,7 @@ pub mod sweep;
 pub mod term_agents;
 pub mod term_tabs;
 pub mod terminal;
+pub mod terminal_folders;
 pub mod terminal_shortcuts;
 pub mod theme;
 pub mod tile;

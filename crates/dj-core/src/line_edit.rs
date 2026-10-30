@@ -19,11 +19,19 @@ pub struct LineEdit {
     text: String,
     /// In chars, `0..=len`.
     caret: usize,
+    limit: Option<usize>,
 }
 
 impl LineEdit {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_limit(limit: usize) -> Self {
+        Self {
+            limit: Some(limit),
+            ..Self::default()
+        }
     }
 
     pub fn text(&self) -> &str {
@@ -63,7 +71,7 @@ impl LineEdit {
                 }
             })
             .filter(|c| !c.is_control())
-            .take(MAX_LEN)
+            .take(self.limit.unwrap_or(MAX_LEN))
             .collect();
         self.caret = self.len();
     }
@@ -75,7 +83,7 @@ impl LineEdit {
 
     /// Inserts one char at the caret. Control chars and a full field are ignored.
     pub fn insert_char(&mut self, c: char) -> bool {
-        if c.is_control() || self.len() >= MAX_LEN {
+        if c.is_control() || self.len() >= self.limit.unwrap_or(MAX_LEN) {
             return false;
         }
         let b = self.byte(self.caret);
@@ -87,16 +95,31 @@ impl LineEdit {
     /// Inserts text at the caret; newlines and tabs become spaces, other control chars
     /// are dropped, and it stops at `MAX_LEN`.
     pub fn insert_str(&mut self, s: &str) -> bool {
-        let mut changed = false;
-        for c in s.chars() {
-            let c = if matches!(c, '\n' | '\r' | '\t') {
-                ' '
-            } else {
-                c
-            };
-            changed |= self.insert_char(c);
+        let available = self.limit.unwrap_or(MAX_LEN).saturating_sub(self.len());
+        if available == 0 {
+            return false;
         }
-        changed
+        let mut count = 0;
+        let inserted: String = s
+            .chars()
+            .map(|c| {
+                if matches!(c, '\n' | '\r' | '\t') {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .filter(|c| !c.is_control())
+            .take(available)
+            .inspect(|_| count += 1)
+            .collect();
+        if inserted.is_empty() {
+            return false;
+        }
+        let offset = self.byte(self.caret);
+        self.text.insert_str(offset, &inserted);
+        self.caret += count;
+        true
     }
 
     pub fn backspace(&mut self) -> bool {
@@ -222,6 +245,33 @@ impl LineEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bulk_insert_large_unicode_at_caret_respects_capacity_and_controls() {
+        let mut edit = LineEdit::with_limit(32767);
+        edit.set_text("頭尾");
+        edit.left();
+        assert!(edit.insert_str(&"😀日\n\0".repeat(32767)));
+        assert_eq!(edit.text().chars().count(), 32767);
+        assert!(edit.text().starts_with("頭😀日 "));
+        assert!(edit.text().ends_with('尾'));
+        assert_eq!(edit.caret(), 32766);
+        assert!(!edit.insert_str(&"more".repeat(100000)));
+        let mut bulk = LineEdit::new();
+        bulk.set_text("a日z");
+        bulk.left();
+        let mut single = bulk.clone();
+        let text = "😀\r\n\t\0é".repeat(100);
+        bulk.insert_str(&text);
+        for ch in text.chars() {
+            single.insert_char(if matches!(ch, '\r' | '\n' | '\t') {
+                ' '
+            } else {
+                ch
+            });
+        }
+        assert_eq!(bulk, single);
+    }
 
     fn le(s: &str) -> LineEdit {
         let mut e = LineEdit::new();
