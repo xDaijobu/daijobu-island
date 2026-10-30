@@ -1,5 +1,18 @@
 # Stage Terminal Folders report
 
+## Coordinator integration verification (2026-10-30)
+
+Integrated current master release metadata, resolved the progress-log-only merge
+conflict, and reviewed the final implementation. An overlapping shared-target test
+attempt was discarded after another worktree replaced later test executables;
+it is not branch verification evidence. With every other worker's Cargo commands
+held, the coordinator reran fmt check, locked workspace all-targets clippy with
+warnings denied, all 1,661 tests serially without exclusions, and the optimized
+terminal-folders build: all passed. No runtime source changes followed those checks.
+PR #36 carries this feature; the existing running app remained untouched and the
+manual limitations below still apply. The worker's uncommitted-state wording below
+describes its handoff, before coordinator Git integration.
+
 Implementation worktree: `C:/Users/UseR/orca/workspaces/daijobu-island/stage-terminal-folders`, base HEAD `9335f13`. Changes remain uncommitted; no Git mutation, main/release changes, desktop input or running-app lifecycle actions performed. The coordinator owns authorized Git integration, merge and worktree removal.
 
 ## Delivered
