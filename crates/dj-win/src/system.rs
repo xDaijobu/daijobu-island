@@ -182,6 +182,7 @@ unsafe extern "system" fn foreground_changed(
     _time: u32,
 ) {
     crate::snap_pins::note_foreground(hwnd);
+    crate::explorer::note_foreground(hwnd);
     for (i, raw) in [&TOPMOST_HWND, &COMPANION_HWND]
         .map(|h| h.load(Ordering::Relaxed))
         .into_iter()

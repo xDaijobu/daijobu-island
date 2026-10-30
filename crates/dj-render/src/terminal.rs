@@ -1646,10 +1646,10 @@ mod tests {
                 let pal = dj_core::terminal::palette(&t);
                 let sc = Screen::blank(80, 20, &pal);
                 let view = dj_core::terminal_folders::ChooserView {
-                    rows: (0..14)
+                    rows: (0..15)
                         .map(|n| format!("{n}: C:\\space 日本語 {}", "long ".repeat(100)))
                         .collect(),
-                    focus: 13,
+                    focus: 14,
                     error: "Cannot open folder: access denied".into(),
                 };
                 let p = TerminalPanel {
@@ -1658,7 +1658,7 @@ mod tests {
                 };
                 let (shot, g) = render(&t, &p, s);
                 assert_eq!(shot.lit_outside(shot.whole(), &[g.panel]), None);
-                assert!(shot.lit_in(g.rect(dj_core::terminal_folders::row(13))) > 20);
+                assert!(shot.lit_in(g.rect(dj_core::terminal_folders::row(14))) > 20);
             }
         }
     }
