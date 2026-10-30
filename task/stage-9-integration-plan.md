@@ -105,3 +105,10 @@ and live notification delivery remain manual acceptance, not passing evidence.
 9d and 9b were updated to that base with all local changes preserved. 9d owns
 the next exclusive validation slot; 9b resumes complete feature integration
 without Cargo while 9c waits for the integrated 9d base.
+
+9d passed exclusive fmt/Clippy, all 1,682 serial workspace tests and optimized
+build, then merged as PR #38 (`5b5d07f`). Its worker was released and worktree
+removed. 9c is updated to that merged base and owns the next exclusive validation
+slot. Coordinator review identified a potentially unbounded provider-version
+stdout reader in 9b; the worker replaced it with a job-bound native process tree
+and is adding fake-process regression coverage before final validation.

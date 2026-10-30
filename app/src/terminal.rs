@@ -1092,7 +1092,8 @@ impl Terminal {
     /// needs a frame.
     pub fn drain(&mut self) -> bool {
         let active = self.active_id();
-        let mut changed = self.drain_picker() | self.drain_folder_validation();
+        let mut changed =
+            self.drain_picker() | self.drain_folder_validation() | self.drain_explorer();
         for (id, tab) in self.sessions.iter_mut() {
             let saved_name = self.tabs.is_pinned(*id).then(|| tab.name());
             let Some(s) = tab.session.as_mut() else {
@@ -1337,6 +1338,134 @@ mod tests {
     fn palette() -> Palette {
         let reg = ThemeRegistry::with_builtins();
         term::palette(reg.get(DEFAULT_THEME).unwrap())
+    }
+
+    #[test]
+    fn explorer_refresh_without_active_folder_restores_only_untouched_fallback() {
+        use dj_core::terminal_folders::{ExplorerSnapshot, History};
+        let mut r = Rig::new();
+        let mut history = History::default();
+        history.last[1] = "C:\\claude-last".into();
+        r.term.enable_folders(0, history);
+        r.term.config.cwd = "C:\\configured".into();
+        r.term.choose_folder(1, None);
+        let tx = r.term.explorer_test_request();
+        tx.send(Ok(ExplorerSnapshot {
+            active: Some("C:\\explorer".into()),
+            ..ExplorerSnapshot::default()
+        }))
+        .unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("explorer"));
+        let tx = r.term.explorer_test_request();
+        tx.send(Ok(ExplorerSnapshot::default())).unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("claude-last"));
+        let tx = r.term.explorer_test_request();
+        tx.send(Err("Explorer unavailable".into())).unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("claude-last"));
+        r.term.char('x', NONE);
+        let tx = r.term.explorer_test_request();
+        tx.send(Ok(ExplorerSnapshot::default())).unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("x|"));
+        assert!(r.spawns.borrow().opts.is_empty());
+    }
+
+    #[test]
+    fn explorer_prefill_preserves_explicit_edits_and_rejects_stale_requests() {
+        use dj_core::terminal_folders::{ExplorerSnapshot, History};
+        let mut r = Rig::new();
+        r.term.enable_folders(0, History::default());
+        let snapshot = |path: &str| ExplorerSnapshot {
+            folders: vec![path.into()],
+            active: Some(path.into()),
+            incomplete: false,
+        };
+        r.term.choose_folder(0, Some("C:\\explicit".into()));
+        let tx = r.term.explorer_test_request();
+        tx.send(Ok(snapshot("C:\\explorer"))).unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("C:\\explicit"));
+        r.term.choose_folder(1, None);
+        let stale = r.term.explorer_test_request();
+        r.term.char('x', NONE);
+        stale.send(Ok(snapshot("C:\\stale"))).unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("x|"));
+        assert!(!r
+            .term
+            .folder_view()
+            .unwrap()
+            .rows
+            .iter()
+            .any(|s| s.contains("stale")));
+        r.term.choose_folder(2, None);
+        let stale = r.term.explorer_test_request();
+        r.term.choose_folder(0, Some("C:\\new-request".into()));
+        stale.send(Ok(snapshot("C:\\old-request"))).unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("new-request"));
+        r.term.choose_folder(0, None);
+        let stale = r.term.explorer_test_request();
+        r.term.on_hide();
+        stale.send(Ok(snapshot("C:\\hidden"))).unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().is_none());
+        assert!(r.spawns.borrow().opts.is_empty());
+    }
+
+    #[test]
+    fn explorer_latest_selection_only_changes_new_session_data() {
+        use dj_core::terminal_folders::{self as model, ExplorerSnapshot, History};
+        let mut r = Rig::new();
+        r.open(); // existing fake shell
+        r.term.enable_folders(0, History::default());
+        let mut config = r.term.config.clone();
+        config.cwd = "C:\\configured".into();
+        r.term.set_config(config);
+        r.term.choose_folder(0, None);
+        assert!(r.term.folder_view().unwrap().rows[3].contains("configured"));
+        for active in ["C:\\older", "C:\\latest"] {
+            let tx = r.term.explorer_test_request();
+            tx.send(Ok(ExplorerSnapshot {
+                folders: vec![active.into(), "C:\\selected & $()".into()],
+                active: Some(active.into()),
+                incomplete: false,
+            }))
+            .unwrap();
+            r.term.drain();
+        }
+        assert!(r.term.folder_view().unwrap().rows[3].contains("latest"));
+        let row = model::row(model::FIRST_FOLDER_ROW + 1);
+        r.term.press(row.x + 1.0, row.y + 1.0);
+        assert!(r.term.folder_view().unwrap().rows[3].contains("selected & $()"));
+        let tx = r.term.explorer_test_request();
+        tx.send(Ok(ExplorerSnapshot {
+            active: Some("C:\\delayed".into()),
+            ..ExplorerSnapshot::default()
+        }))
+        .unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("selected & $()"));
+        assert_eq!(r.spawns.borrow().opts.len(), 1);
+        assert!(r.writes().is_empty());
+        r.term.config.follow_explorer = false;
+        r.term.choose_folder(2, None);
+        let tx = r.term.explorer_test_request();
+        tx.send(Ok(ExplorerSnapshot {
+            active: Some("C:\\ignored".into()),
+            ..ExplorerSnapshot::default()
+        }))
+        .unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().rows[3].contains("configured"));
+        let tx = r.term.explorer_test_request();
+        tx.send(Err("Explorer unavailable; use Browse".into()))
+            .unwrap();
+        r.term.drain();
+        assert!(r.term.folder_view().unwrap().error.contains("Browse"));
     }
 
     #[test]

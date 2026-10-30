@@ -86,6 +86,7 @@ pub enum RowKey {
     Shell,
     FontSize,
     HideOnBlur,
+    FollowExplorer,
     Scrollback,
     // Spotlight
     SpotlightEnabled,
@@ -305,7 +306,7 @@ const fn def(key: RowKey, page: Page, label: &'static str, hint: &'static str) -
 }
 
 /// Every row, in page order.
-const ROWS: [RowDef; 21] = [
+const ROWS: [RowDef; 22] = [
     def(
         RowKey::InternalNotificationsEnabled,
         Page::General,
@@ -415,6 +416,12 @@ const ROWS: [RowDef; 21] = [
         "Lines of history the terminal keeps",
     ),
     def(
+        RowKey::FollowExplorer,
+        Page::Terminal,
+        "Start in active Explorer folder",
+        "Off: last folder per profile, then configured folder or home",
+    ),
+    def(
         RowKey::SpotlightEnabled,
         Page::Spotlight,
         "Spotlight",
@@ -518,6 +525,7 @@ fn field_eq(a: &Config, b: &Config, key: RowKey) -> bool {
         RowKey::Shell => a.terminal.shell == b.terminal.shell,
         RowKey::FontSize => a.terminal.font_size == b.terminal.font_size,
         RowKey::HideOnBlur => a.terminal.hide_on_blur == b.terminal.hide_on_blur,
+        RowKey::FollowExplorer => a.terminal.follow_explorer == b.terminal.follow_explorer,
         RowKey::Scrollback => a.terminal.scrollback == b.terminal.scrollback,
         RowKey::SpotlightEnabled => a.spotlight.enabled == b.spotlight.enabled,
         RowKey::SpotlightFiles => a.spotlight.files == b.spotlight.files,
@@ -546,6 +554,7 @@ fn copy_field(dst: &mut Config, src: &Config, key: RowKey) {
         RowKey::Shell => dst.terminal.shell = src.terminal.shell.clone(),
         RowKey::FontSize => dst.terminal.font_size = src.terminal.font_size,
         RowKey::HideOnBlur => dst.terminal.hide_on_blur = src.terminal.hide_on_blur,
+        RowKey::FollowExplorer => dst.terminal.follow_explorer = src.terminal.follow_explorer,
         RowKey::Scrollback => dst.terminal.scrollback = src.terminal.scrollback,
         RowKey::SpotlightEnabled => dst.spotlight.enabled = src.spotlight.enabled,
         RowKey::SpotlightFiles => dst.spotlight.files = src.spotlight.files,
@@ -942,6 +951,9 @@ impl SettingsDoc {
             RowKey::HideOnBlur => Control::Toggle {
                 on: c.terminal.hide_on_blur,
             },
+            RowKey::FollowExplorer => Control::Toggle {
+                on: c.terminal.follow_explorer,
+            },
             RowKey::SpotlightEnabled => Control::Toggle {
                 on: c.spotlight.enabled,
             },
@@ -1138,6 +1150,7 @@ impl SettingsDoc {
                 }
             }
             RowKey::HideOnBlur => c.terminal.hide_on_blur = !c.terminal.hide_on_blur,
+            RowKey::FollowExplorer => c.terminal.follow_explorer = !c.terminal.follow_explorer,
             RowKey::SpotlightEnabled => c.spotlight.enabled = !c.spotlight.enabled,
             RowKey::SpotlightFiles => c.spotlight.files = !c.spotlight.files,
             _ => {}
@@ -1647,6 +1660,10 @@ mod tests {
     fn the_default_config_shows_the_defaults() {
         let mut d = doc();
         assert_eq!(
+            ctl(&mut d, RowKey::FollowExplorer),
+            Control::Toggle { on: true }
+        );
+        assert_eq!(
             ctl(&mut d, RowKey::Style),
             Control::Segmented {
                 options: vec!["Notch", "Pill"],
@@ -1751,6 +1768,7 @@ mod tests {
             (RowKey::Reserve, |c| c.island.reserve_top),
             (RowKey::StayBehind, |c| c.island.stay_behind),
             (RowKey::HideOnBlur, |c| c.terminal.hide_on_blur),
+            (RowKey::FollowExplorer, |c| c.terminal.follow_explorer),
             (RowKey::SpotlightEnabled, |c| c.spotlight.enabled),
         ] {
             let before = get(d.pending());

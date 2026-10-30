@@ -680,6 +680,9 @@ pub struct TerminalConfig {
     /// The shell's working directory; `""` is the user's home.
     #[serde(deserialize_with = "lenient_string")]
     pub cwd: String,
+    /// Prefill new-session choosers from the last active filesystem Explorer view.
+    #[serde(deserialize_with = "lenient_true")]
+    pub follow_explorer: bool,
     /// Font family for the cells. A blank or non-string value reads as the default.
     #[serde(deserialize_with = "lenient_font")]
     pub font: String,
@@ -703,6 +706,7 @@ impl Default for TerminalConfig {
             font: TERMINAL_FONT.to_string(),
             font_size: TERMINAL_FONT_SIZE,
             hide_on_blur: true,
+            follow_explorer: true,
             scrollback: TERMINAL_SCROLLBACK,
         }
     }
@@ -942,6 +946,7 @@ mod tests {
                 font: "JetBrains Mono".into(),
                 font_size: 13.5,
                 hide_on_blur: false,
+                follow_explorer: false,
                 scrollback: 20_000,
             },
             spotlight: SpotlightConfig {
@@ -1496,6 +1501,17 @@ mod tests {
         assert_eq!(d.font, "Cascadia Mono");
         assert_eq!(d.font_size, 12.0);
         assert!(d.hide_on_blur);
+        assert!(d.follow_explorer);
+        assert!(
+            !Config::parse("[terminal]\nfollow_explorer = false")
+                .terminal
+                .follow_explorer
+        );
+        assert!(
+            Config::parse("[terminal]\nfollow_explorer = 'invalid'")
+                .terminal
+                .follow_explorer
+        );
         assert_eq!(d.scrollback, 5000);
         // No `[terminal]` table, an older config, or an empty one: the defaults.
         assert_eq!(Config::parse("theme = \"x\"").terminal, d);
@@ -1641,6 +1657,7 @@ mod tests {
             font: "Cascadia Code".into(),
             font_size: 12.1,
             hide_on_blur: false,
+            follow_explorer: false,
             scrollback: 0,
         };
         let text = c.to_toml();

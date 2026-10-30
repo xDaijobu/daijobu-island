@@ -251,10 +251,32 @@ cwd = ""                # "" = your home folder
 font = "Cascadia Mono"  # a Nerd Font (e.g. "MesloLGL Nerd Font") shows prompt icons natively
 font_size = 12
 hide_on_blur = true     # false keeps the panel open while you work in another window
+follow_explorer = true  # false uses last folder per profile, then cwd/home
 scrollback = 5000
 ```
 
 Prompt icons from oh-my-posh or starship come from "Symbols Nerd Font" when it is installed, whatever `font` is.
+
+New Shell, Claude and Codex sessions prefill their folder chooser from the last active
+filesystem Explorer window by default. Settings → Terminal → **Start in active Explorer
+folder** switches to the last folder for that profile; configured `cwd` and home remain
+fallbacks. Spotlight's supplied path and your edits always win. Confirm **Open** to
+launch. Selecting a folder never sends `cd` or any other input to existing sessions;
+pinned restore and restart keep their saved folder.
+
+The chooser shows up to six unique Explorer folders. Press **F5** to refresh and
+**F6** (or click the source row) to switch between Explorer and recent folders. Click
+a folder to select it, then Open; Browse remains available when Explorer is unavailable.
+Explorer automation runs on a dedicated STA thread and wakes the UI when finished.
+It reads open window registrations only, with no directory scan or idle polling.
+
+Windows 11 tabs have a native limit: the menu includes only active shell views whose
+view HWND is visible and belongs to the reported Explorer window. Hidden/inactive
+tabs are omitted; conflicting visible registrations for one window are skipped.
+This does not enumerate every open tab or promise a stable tab identity across Windows
+builds. Home, This PC, searches, Recycle Bin and other non-filesystem namespaces are
+rejected, and inaccessible/deleted folders use the existing fallback. Foreground
+history starts when Daijobu Island starts; refresh does not activate or navigate Explorer.
 
 ## How it's built
 

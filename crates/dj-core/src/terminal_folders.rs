@@ -3,8 +3,60 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const LIMIT: usize = 6;
+pub const EXPLORER_LIMIT: usize = 6;
+pub const SOURCE_ROW: usize = 8;
+pub const FIRST_FOLDER_ROW: usize = 9;
 pub const MAX_PATH: usize = 32767;
 pub const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Debug, Default)]
+pub struct ExplorerSnapshot {
+    pub folders: Vec<String>,
+    pub active: Option<String>,
+    pub incomplete: bool,
+}
+
+impl ExplorerSnapshot {
+    /// Called on the worker, since filesystem validation may block on a share.
+    pub fn bounded(folders: Vec<String>, active: Option<String>, incomplete: bool) -> Self {
+        let mut unique = Vec::new();
+        for path in active.iter().chain(folders.iter()) {
+            if validate(path).is_ok()
+                && !unique.iter().any(|p: &String| p.eq_ignore_ascii_case(path))
+            {
+                unique.push(path.clone());
+            }
+        }
+        let active = active.filter(|p| unique.contains(p));
+        let incomplete = incomplete || unique.len() > EXPLORER_LIMIT;
+        unique.truncate(EXPLORER_LIMIT);
+        Self {
+            folders: unique,
+            active,
+            incomplete,
+        }
+    }
+}
+
+/// Explicit paths remain authoritative even when empty/invalid: the chooser
+/// reports validation errors instead of silently launching somewhere else.
+pub fn starting_folder<'a>(
+    explicit: Option<&'a str>,
+    explorer: Option<&'a str>,
+    last: &'a str,
+    configured: &'a str,
+    home: &'a str,
+) -> &'a str {
+    explicit.or(explorer).unwrap_or({
+        if !last.is_empty() {
+            last
+        } else if !configured.is_empty() {
+            configured
+        } else {
+            home
+        }
+    })
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
@@ -158,5 +210,57 @@ mod tests {
         .is_err());
         assert!(validate(std::env::current_exe().unwrap().to_str().unwrap()).is_err());
         assert!(valid_text(r"\\server\share\space 日本語 & $(no command)"));
+    }
+
+    #[test]
+    fn explicit_explorer_and_fallback_precedence() {
+        assert_eq!(
+            starting_folder(Some("explicit"), Some("explorer"), "last", "config", "home"),
+            "explicit"
+        );
+        assert_eq!(
+            starting_folder(Some(""), Some("explorer"), "last", "config", "home"),
+            ""
+        );
+        assert_eq!(
+            starting_folder(None, Some("explorer"), "last", "config", "home"),
+            "explorer"
+        );
+        assert_eq!(
+            starting_folder(None, None, "last", "config", "home"),
+            "last"
+        );
+        assert_eq!(starting_folder(None, None, "", "config", "home"), "config");
+        assert_eq!(starting_folder(None, None, "", "", "home"), "home");
+    }
+
+    #[test]
+    fn explorer_bounds_deduplicates_validates_and_prioritizes_active() {
+        let root = std::env::temp_dir().join(format!("dj-explorer-bounds-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut folders = Vec::new();
+        for i in 0..12 {
+            let p = root.join(i.to_string());
+            std::fs::create_dir_all(&p).unwrap();
+            folders.push(p.to_str().unwrap().to_string());
+        }
+        let active = folders[10].clone();
+        folders.extend([
+            active.clone(),
+            "shell:Downloads".into(),
+            "::{virtual}".into(),
+            "relative".into(),
+            std::env::current_exe().unwrap().to_str().unwrap().into(),
+        ]);
+        let snapshot = ExplorerSnapshot::bounded(folders, Some(active.clone()), false);
+        assert_eq!(snapshot.folders.len(), EXPLORER_LIMIT);
+        assert_eq!(snapshot.folders[0], active);
+        assert_eq!(snapshot.active, Some(active));
+        assert!(snapshot.incomplete);
+        assert!(snapshot.folders.iter().all(|p| validate(p).is_ok()));
+        assert!(row(FIRST_FOLDER_ROW + EXPLORER_LIMIT - 1).y + 21.0 < crate::layout::TERM_H - 16.0);
+        let invalid = ExplorerSnapshot::bounded(vec![], Some("shell:Home".into()), false);
+        assert!(invalid.active.is_none());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
