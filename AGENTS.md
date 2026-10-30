@@ -79,6 +79,14 @@ Toolchain: stable Rust (MSVC), VS Build Tools with the C++ workload, and Windows
 - `skia-safe` is pinned and uses default features plus `d3d` and `textlayout`, because that combination has a published prebuilt binary.
 - A source build on Windows can fail with "Filename too long" unless the repo path is short or git long paths are enabled.
 
+Windows notification distribution builds embed a pre-signed sparse MSIX using
+`DAIJOBU_NOTIFICATION_MSIX` and set `DAIJOBU_REQUIRE_SIGNED_NOTIFICATION_PAYLOAD=1`.
+Signing/SDK tools stay on the build machine; never embed private signing keys.
+Default builds embed a loose development identity payload usable only with existing
+Windows Developer Mode. Setup is an explicit in-app action, followed by graceful
+restart and separate Windows consent; it never imports certificates or enables
+Developer Mode. See `packaging/notifications/README.md` for build and delivery details.
+
 ## Conventions
 
 - Keep idle CPU at about 0%: block in `GetMessageW`, and render only while a spring moves (plus one final frame).

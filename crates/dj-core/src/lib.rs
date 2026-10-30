@@ -21,6 +21,7 @@ pub mod island;
 pub mod layout;
 pub mod line_edit;
 pub mod music;
+pub mod notification_setup;
 pub mod notifications;
 pub mod osd;
 pub mod settings;

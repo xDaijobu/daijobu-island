@@ -3,14 +3,18 @@
 
 use dj_core::agent_notifications::{AgentNotice, Ticket};
 use dj_core::config::NotificationsConfig;
+use dj_core::notification_setup::{Failure, Setup};
 use dj_core::notifications::{
     Access, Activation, ActivationToken, Admission, NotificationCenter, NotificationInput,
     NotificationKey, HISTORY_LIMIT,
 };
 use dj_core::term_tabs::TabId;
+use dj_win::notification_setup::{Completion, Job, RestartTicket};
 use dj_win::notifications::{Listener, NativeNotification};
 use std::collections::VecDeque;
 use std::time::Instant;
+
+mod setup;
 
 pub const TIMER_TOAST: usize = 17;
 
@@ -57,6 +61,11 @@ pub struct Notifications {
     activations: Activations,
     pub notice: Option<&'static str>,
     pub armed: Option<Instant>,
+    pub setup: Setup,
+    pub setup_notice: Option<String>,
+    setup_job: Option<Job>,
+    restart_ticket: Option<RestartTicket>,
+    hwnd: isize,
 }
 
 impl Notifications {
@@ -71,6 +80,11 @@ impl Notifications {
             activations: Activations::default(),
             notice: None,
             armed: None,
+            setup: Setup::default(),
+            setup_notice: None,
+            setup_job: None,
+            restart_ticket: None,
+            hwnd,
         };
         this.configure(config);
         this
@@ -152,9 +166,79 @@ impl Notifications {
         self.native.request_access();
     }
 
+    pub fn start_setup(&mut self) {
+        if !self.setup.begin(self.config.enabled, self.access()) {
+            return;
+        }
+        self.setup_notice = None;
+        let root = crate::storage::data_dir();
+        let result = std::env::current_exe()
+            .map_err(|e| Failure {
+                message: e.to_string(),
+                retryable: true,
+            })
+            .and_then(|exe| {
+                dj_win::notification_setup::register(self.hwnd, move || setup::prepare(&root, &exe))
+            });
+        match result {
+            Ok(job) => self.setup_job = Some(job),
+            Err(error) => self.setup.complete(Err(error)),
+        }
+    }
+
+    pub fn restart(&mut self) {
+        if !self.setup.restart(self.config.enabled) {
+            return;
+        }
+        self.setup_notice = None;
+        match dj_win::notification_setup::prepare_restart(self.hwnd) {
+            Ok(job) => self.setup_job = Some(job),
+            Err(error) => {
+                self.setup.restart_failed();
+                self.setup_notice = Some(error.message);
+            }
+        }
+    }
+
+    pub fn take_restart(&mut self) -> bool {
+        let Some(ticket) = self.restart_ticket.take() else {
+            return false;
+        };
+        if !self.config.enabled || self.setup != Setup::Restarting {
+            self.setup.restart_failed();
+            return false;
+        }
+        match ticket.commit() {
+            Ok(()) => true,
+            Err(error) => {
+                self.setup.restart_failed();
+                self.setup_notice = Some(error.message);
+                false
+            }
+        }
+    }
+
+    pub fn shutdown_setup(&mut self) {
+        self.setup_job = None;
+        self.restart_ticket = None;
+    }
+
     pub fn drain(&mut self, now: Instant) -> bool {
+        let completion = self.setup_job.as_ref().and_then(Job::take);
+        let setup_changed = completion.is_some();
+        if let Some(completion) = completion {
+            self.setup_job = None;
+            match completion {
+                Completion::Registered(result) => self.setup.complete(result),
+                Completion::Restart(Ok(ticket)) => self.restart_ticket = Some(ticket),
+                Completion::Restart(Err(error)) => {
+                    self.setup.restart_failed();
+                    self.setup_notice = Some(error.message);
+                }
+            }
+        }
         let update = self.native.drain();
-        let changed = update.access.is_some() || update.snapshot.is_some();
+        let changed = setup_changed || update.access.is_some() || update.snapshot.is_some();
         if self.access() != Access::Listening {
             self.purge_windows();
         }
@@ -253,6 +337,51 @@ impl Notifications {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_opt_in_and_panel_reentry_never_start_setup_or_permission() {
+        let config = NotificationsConfig {
+            enabled: true,
+            internal_enabled: false,
+        };
+        let mut controller = Notifications::new(0, &config);
+        assert_eq!(controller.setup, Setup::Idle);
+        assert!(controller.setup_job.is_none());
+        controller.refresh_access();
+        controller.drain(Instant::now());
+        assert_eq!(controller.setup, Setup::Idle);
+        assert!(controller.setup_job.is_none());
+        assert_ne!(controller.access(), Access::Requesting);
+    }
+
+    #[test]
+    fn late_success_after_disable_preserves_opt_out_and_setup_on_reentry() {
+        let mut controller = Notifications::new(
+            0,
+            &NotificationsConfig {
+                enabled: true,
+                internal_enabled: true,
+            },
+        );
+        // Synthetic completion only: never start a real deployment from a test.
+        controller.setup = Setup::Registering;
+        controller.configure(&NotificationsConfig {
+            enabled: false,
+            internal_enabled: true,
+        });
+        controller.setup.complete(Ok(()));
+        assert_eq!(controller.access(), Access::Disabled);
+        assert!(!controller.config.enabled);
+        assert_eq!(controller.setup, Setup::RestartRequired);
+        controller.restart();
+        assert!(controller.setup_job.is_none());
+        controller.configure(&NotificationsConfig {
+            enabled: true,
+            internal_enabled: true,
+        });
+        assert_eq!(controller.setup, Setup::RestartRequired);
+        assert!(controller.setup_job.is_none());
+    }
 
     #[test]
     fn controller_admits_internal_without_windows_and_rejects_unregistered_tokens() {
