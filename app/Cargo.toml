@@ -10,6 +10,10 @@ name = "daijobu"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 dj-core = { path = "../crates/dj-core" }
 dj-render = { path = "../crates/dj-render" }
 dj-sweep = { path = "../crates/dj-sweep" }
@@ -19,6 +23,3 @@ dj-music = { path = "../crates/dj-music" }
 dj-capture = { path = "../crates/dj-capture" }
 dj-term = { path = "../crates/dj-term" }
 dj-clip = { path = "../crates/dj-clip" }
-
-[dev-dependencies]
-tempfile = { workspace = true }

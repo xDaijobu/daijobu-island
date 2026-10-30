@@ -7,6 +7,7 @@
 //! No `unsafe`, no Win32.
 #![forbid(unsafe_code)]
 
+pub mod agent_notifications;
 pub mod clipboard;
 pub mod clipboard_types;
 pub mod clipboard_ui;

@@ -1,6 +1,7 @@
 //! Daijobu Island: a lofi-modern dynamic island for Windows 11.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_notifications;
 mod app;
 mod chime;
 mod clipboard;
@@ -24,6 +25,9 @@ mod vitals;
 use dj_win::{system, window};
 
 fn main() {
+    if agent_notifications::handle_cli(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        return;
+    }
     if !system::acquire_single_instance() {
         return;
     }

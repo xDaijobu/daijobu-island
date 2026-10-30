@@ -10,6 +10,7 @@
 #[cfg(not(windows))]
 compile_error!("dj-win only supports Windows");
 
+pub mod agent_notifications;
 pub mod appbar;
 pub mod assist;
 pub mod clipboard;

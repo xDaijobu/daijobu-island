@@ -112,3 +112,27 @@ removed. 9c is updated to that merged base and owns the next exclusive validatio
 slot. Coordinator review identified a potentially unbounded provider-version
 stdout reader in 9b; the worker replaced it with a job-bound native process tree
 and is adding fake-process regression coverage before final validation.
+
+9c passed exclusive fmt/Clippy, all 1,689 serial workspace tests, optimized build
+and read-only native enumeration of two real Explorer folders. PR #39 merged at
+`ab4b700`; worker released and worktree removed. 9b was updated to this final
+integrated base with local edits preserved. Coordinator resolved README, terminal
+drain and Settings-row conflicts by retaining both features (23 Settings rows).
+9b now owns the final exclusive validation slot, including fake-provider bridge,
+setup/removal, stale-generation and job-bound version-probe regressions.
+
+Final 9b integration exposed stale shared-target build-script metadata pointing
+MSVC's MANIFESTINPUT into the removed 9c checkout (LNK1327, before test execution).
+The coordinator approved tracking CARGO_MANIFEST_DIR at build-script compile time
+and the absolute manifest dependency. Final checks must run after this correction;
+the failed cached-path link is not passing evidence.
+
+9b final combined validation passed fmt, locked all-targets Clippy, all 1,719
+serial workspace tests across 20 suites, and the optimized build. Tests include
+actual headless bridge processes with fake providers, launch cleanup, stale-session
+activation and protected current-user pipe access. The kernel's GA-to-FA access
+mask normalization was corrected in the test expectation without changing the DACL.
+The preserved optimized executable has GUI subsystem 2, PerMonitorV2 and matching
+MSIX identity; both provider hook switches return neutral JSON with no launch
+environment, UI or config initialization. Coordinator will verify building from
+master after final worktree cleanup to exercise the corrected manifest dependency.

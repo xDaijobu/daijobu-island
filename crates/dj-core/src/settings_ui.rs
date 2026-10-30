@@ -88,6 +88,7 @@ pub enum RowKey {
     HideOnBlur,
     FollowExplorer,
     Scrollback,
+    AgentNotificationStatus,
     // Spotlight
     SpotlightEnabled,
     SpotlightFiles,
@@ -306,12 +307,12 @@ const fn def(key: RowKey, page: Page, label: &'static str, hint: &'static str) -
 }
 
 /// Every row, in page order.
-const ROWS: [RowDef; 22] = [
+const ROWS: [RowDef; 23] = [
     def(
         RowKey::InternalNotificationsEnabled,
         Page::General,
-        "Internal notifications",
-        "Allow app-owned notifications independently of Windows access",
+        "Agent notifications",
+        "Opt in to install notification hooks for new Claude/Codex tabs",
     ),
     def(
         RowKey::NotificationsEnabled,
@@ -422,6 +423,12 @@ const ROWS: [RowDef; 22] = [
         "Off: last folder per profile, then configured folder or home",
     ),
     def(
+        RowKey::AgentNotificationStatus,
+        Page::Terminal,
+        "Agent notification status",
+        "New agent tabs only; existing provider permissions are preserved",
+    ),
+    def(
         RowKey::SpotlightEnabled,
         Page::Spotlight,
         "Spotlight",
@@ -445,6 +452,7 @@ const ROWS: [RowDef; 22] = [
 fn row_height(key: RowKey) -> f32 {
     match key {
         RowKey::SpotlightFolders => ROW_H + LINE_H * FOLDERS.len() as f32,
+        RowKey::AgentNotificationStatus => ROW_H + LINE_H * 4.0,
         _ => ROW_H,
     }
 }
@@ -521,7 +529,7 @@ fn field_eq(a: &Config, b: &Config, key: RowKey) -> bool {
         RowKey::SnapHotkey => a.snap.hotkey == b.snap.hotkey,
         RowKey::SnapAltHotkey => a.snap.alt_hotkey == b.snap.alt_hotkey,
         RowKey::SpotlightHotkey => a.spotlight.hotkey == b.spotlight.hotkey,
-        RowKey::TerminalHotkey | RowKey::SpotlightFolders => true,
+        RowKey::TerminalHotkey | RowKey::SpotlightFolders | RowKey::AgentNotificationStatus => true,
         RowKey::Shell => a.terminal.shell == b.terminal.shell,
         RowKey::FontSize => a.terminal.font_size == b.terminal.font_size,
         RowKey::HideOnBlur => a.terminal.hide_on_blur == b.terminal.hide_on_blur,
@@ -550,7 +558,7 @@ fn copy_field(dst: &mut Config, src: &Config, key: RowKey) {
         RowKey::SnapHotkey => dst.snap.hotkey = src.snap.hotkey.clone(),
         RowKey::SnapAltHotkey => dst.snap.alt_hotkey = src.snap.alt_hotkey.clone(),
         RowKey::SpotlightHotkey => dst.spotlight.hotkey = src.spotlight.hotkey.clone(),
-        RowKey::TerminalHotkey | RowKey::SpotlightFolders => {}
+        RowKey::TerminalHotkey | RowKey::SpotlightFolders | RowKey::AgentNotificationStatus => {}
         RowKey::Shell => dst.terminal.shell = src.terminal.shell.clone(),
         RowKey::FontSize => dst.terminal.font_size = src.terminal.font_size,
         RowKey::HideOnBlur => dst.terminal.hide_on_blur = src.terminal.hide_on_blur,
@@ -676,6 +684,7 @@ pub struct SettingsDoc {
     /// A close was asked with unsaved changes; the next one discards them.
     armed: bool,
     status: Option<String>,
+    agent_notification_status: Vec<String>,
 }
 
 impl SettingsDoc {
@@ -694,11 +703,20 @@ impl SettingsDoc {
             pressed: None,
             armed: false,
             status: None,
+            agent_notification_status: vec!["Agent notifications are off".into()],
         }
     }
 
     pub fn set_taken(&mut self, taken: Taken) {
         self.taken = taken;
+    }
+
+    pub fn set_agent_notification_status(&mut self, status: Vec<String>) {
+        self.agent_notification_status = status
+            .into_iter()
+            .take(4)
+            .map(|s| s.chars().filter(|c| !c.is_control()).take(100).collect())
+            .collect();
     }
 
     pub fn pending(&self) -> &Config {
@@ -962,6 +980,9 @@ impl SettingsDoc {
             },
             RowKey::SpotlightFolders => Control::Lines {
                 lines: FOLDERS.iter().map(|s| s.to_string()).collect(),
+            },
+            RowKey::AgentNotificationStatus => Control::Lines {
+                lines: self.agent_notification_status.clone(),
             },
         }
     }
@@ -1451,6 +1472,30 @@ fn redraw_if(redraw: bool) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_setup_status_is_read_only_and_does_not_change_config() {
+        let mut d = doc();
+        let before = d.pending().clone();
+        d.set_agent_notification_status(vec![
+            "Codex question alerts unavailable".into(),
+            "x\ncontrol".into(),
+            "x".repeat(200),
+            "four".into(),
+            "ignored".into(),
+        ]);
+        d.set_page(Page::Terminal);
+        let status = row(&mut d, RowKey::AgentNotificationStatus);
+        let Control::Lines { lines } = status.control else {
+            panic!("expected status lines")
+        };
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[2].chars().count(), 100);
+        assert!(!lines[1].contains('\n'));
+        assert!(!d.click_control(RowKey::AgentNotificationStatus, 0));
+        assert_eq!(d.pending(), &before);
+        assert!(!d.is_dirty());
+    }
 
     fn themes() -> Vec<(String, String)> {
         vec![

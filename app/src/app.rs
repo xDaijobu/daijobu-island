@@ -1,6 +1,7 @@
 //! Application state: glues the island model, themes, the Music engine, renderer and
 //! Win32 events.
 
+use crate::agent_notifications::SetupWorker as AgentSetup;
 use crate::chime::SystemChime;
 use crate::clipboard::{Clipboard, Event as ClipEvent};
 use crate::clipboard_transfer::{self as clip_transfer, Target as ClipTarget, Transfer};
@@ -233,6 +234,7 @@ pub struct App {
     term_shortcuts: Vec<Shortcut>,
     term_prev: isize,
     notifications: Notifications,
+    agent_setup: AgentSetup,
     clipboard: Option<Clipboard>,
     clipboard_error: Option<String>,
     clip_keyboard: bool,
@@ -395,6 +397,11 @@ impl App {
             Err(error) => (None, Some(error)),
         };
         let notifications = Notifications::new(raw, &config.notifications);
+        let mut agent_setup = AgentSetup::new(exe.clone(), raw);
+        if config.notifications.internal_enabled {
+            terminal.begin_agent_setup(true);
+            agent_setup.request(true);
+        }
         let mut app = Self {
             hwnd,
             renderer: None,
@@ -463,6 +470,7 @@ impl App {
             term_shortcuts: Vec::new(),
             term_prev: 0,
             notifications,
+            agent_setup,
             clipboard,
             clipboard_error,
             clip_keyboard: false,
@@ -1400,7 +1408,8 @@ impl App {
         else {
             return;
         };
-        let doc = SettingsDoc::new(&self.config, self.theme_choices(), self.taken());
+        let mut doc = SettingsDoc::new(&self.config, self.theme_choices(), self.taken());
+        doc.set_agent_notification_status(self.agent_setup.status.clone());
         self.settings_win = Some((win, doc));
         self.sync_settings_drag();
         self.render_settings();
@@ -1583,6 +1592,16 @@ impl App {
         if self.config.notifications != old.notifications {
             self.notifications.configure(&self.config.notifications);
             self.dirty = true;
+        }
+        if self.config.notifications.internal_enabled != old.notifications.internal_enabled {
+            self.terminal
+                .begin_agent_setup(self.config.notifications.internal_enabled);
+            self.agent_setup
+                .request(self.config.notifications.internal_enabled);
+            if let Some((_, doc)) = self.settings_win.as_mut() {
+                doc.set_agent_notification_status(self.agent_setup.status.clone());
+            }
+            self.drain_agent_notifications();
         }
         if self.config.clipboard != old.clipboard {
             if let Some(c) = &mut self.clipboard {
@@ -2484,6 +2503,9 @@ impl App {
     }
 
     fn notification_action(&mut self, action: NotificationAction) {
+        // Consume queued exit/progress events before resolving any visible action.
+        self.terminal.drain();
+        self.drain_agent_notifications();
         self.notifications.refresh_access();
         match action {
             NotificationAction::Close => self.island.expand(self.anim.current()),
@@ -2518,6 +2540,22 @@ impl App {
                             self.open_notifications();
                         }
                     }
+                    ActivationResult::Internal(InternalTarget::AgentSession(ticket)) => {
+                        let opened = self
+                            .terminal
+                            .agent_target(ticket)
+                            .is_some_and(|target| self.terminal.activate_shortcut(target.tab));
+                        if opened {
+                            self.notifications.center.hide_toast();
+                            self.island
+                                .set_notification_toast(false, self.anim.current());
+                            self.open_terminal();
+                        } else {
+                            self.notifications.notice =
+                                Some("The agent session is no longer available");
+                            self.open_notifications();
+                        }
+                    }
                     ActivationResult::Unavailable => self.open_notifications(),
                 }
             }
@@ -2533,6 +2571,7 @@ impl App {
     }
 
     fn sync_notifications(&mut self) {
+        self.drain_agent_notifications();
         let now = Instant::now();
         let old = self.notifications.center.toast().map(|n| n.key);
         let can_present = self.visible
@@ -2556,6 +2595,30 @@ impl App {
     }
 
     // ---- Clipboard ----
+
+    fn drain_agent_notifications(&mut self) {
+        if let Some(ready) = self.agent_setup.take() {
+            self.terminal.configure_agents(
+                self.config.notifications.internal_enabled,
+                ready
+                    .runtime
+                    .filter(|_| self.config.notifications.internal_enabled),
+            );
+            if let Some((win, doc)) = self.settings_win.as_mut() {
+                doc.set_agent_notification_status(ready.status);
+                win.dirty = true;
+            }
+            self.dirty = true;
+        }
+        for notice in self.terminal.drain_agents() {
+            self.notifications.admit_agent(&notice, Instant::now());
+            self.dirty = true;
+        }
+        let terminal = &self.terminal;
+        self.dirty |= self
+            .notifications
+            .expire_agent_actions(|ticket| terminal.agent_target(ticket).is_some());
+    }
 
     fn clipboard_open(&self) -> bool {
         self.island.state() == IslandState::Clipboard
@@ -4422,6 +4485,7 @@ impl Handler for App {
                 if self.terminal.drain() && self.island.terminal_open() {
                     self.dirty = true;
                 }
+                self.drain_agent_notifications();
                 if picker_was_open && !self.terminal.folder_picker_open() && self.term_keyboard {
                     // Browse temporarily loses focus. Reflect the owner's actual state
                     // after dialog completion without taking focus from another app.
