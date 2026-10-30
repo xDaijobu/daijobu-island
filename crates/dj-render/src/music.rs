@@ -78,7 +78,7 @@ impl Painter {
         self.art = None;
     }
 
-    /// The compact pill: art, title and a static playback indicator.
+    /// The compact pill: art, title and the same playback glyph as the expanded panel.
     pub(crate) fn music_compact(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
         let (s, t, m) = (f.scale, f.tokens, &f.music);
         let ox = rect.center_x() - lay::MUSIC_COMPACT_W * s / 2.0;
@@ -121,9 +121,9 @@ impl Painter {
                 canvas,
                 at(lay::MC_PLAYBACK),
                 if now.playing {
-                    Glyph::Play
-                } else {
                     Glyph::Pause
+                } else {
+                    Glyph::Play
                 },
                 fill_paint(accent),
             );
