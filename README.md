@@ -25,7 +25,7 @@
 
 ## Status
 
-Early development. Version **0.3.0** includes Music (YouTube Music), the volume OSD, Vitals with Sweep, Timer, Snap capture and annotations, floating screenshot previews, screen pins, Clipboard history, window tiling, a terminal with tabs, Spotlight search and a standalone Settings window. Clipboard passed independent review, workspace checks and synthetic native smoke; remaining target-app and hardware checks are documented. Features get unlocked one at a time. Day-to-day progress and outstanding manual checks are tracked in [`task/progress.md`](task/progress.md).
+Early development. Version **0.3.1** includes Music (YouTube Music), the volume OSD, Vitals with Sweep, Timer, Snap capture and annotations, floating screenshot previews, screen pins, Clipboard history, window tiling, a terminal with tabs, Spotlight search and a standalone Settings window. Clipboard passed independent review, workspace checks and synthetic native smoke; remaining target-app and hardware checks are documented. Features get unlocked one at a time. Day-to-day progress and outstanding manual checks are tracked in [`task/progress.md`](task/progress.md).
 
 | Stage | | |
 |---|---|---|
@@ -61,9 +61,9 @@ paste/privacy/restart evidence and remaining target-app/hardware checks. Later-s
 
 Get the Windows x64 build from the [latest GitHub release](https://github.com/xDaijobu/daijobu-island/releases/latest). Extract the portable ZIP and run `daijobu.exe`; there is no installer. Quit the previous instance from the tray before replacing it with a newer build. Settings and user themes stay in `~/.daijobu/`.
 
-**New in [v0.3.0](https://github.com/xDaijobu/daijobu-island/releases/tag/v0.3.0):** terminal shortcuts and agent logos beside the clock, automatic pinned-tab restart with saved folders, application-aware wheel scrolling and tab renaming; Snap preserves open panels, supports copy-only drag-out and separate screen pins; opt-in Clipboard history uses current-user DPAPI encryption and exact-target paste. OCR was removed from the roadmap, not deferred.
+**New in v0.3.1:** themed tray with queued-click wake fix, opt-in developer memory diagnostics with adaptive KB/MB/GB, process-family metrics and resource-purpose descriptions, plus one shared UI-thread graphics context for island and popups. Open diagnostics through Settings > General > Developer mode or Tray > Developer memory. Sampling runs only while open; internal counts and GPU estimates overlap and are not total process RAM. No measured RAM savings or under-100MB claim.
 
-Native drag/drop, some paste targets, multi-monitor/DPI and other desktop cases remain unverified; see the stage reports above. Taskbar/tray delay is **not claimed fixed**: direct tray callbacks measured 42/14/15 ms, but physical Explorer-click routing and its cause remain unproven. The executable is not code-signed.
+Native drag/drop, some paste targets, multi-monitor/DPI and other desktop cases remain unverified; see the stage reports above. User confirmed responsive physical tray clicks after the queue-wake fix; general Explorer context-menu latency is not measured. Diagnostics appearance, shared-context native device-loss recovery and animation smoothness remain unverified. The executable is not code-signed.
 
 Requires Windows 11 with Direct3D 12. The portable ZIP includes the required Microsoft Visual C++ runtime DLLs; the standalone executable requires the x64 Visual C++ Redistributable installed separately. Music also needs the Microsoft Edge WebView2 Runtime. The other panels use native Win32 windows drawn with Skia.
 
