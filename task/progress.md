@@ -1047,3 +1047,8 @@ Scope and acceptance: [stage-9e-brief.md](stage-9e-brief.md).
 - [x] Remove old engine/dependencies and migrate UI/config/docs; preserve user files and notification setup.
 - [x] fmt/clippy, 1,736 workspace tests, optimized build, packaged/unpackaged native discovery, live Music panel and pause/resume verified. See stage-9f-report.md for remaining checks.
 Scope and acceptance: [stage-9f-brief.md](stage-9f-brief.md).
+
+## Stage 9g - Consistent compact music icon (complete)
+- [x] Match compact and expanded playback glyphs: Pause while playing, Play while paused.
+- [x] fmt/clippy/build passed; workspace tests passed except existing native pipe flake, full dj-win retry passed. Delivered and launched; compact screenshot unavailable through Orca. See report.
+Scope: [stage-9g-brief.md](stage-9g-brief.md).
