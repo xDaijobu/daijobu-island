@@ -87,8 +87,6 @@ pub enum Event {
     VolumeKey(u32),
     /// Plain PrtSc, taken by the keyboard hook before Windows' screen capture sees it.
     PrintScreen,
-    /// The Music engine has queued messages (drain them with its `poll`).
-    Music,
     /// Another thread has results ready (see [`wake`]).
     Wake,
     /// The vitals worker queued a new reading.
@@ -219,11 +217,7 @@ fn push(ev: Event) {
         if modal
             && matches!(
                 ev,
-                Event::Timer(_)
-                    | Event::Wake
-                    | Event::Music
-                    | Event::VitalsReady
-                    | Event::SweepReady
+                Event::Timer(_) | Event::Wake | Event::VitalsReady | Event::SweepReady
             )
             && queue.iter().any(|queued| *queued == ev)
         {

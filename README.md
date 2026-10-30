@@ -2,7 +2,7 @@
 
 <p align="center">
   A lofi dynamic island for Windows 11.<br>
-  Rust, Skia and plain Win32. WebView2 only for the YouTube Music engine.
+  Rust, Skia and plain Win32, including native Windows media sessions.
 </p>
 
 <p align="center">
@@ -25,12 +25,12 @@
 
 ## Status
 
-Early development. Version **0.3.1** includes Music (YouTube Music), the volume OSD, Vitals with Sweep, Timer, Snap capture and annotations, floating screenshot previews, screen pins, Clipboard history, window tiling, a terminal with tabs, Spotlight search and a standalone Settings window. Clipboard passed independent review, workspace checks and synthetic native smoke; remaining target-app and hardware checks are documented. Features get unlocked one at a time. Day-to-day progress and outstanding manual checks are tracked in [`task/progress.md`](task/progress.md).
+Early development. Version **0.3.1** includes native Music (Spotify, YouTube Music and browser sessions), the volume OSD, Vitals with Sweep, Timer, Snap capture and annotations, floating screenshot previews, screen pins, Clipboard history, window tiling, a terminal with tabs, Spotlight search and a standalone Settings window. Clipboard passed independent review, workspace checks and synthetic native smoke; remaining target-app and hardware checks are documented. Features get unlocked one at a time. Day-to-day progress and outstanding manual checks are tracked in [`task/progress.md`](task/progress.md).
 
 | Stage | | |
 |---|---|---|
 | 1 | App shell: window, Skia renderer, spring motion, themes, tray | ✅ done |
-| 2 | Music: YouTube Music playing headless, the island as the player | ✅ merged, testing |
+| 2 | Music: native Windows media sessions (replaces the original engine in Stage 9f) | ✅ merged, testing |
 | 2b | Music library: search, playlists, queue inside the island | locked |
 | 3 | Volume OSD replacing the Windows flyout | ✅ merged, testing |
 | 4 | Vitals: health score, CPU/RAM/disk/net rings | ✅ merged, testing |
@@ -68,7 +68,11 @@ Get the Windows x64 build from the [latest GitHub release](https://github.com/xD
 
 Native drag/drop, some paste targets, multi-monitor/DPI and other desktop cases remain unverified; see the stage reports above. User confirmed responsive physical tray clicks after the queue-wake fix; general Explorer context-menu latency is not measured. Diagnostics appearance, shared-context native device-loss recovery and animation smoothness remain unverified. The executable is not code-signed.
 
-Requires Windows 11 with Direct3D 12. The portable ZIP includes the required Microsoft Visual C++ runtime DLLs; the standalone executable requires the x64 Visual C++ Redistributable installed separately. Music also needs the Microsoft Edge WebView2 Runtime. The other panels use native Win32 windows drawn with Skia.
+Requires Windows 11 with Direct3D 12. The portable ZIP includes the required Microsoft Visual C++ runtime DLLs; the standalone executable requires the x64 Visual C++ Redistributable installed separately. Music follows the current Windows GSMTC session from an external player. All panels use native windows drawn with Skia.
+
+Music discovers external Spotify, YouTube Music and browser sessions automatically when the player exposes Windows media controls. Open Home > Music for title, artist, source, cover, progress and supported play/pause/previous/next/seek controls. Unavailable controls are dimmed. No session means no playback has been reported; start media in your external player, or use the fixed Spotify / YouTube Music links. Browsers may report only their browser name. There is no audio spectrum data or simulated VU.
+
+No Music login or notification opt-in is needed. Legacy `[music] signed_in` is ignored; existing `~/.daijobu/ytmusic/` files are left untouched. An access error offers Retry and, only if needed, explicit Windows integration Update and Restart recovery. This preserves the notification identity family and separate notification consent; existing full-trust Stage 9e identity was observed to support GSMTC without migration. See [Stage 9f verification](task/stage-9f-report.md) for remaining live checks.
 
 ## Where it's going
 
@@ -76,7 +80,7 @@ These are design mockups from [`docs/plan.html`](docs/plan.html), not screenshot
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/concept-media.png" alt="Media"><br><b>Media.</b> Now playing from any app that reports to Windows, with a segmented VU visualizer.</td>
+    <td width="50%"><img src="docs/images/concept-media.png" alt="Media"><br><b>Media.</b> Now playing from any app that reports to Windows, with native session controls; the old VU mockup is historical.</td>
     <td width="50%"><img src="docs/images/concept-snap.png" alt="Snap concept"><br><b>Snap.</b> Region screenshots with a loupe, annotations and pixelation, plus separate pin-to-screen reference windows. The early concept image predates the current scope.</td>
   </tr>
   <tr>
@@ -307,14 +311,14 @@ can prevent delivery. Oversized events and unavailable IPC are dropped safely.
 - **Rendering:** Skia's GPU backend on Direct3D 12, presenting through a premultiplied-alpha composition swap chain. Grain and dither are SkSL shaders.
 - **Motion:** damped springs (stiffness and damping derived from response and damping ratio) that can be interrupted mid-flight.
 - **Idle cost:** none. When nothing moves, the message loop blocks and nothing is drawn.
-- **Music:** the only place a webview is used. YouTube Music runs in a hidden WebView2 (its window only shows for sign-in and browsing), and the island is its player. The engine starts only when you use Music; the island itself is still drawn with Skia.
+- **Music:** one event-driven Windows GSMTC worker follows the current session, reads metadata and artwork, and sends only supported controls to the exact displayed session. No embedded browser, sign-in, autonomous playback or global media-key fallback.
 
 ```
 app/              the daijobu binary
 crates/dj-core    springs, themes, feature registry, island state (no unsafe, no Win32)
 crates/dj-render  Skia + D3D12 + DirectComposition
 crates/dj-win     window, tray, hotkeys, autostart, sound
-crates/dj-music   YouTube Music engine (hidden WebView2)
+crates/dj-media   Windows GSMTC sessions, exact controls, artwork, optional LRCLIB lyrics
 crates/dj-vitals  CPU, RAM, disk, net, disk I/O, battery, top processes
 crates/dj-sweep   disk cleanup: scanners, protected-path guard, recycle, operations log
 crates/dj-capture screen capture for Snap
@@ -326,7 +330,7 @@ Tile and Spotlight live in the existing crates. More crates are added as their s
 
 ## Privacy
 
-No telemetry. Screenshot capture, Spotlight file indexing and opt-in Clipboard history run locally. Clipboard content is encrypted at rest with current-user Windows DPAPI; capture honours supported privacy flags and configured source exclusions. There is no Clipboard cloud sync or upload. Music connects to YouTube Music through its WebView2 engine.
+No telemetry. Screenshot capture, Spotlight file indexing and opt-in Clipboard history run locally. Clipboard content is encrypted at rest with current-user Windows DPAPI; capture honours supported privacy flags and configured source exclusions. There is no Clipboard cloud sync or upload. Native media discovery and artwork use Windows locally. Optional synced lyrics are off by default; enabling Settings > General > Synced lyrics (LRCLIB) sends artist, title and duration to lrclib.net over HTTPS. No lyric requests occur while disabled. Results are bounded and cached only in memory. External Music links open fixed Spotify and YouTube Music homepages in the default browser.
 
 ## Acknowledgements
 

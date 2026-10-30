@@ -129,27 +129,25 @@ pub enum TimerAction {
 /// What the app knows about Music, pushed into the island on every change.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MusicUi {
-    pub signed_in: bool,
+    pub available: bool,
+    pub integration_required: bool,
     pub has_track: bool,
-    /// Google refused the embedded sign-in; "Open in browser" is offered.
-    pub blocked: bool,
+    pub controls: crate::music::Capabilities,
+    pub playing: bool,
 }
 
-/// A button or control inside the expanded Music view.
+/// A button in the native Music panel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MusicAction {
     PlayPause,
     Prev,
     Next,
-    /// Fraction of the track, 0..1, from a click on the scrubber.
     Seek(f32),
-    /// Show the engine window (browse and search).
-    OpenWindow,
-    /// Open music.youtube.com in the default browser.
     OpenBrowser,
-    SignIn,
+    OpenSpotify,
+    Retry,
+    Setup,
 }
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ClickOutcome {
     /// Click landed outside the pill.
@@ -954,36 +952,50 @@ impl Island {
             self.set_state(IslandState::Home, tokens);
             return ClickOutcome::Home;
         }
-        let action = if !ui.signed_in {
-            if hit(layout::ME_SIGN_IN) {
-                Some(MusicAction::SignIn)
-            } else if ui.blocked && hit(layout::ME_BTN_OPEN) {
-                Some(MusicAction::OpenBrowser)
-            } else {
-                None
-            }
+        let action = if hit(layout::ME_BTN_OPEN) {
+            Some(MusicAction::OpenBrowser)
+        } else if hit(layout::ME_BTN_SPOTIFY) {
+            Some(MusicAction::OpenSpotify)
+        } else if hit(layout::ME_RETRY) && (!ui.available || !ui.has_track) {
+            Some(MusicAction::Retry)
+        } else if hit(layout::ME_SETUP) && ui.integration_required {
+            Some(MusicAction::Setup)
         } else if ui.has_track {
-            if hit(layout::ME_PREV) {
+            if hit(layout::ME_PREV) && ui.controls.previous {
                 Some(MusicAction::Prev)
-            } else if hit(layout::ME_PLAY) {
+            } else if hit(layout::ME_PLAY)
+                && if ui.playing {
+                    ui.controls.pause
+                } else {
+                    ui.controls.play
+                }
+            {
                 Some(MusicAction::PlayPause)
-            } else if hit(layout::ME_NEXT) {
+            } else if hit(layout::ME_NEXT) && ui.controls.next {
                 Some(MusicAction::Next)
-            } else if hit(layout::ME_SCRUB) {
+            } else if hit(layout::ME_SCRUB) && ui.controls.seek {
                 let s = &layout::ME_SCRUB;
                 Some(MusicAction::Seek(((lx - s.x) / s.w).clamp(0.0, 1.0)))
-            } else if hit(layout::ME_BTN_OPEN) {
-                Some(MusicAction::OpenWindow)
             } else {
                 None
             }
-        } else if hit(layout::ME_BTN_OPEN) {
-            Some(MusicAction::OpenWindow)
         } else {
             None
         };
         match action {
             Some(a) => ClickOutcome::Music(a),
+            None if ui.has_track
+                && [
+                    layout::ME_PREV,
+                    layout::ME_PLAY,
+                    layout::ME_NEXT,
+                    layout::ME_SCRUB,
+                ]
+                .iter()
+                .any(|r| hit(*r)) =>
+            {
+                ClickOutcome::Ignored
+            }
             None => {
                 self.collapse(tokens);
                 ClickOutcome::Collapsed
@@ -1207,9 +1219,17 @@ mod tests {
 
     fn with_track() -> MusicUi {
         MusicUi {
-            signed_in: true,
+            available: true,
+            integration_required: false,
             has_track: true,
-            blocked: false,
+            controls: crate::music::Capabilities {
+                play: true,
+                pause: true,
+                previous: true,
+                next: true,
+                seek: true,
+            },
+            playing: true,
         }
     }
 
@@ -1566,7 +1586,7 @@ mod tests {
             (layout::ME_PREV, MusicAction::Prev),
             (layout::ME_PLAY, MusicAction::PlayPause),
             (layout::ME_NEXT, MusicAction::Next),
-            (layout::ME_BTN_OPEN, MusicAction::OpenWindow),
+            (layout::ME_BTN_OPEN, MusicAction::OpenBrowser),
         ];
         for (r, want) in cases {
             let (x, y) = at(&i, r);
@@ -1592,18 +1612,46 @@ mod tests {
     }
 
     #[test]
-    fn signed_out_sign_in_button_and_browser_fallback() {
+    fn unsupported_transports_do_not_command_or_collapse_and_hidden_retry_is_inactive() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(
+            MusicUi {
+                has_track: true,
+                available: true,
+                ..Default::default()
+            },
+            &t,
+        );
+        i.open_music(&t);
+        settle(&mut i, &t);
+        for r in [
+            layout::ME_PREV,
+            layout::ME_PLAY,
+            layout::ME_NEXT,
+            layout::ME_SCRUB,
+        ] {
+            let (x, y) = at(&i, r);
+            assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+            assert_eq!(i.state(), IslandState::MusicExpanded);
+        }
+        let (x, y) = at(&i, layout::ME_RETRY);
+        assert_ne!(i.click(x, y, &t), ClickOutcome::Music(MusicAction::Retry));
+    }
+
+    #[test]
+    fn no_session_retry_and_fixed_external_links() {
         let t = tokens();
         let mut i = Island::new(&t);
         i.set_music(MusicUi::default(), &t);
         i.open_music(&t);
         settle(&mut i, &t);
-        let (x, y) = at(&i, layout::ME_SIGN_IN);
-        assert_eq!(i.click(x, y, &t), ClickOutcome::Music(MusicAction::SignIn));
+        let (x, y) = at(&i, layout::ME_RETRY);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Music(MusicAction::Retry));
 
         i.set_music(
             MusicUi {
-                blocked: true,
+                available: false,
                 ..MusicUi::default()
             },
             &t,
@@ -1612,6 +1660,11 @@ mod tests {
         assert_eq!(
             i.click(x, y, &t),
             ClickOutcome::Music(MusicAction::OpenBrowser)
+        );
+        let (x, y) = at(&i, layout::ME_BTN_SPOTIFY);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Music(MusicAction::OpenSpotify)
         );
     }
 
@@ -1635,7 +1688,7 @@ mod tests {
         let mut i = Island::new(&t);
         i.set_music(
             MusicUi {
-                signed_in: true,
+                available: true,
                 ..MusicUi::default()
             },
             &t,
@@ -3221,9 +3274,17 @@ mod front_and_size_tests {
         let mut i = Island::new(&t);
         i.set_music(
             MusicUi {
-                signed_in: true,
+                available: true,
+                integration_required: false,
                 has_track: true,
-                blocked: false,
+                controls: crate::music::Capabilities {
+                    play: true,
+                    pause: true,
+                    previous: true,
+                    next: true,
+                    seek: true,
+                },
+                playing: true,
             },
             &t,
         );

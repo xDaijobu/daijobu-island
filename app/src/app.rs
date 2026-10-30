@@ -1,4 +1,4 @@
-//! Application state: glues the island model, themes, the Music engine, renderer and
+//! Application state: glues the island model, themes, native media, renderer and
 //! Win32 events.
 
 use crate::agent_notifications::SetupWorker as AgentSetup;
@@ -33,7 +33,7 @@ use dj_core::config::{AnnotateConfig, Config, IslandStyle, SnapHotkey, Spotlight
 use dj_core::features::FEATURES;
 use dj_core::island::{ClickOutcome, Island, IslandState, MusicAction, SnapAction, TimerAction};
 use dj_core::layout;
-use dj_core::music::{cover_accent, MusicMsg, Session};
+use dj_core::music::{cover_accent, Command as MediaCommand, Session, Target};
 use dj_core::notifications::Action as NotificationAction;
 use dj_core::osd::Volume;
 use dj_core::settings::{self, SettingsAction, SettingsView};
@@ -50,8 +50,7 @@ use dj_core::terminal_shortcuts::Shortcut;
 use dj_core::theme::{ThemeAnim, ThemeRegistry, DEFAULT_THEME};
 use dj_core::tile_assist::{self, AssistKey};
 use dj_core::vitals::Vitals;
-use dj_music::art::{self, ArtResult};
-use dj_music::{Engine, MUSIC_URL};
+use dj_media::{Lyrics, Media, SPOTIFY_URL, YOUTUBE_URL};
 use dj_render::{
     AssistCard, AssistScene, AssistSurface, ClipboardPanel, EditScene, Frame, IconCache,
     MusicFrame, RenderError, Renderer, SnapFrame, SnapOverlay, SnapScene, TerminalPanel,
@@ -61,11 +60,10 @@ use dj_win::assist::{AssistInput, Thumbnail};
 use dj_win::overlay::{self, SnapInput};
 use dj_win::popup::{self, PopupInput, PopupKind};
 use dj_win::tile::MoveEvent;
-use dj_win::tray::{self, MenuCommand, MenuSpec, MusicMenu};
+use dj_win::tray::{self, MenuCommand, MenuSpec};
 use dj_win::window::Layer;
 use dj_win::{appbar, hook, system, volume, window, Event, Handler, HICON, HWND};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOTKEY_TOGGLE: i32 = 1;
@@ -77,15 +75,15 @@ const TIMER_CLIPBOARD: usize = 13;
 const TIMER_EDGE_REVEAL: usize = 14;
 const VK_SPACE: u32 = 0x20;
 const TIMER_CLOCK: usize = 1;
-const TIMER_VU: usize = 2;
+const TIMER_MEDIA_PROGRESS: usize = 2;
 /// One-shot: the Sweep result has been on screen long enough, back to Vitals.
 const TIMER_SWEEP_DONE: usize = 4;
 const SWEEP_DONE_MS: u32 = 4_000;
 /// A stale estimate is retried at most this often, so a scan that keeps failing or
 /// being cancelled is never restarted in a loop.
 const ESTIMATE_RETRY: Duration = Duration::from_secs(10 * 60);
-/// About 30 fps for the VU.
-const VU_MS: u32 = 33;
+/// Visible progress and synced lyrics, while playing.
+const MEDIA_PROGRESS_MS: u32 = 250;
 const VK_H: u32 = 0x48;
 const VK_T: u32 = 0x54;
 const VK_VOLUME_MUTE: u32 = 0xAD;
@@ -167,16 +165,12 @@ pub struct App {
     /// The default render endpoint. None if the audio stack is unavailable.
     mixer: Option<volume::Mixer>,
     session: Session,
-    /// The hidden YouTube Music engine, when running.
-    engine: Option<Engine>,
-    /// When the last state message arrived, to interpolate the scrubber.
-    state_at: Instant,
-    /// Cover art: the URL being shown (or fetched), its average colour once decoded.
-    art_url: Option<String>,
+    displayed_media_target: Target,
+    media: Option<Media>,
+    lyrics: Lyrics,
+    art_bytes: Option<std::sync::Arc<[u8]>>,
     cover: Option<Rgb>,
-    art_tx: Sender<ArtResult>,
-    art_rx: Receiver<ArtResult>,
-    vu_armed: bool,
+    progress_armed: bool,
     /// Health samples and their history for the Vitals panel and the idle lamp.
     vitals: Vitals,
     worker: Worker,
@@ -337,11 +331,11 @@ impl App {
             .expect("default theme exists")
             .clone();
         let island = Island::new(&tokens);
-        let (art_tx, art_rx) = mpsc::channel();
-        let session = Session {
-            signed_in: config.music.signed_in,
-            ..Session::default()
-        };
+        let session = Session::default();
+        let media_hwnd = hwnd.0 as isize;
+        let media = Some(Media::start(config.music.lyrics_enabled, move || {
+            window::wake(media_hwnd)
+        }));
         let worker = Worker::start(hwnd);
         let timer = Timer::new(
             config.timer.settings(),
@@ -421,13 +415,12 @@ impl App {
             exe,
             mixer: None,
             session,
-            engine: None,
-            state_at: Instant::now(),
-            art_url: None,
+            displayed_media_target: Target::default(),
+            media,
+            lyrics: Lyrics::default(),
+            art_bytes: None,
             cover: None,
-            art_tx,
-            art_rx,
-            vu_armed: false,
+            progress_armed: false,
             vitals: Vitals::new(),
             worker,
             sweep: SweepView::new(),
@@ -513,10 +506,6 @@ impl App {
         let cell = app.term_cell();
         app.terminal.restore_pinned(cell, app.scale);
         app.sync_terminal();
-        if app.config.music.signed_in {
-            // Signed in before: the engine runs hidden from the start.
-            app.ensure_engine(false);
-        }
         app.sync_vitals();
         app
     }
@@ -1544,6 +1533,12 @@ impl App {
             new.start_with_windows = old.start_with_windows;
         }
         self.config = new;
+        if let Some(m) = &self.media {
+            m.set_lyrics(self.config.music.lyrics_enabled);
+        }
+        if !self.config.music.lyrics_enabled {
+            self.lyrics = Lyrics::default();
+        }
         if self.config.developer_mode != old.developer_mode {
             if self.config.developer_mode {
                 self.open_memory();
@@ -3460,7 +3455,7 @@ impl App {
         }
         self.last_frame = None;
         self.dirty = visible;
-        self.sync_vu_timer();
+        self.sync_progress_timer();
         // A hidden island gives the screen back.
         self.sync_appbar(false);
         // The preview stack hides with the island (its countdowns pause), and a window
@@ -3472,193 +3467,119 @@ impl App {
         }
     }
 
-    // ---- YouTube Music ----
-
-    fn profile_dir() -> PathBuf {
-        storage::data_dir().join("ytmusic")
-    }
-
-    /// Starts the hidden engine if it is not running. `show` also shows its window.
-    fn ensure_engine(&mut self, show: bool) {
-        if self.engine.is_none() {
-            match Engine::start(&Self::profile_dir(), false) {
-                Ok(e) => self.engine = Some(e),
-                Err(e) => {
-                    storage::log(&format!("music: {e}"));
-                    return;
-                }
-            }
-        }
-        if let Some(engine) = &self.engine {
-            engine.show(show);
-        }
-    }
-
-    /// Stops the engine. The page goes away with it, so the track goes too.
-    fn stop_engine(&mut self) {
-        self.engine = None;
-        self.session.now = None;
-        self.session.bands = None;
-        self.session.blocked = false;
-        self.sync_art();
-        self.apply_music_ui();
-    }
-
-    /// Stops the engine, deletes the profile and forgets the sign-in.
-    fn sign_out(&mut self) {
-        self.stop_engine();
-        let dir = Self::profile_dir();
-        if dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&dir) {
-                storage::log(&format!("music: cannot delete {}: {e}", dir.display()));
-            }
-        }
-        self.config.music.signed_in = false;
-        storage::save_config(&self.config);
-        self.session.signed_in = false;
-        self.apply_music_ui();
-        self.dirty = true;
-    }
-
-    /// Pushes the Music facts into the island, which may change its state.
+    // ---- Native Windows media ----
     fn apply_music_ui(&mut self) {
-        let ui = self.session.ui();
-        let tokens = self.anim.current();
-        self.island.set_music(ui, tokens);
+        self.island
+            .set_music(self.session.ui(), self.anim.current());
         self.dirty = true;
     }
 
-    /// Handles everything the engine queued since the last call.
-    fn drain_engine(&mut self) {
-        let msgs = match self.engine.as_ref() {
-            Some(e) => e.poll(),
-            None => return,
+    fn drain_media(&mut self) {
+        let Some(update) = self.media.as_ref().and_then(Media::take) else {
+            return;
         };
-        for msg in msgs {
-            match &msg {
-                MusicMsg::Auth { signed_in } => {
-                    storage::log(&format!("music: auth signedIn={signed_in}"));
-                    if *signed_in {
-                        // Signed in: the window has done its job, so hide it and remember.
-                        if let Some(engine) = &self.engine {
-                            engine.show(false);
-                        }
-                        if !self.config.music.signed_in {
-                            self.config.music.signed_in = true;
-                            storage::save_config(&self.config);
-                        }
-                    }
+        if self.art_bytes != update.art {
+            self.art_bytes = update.art.clone();
+            self.cover = None;
+            if let Some(r) = self.renderer.as_mut() {
+                r.clear_art();
+                if let Some(bytes) = &update.art {
+                    self.cover = r.set_art(bytes);
                 }
-                MusicMsg::State { .. } => self.state_at = Instant::now(),
-                _ => {}
             }
-            self.session.apply(msg);
         }
-        self.sync_art();
+        self.session = update.session;
+        self.lyrics = update.lyrics;
         self.apply_music_ui();
     }
 
-    /// Starts the download when the track's artwork URL changes.
-    fn sync_art(&mut self) {
-        let url = self.session.now.as_ref().and_then(|n| n.art_url.clone());
-        if url == self.art_url {
-            return;
-        }
-        self.art_url = url.clone();
-        self.cover = None;
-        if let Some(r) = self.renderer.as_mut() {
-            r.clear_art();
-        }
-        if let Some(url) = url {
-            art::fetch(url, self.hwnd.0 as isize, self.art_tx.clone());
-        }
-    }
-
-    /// Decodes finished artwork downloads on the UI thread.
-    fn drain_art(&mut self) {
-        while let Ok(res) = self.art_rx.try_recv() {
-            if self.art_url.as_deref() != Some(res.url.as_str()) {
-                continue; // the track changed while this was downloading
-            }
-            let cover = match (res.bytes, self.renderer.as_mut()) {
-                (Some(bytes), Some(r)) => r.set_art(bytes.as_slice()),
-                _ => None,
-            };
-            self.cover = cover;
-            self.dirty = true;
-        }
-    }
-
-    /// Runs one of the expanded view's controls.
     fn music_action(&mut self, action: MusicAction) {
-        match action {
-            MusicAction::PlayPause => self.exec_music("toggle()"),
-            MusicAction::Prev => self.exec_music("prev()"),
-            MusicAction::Next => self.exec_music("next()"),
-            MusicAction::Seek(fraction) => {
-                let dur = self.session.now.as_ref().map_or(0.0, |n| n.dur);
-                self.exec_music(&format!("seek({:.1})", fraction * dur));
-            }
-            MusicAction::OpenWindow | MusicAction::SignIn => self.ensure_engine(true),
+        let command = match action {
+            MusicAction::PlayPause => Some(MediaCommand::PlayPause),
+            MusicAction::Prev => Some(MediaCommand::Previous),
+            MusicAction::Next => Some(MediaCommand::Next),
+            MusicAction::Seek(f) => Some(MediaCommand::Seek(f)),
             MusicAction::OpenBrowser => {
-                if !system::open_url(MUSIC_URL) {
-                    storage::log("music: cannot open the browser");
+                system::open_url(YOUTUBE_URL);
+                None
+            }
+            MusicAction::OpenSpotify => {
+                system::open_url(SPOTIFY_URL);
+                None
+            }
+            MusicAction::Retry => {
+                if let Some(m) = &self.media {
+                    m.retry();
                 }
+                None
+            }
+            MusicAction::Setup => {
+                if self.session.integration_required {
+                    self.notifications.media_setup();
+                }
+                None
+            }
+        };
+        if let Some(cmd) = command {
+            if !self.session.accepts(self.displayed_media_target, cmd)
+                || !self
+                    .media
+                    .as_ref()
+                    .is_some_and(|m| m.command(self.displayed_media_target, cmd))
+            {
+                self.session.error =
+                    Some("The media session changed or its queue is busy. Retry.".into());
             }
         }
+        self.dirty = true;
     }
-
-    fn exec_music(&self, call: &str) {
-        if let Some(engine) = &self.engine {
-            engine.exec(&format!("window.__dj && window.__dj.{call}"));
-        }
-    }
-
-    /// Opens the Music view from the Home grid. Signed-in users get the engine started.
     fn open_music_tile(&mut self) {
-        if self.engine.is_none() && self.session.signed_in {
-            self.ensure_engine(false);
-        }
-        let tokens = self.anim.current().clone();
-        self.island.open_music(&tokens);
+        self.island.open_music(self.anim.current());
     }
-
-    /// Playback position, moved along between state messages while playing.
+    pub fn reopen_music_after_restart(&mut self) {
+        self.open_music_tile();
+    }
     fn playback_pos(&self) -> f32 {
-        match &self.session.now {
-            Some(n) => {
-                let live = if n.playing {
-                    self.state_at.elapsed().as_secs_f32()
-                } else {
-                    0.0
-                };
-                let pos = n.pos + live;
-                if n.dur > 0.0 {
-                    pos.min(n.dur)
-                } else {
-                    pos
-                }
-            }
-            None => 0.0,
+        self.session.position()
+    }
+    fn music_status(&self, pos: f32) -> &str {
+        if self.session.integration_required {
+            use dj_core::notification_setup::Setup;
+            self.notifications
+                .setup_notice
+                .as_deref()
+                .unwrap_or_else(|| match &self.notifications.setup {
+                    Setup::Idle => "UPDATE registers Windows integration; RESTART closes shells",
+                    Setup::Registering => "Updating Windows integration...",
+                    Setup::RestartRequired => {
+                        "Restart closes shells and saves settings and pinned tabs"
+                    }
+                    Setup::Restarting => "Preparing graceful restart...",
+                    Setup::Failed(failure) => &failure.message,
+                })
+        } else {
+            self.session
+                .error
+                .as_deref()
+                .unwrap_or_else(|| self.lyrics.line(pos))
         }
     }
-
-    /// The VU redraws on a timer at about 30 fps, but only while it has something to show.
-    fn sync_vu_timer(&mut self) {
-        let in_music = matches!(
-            self.island.state(),
-            IslandState::MusicCompact | IslandState::MusicExpanded
-        );
-        let want = self.visible && in_music && self.session.vu_live();
-        if want && !self.vu_armed {
-            window::set_timer(self.hwnd, TIMER_VU, VU_MS);
-            self.vu_armed = true;
-        } else if !want && self.vu_armed {
-            window::kill_timer(self.hwnd, TIMER_VU);
-            self.vu_armed = false;
+    fn sync_progress_timer(&mut self) {
+        let in_music = self.island.state() == IslandState::MusicExpanded;
+        let want =
+            self.visible
+                && in_music
+                && self.session.now.as_ref().is_some_and(|n| {
+                    n.playing && (n.dur <= 0.0 || self.session.position() < n.dur)
+                });
+        if want && !self.progress_armed {
+            window::set_timer(self.hwnd, TIMER_MEDIA_PROGRESS, MEDIA_PROGRESS_MS);
+            self.progress_armed = true;
+        } else if !want && self.progress_armed {
+            window::kill_timer(self.hwnd, TIMER_MEDIA_PROGRESS);
+            self.progress_armed = false;
         }
     }
-
     fn accent(&self) -> Rgb {
         let t = self.anim.current();
         match self.cover {
@@ -3792,10 +3713,6 @@ impl App {
         let spec = MenuSpec {
             themes: &themes,
             autostart: self.config.start_with_windows,
-            music: MusicMenu {
-                running: self.engine.is_some(),
-                signed_in: self.session.signed_in,
-            },
             previews: self.previews.can_focus(),
             pins: self.pins.can_focus(),
         };
@@ -3981,9 +3898,7 @@ impl App {
                     storage::save_config(&self.config);
                 }
             }
-            Some(MenuCommand::MusicShow) => self.ensure_engine(true),
-            Some(MenuCommand::MusicSignOut) => self.sign_out(),
-            Some(MenuCommand::MusicStop) => self.stop_engine(),
+            Some(MenuCommand::MusicShow) => self.open_music_tile(),
             Some(MenuCommand::SnapPreviews) => self.previews.focus_keyboard(Instant::now()),
             Some(MenuCommand::SnapPins) => {
                 if !self.visible {
@@ -4037,7 +3952,7 @@ impl App {
         }
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP);
         window::unregister_hotkey(self.hwnd, HOTKEY_SNAP_ALT);
-        self.engine = None;
+        self.media = None;
         hook::uninstall();
         self.mixer = None; // unregisters the audio callbacks
         tray::remove(self.hwnd);
@@ -4431,7 +4346,7 @@ impl Handler for App {
                 self.notifications.armed = None;
             }
             Event::Timer(TIMER_CLIPBOARD) => self.drain_clipboard(),
-            Event::Timer(TIMER_VU) => self.dirty = true,
+            Event::Timer(TIMER_MEDIA_PROGRESS) => self.dirty = true,
             Event::Timer(vitals::TIMER) => self.worker.tick(),
             Event::Timer(TIMER_SWEEP_DONE) => {
                 window::kill_timer(self.hwnd, TIMER_SWEEP_DONE);
@@ -4490,7 +4405,6 @@ impl Handler for App {
                 self.dirty = true;
             }
             Event::Timer(_) => {}
-            Event::Music => self.drain_engine(),
             Event::Wake => {
                 if self.notifications.drain(Instant::now()) {
                     self.dirty = true;
@@ -4512,7 +4426,7 @@ impl Handler for App {
                     self.terminal.set_focused(window::is_foreground(self.hwnd));
                     self.dirty = true;
                 }
-                self.drain_art();
+                self.drain_media();
                 self.drain_spotlight();
                 if self.diagnostics.take() {
                     self.refresh_memory();
@@ -4665,7 +4579,7 @@ impl Handler for App {
         if window::quitting() {
             return;
         }
-        self.sync_vu_timer();
+        self.sync_progress_timer();
         self.sync_vitals();
         self.sync_sweep();
         self.sync_timer();
@@ -4763,6 +4677,9 @@ impl Handler for App {
 
         if self.renderer.is_none() {
             self.renderer = self.create_renderer(self.win_px.0, self.win_px.1);
+            if let (Some(renderer), Some(bytes)) = (&mut self.renderer, &self.art_bytes) {
+                self.cover = renderer.set_art(bytes);
+            }
             self.restore_snap_shot();
         }
         let view = self.island.view();
@@ -4770,10 +4687,16 @@ impl Handler for App {
         let notice = self.notice();
         let accent = self.accent();
         let pos = self.playback_pos();
+        let music_status = self.music_status(pos).to_string();
         let music = MusicFrame {
             ui: self.island.music_ui(),
             now: self.session.now.as_ref(),
-            bands: self.session.bands.as_deref(),
+            status: &music_status,
+            setup_label: if self.session.integration_required {
+                Some(self.notifications.media_setup_label())
+            } else {
+                None
+            },
             accent,
             pos,
         };
@@ -4862,7 +4785,9 @@ impl Handler for App {
             island_style: self.config.island.style(),
         };
         match renderer.render(&frame) {
-            Ok(()) => {}
+            Ok(()) => {
+                self.displayed_media_target = self.session.target;
+            }
             Err(RenderError::DeviceLost) => {
                 storage::log("GPU device lost; rebuilding renderer");
                 self.renderer = None;

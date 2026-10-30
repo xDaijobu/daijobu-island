@@ -1189,9 +1189,9 @@ mod tests {
         let mut island = Island::new(&tokens);
         island.set_music(
             MusicUi {
-                signed_in: true,
+                available: true,
                 has_track: true,
-                blocked: false,
+                ..Default::default()
             },
             &tokens,
         );

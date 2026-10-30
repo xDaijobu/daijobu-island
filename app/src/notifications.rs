@@ -65,6 +65,7 @@ pub struct Notifications {
     pub setup_notice: Option<String>,
     setup_job: Option<Job>,
     restart_ticket: Option<RestartTicket>,
+    media_setup_requested: bool,
     hwnd: isize,
 }
 
@@ -84,6 +85,7 @@ impl Notifications {
             setup_notice: None,
             setup_job: None,
             restart_ticket: None,
+            media_setup_requested: false,
             hwnd,
         };
         this.configure(config);
@@ -170,6 +172,32 @@ impl Notifications {
         if !self.setup.begin(self.config.enabled, self.access()) {
             return;
         }
+        self.media_setup_requested = false;
+        self.launch_setup();
+    }
+
+    /// Explicit recovery from a media access error; never enables notifications
+    /// or asks for listener consent. Uses the same package and graceful restart.
+    pub fn media_setup(&mut self) {
+        if self.setup == Setup::RestartRequired {
+            self.media_setup_requested = true;
+            self.restart();
+        } else if self.setup.can_retry() {
+            self.media_setup_requested = true;
+            self.setup = Setup::Registering;
+            self.launch_setup();
+        }
+    }
+
+    pub fn media_setup_label(&self) -> &'static str {
+        match self.setup {
+            Setup::RestartRequired => "RESTART",
+            Setup::Registering | Setup::Restarting => "WAIT...",
+            _ => "UPDATE",
+        }
+    }
+
+    fn launch_setup(&mut self) {
         self.setup_notice = None;
         let root = crate::storage::data_dir();
         let result = std::env::current_exe()
@@ -187,11 +215,19 @@ impl Notifications {
     }
 
     pub fn restart(&mut self) {
-        if !self.setup.restart(self.config.enabled) {
+        if !self
+            .setup
+            .restart(self.config.enabled || self.media_setup_requested)
+        {
             return;
         }
         self.setup_notice = None;
-        match dj_win::notification_setup::prepare_restart(self.hwnd) {
+        let job = if self.media_setup_requested {
+            dj_win::notification_setup::prepare_media_restart(self.hwnd)
+        } else {
+            dj_win::notification_setup::prepare_restart(self.hwnd)
+        };
+        match job {
             Ok(job) => self.setup_job = Some(job),
             Err(error) => {
                 self.setup.restart_failed();
@@ -204,7 +240,8 @@ impl Notifications {
         let Some(ticket) = self.restart_ticket.take() else {
             return false;
         };
-        if !self.config.enabled || self.setup != Setup::Restarting {
+        if (!self.config.enabled && !self.media_setup_requested) || self.setup != Setup::Restarting
+        {
             self.setup.restart_failed();
             return false;
         }

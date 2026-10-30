@@ -219,7 +219,7 @@
     <h1>Daijobu Island<span style="color:var(--acc)">.</span><br><span style="color:var(--t2);font-weight:500">dynamic island buat Windows 11, rasa kaset.</span></h1>
     <p class="lead">Overlay pill di atas layar yang nampilin musik, OSD volume, timer, notif, vitals sistem, dan tools bersih-bersih ala Mole.
       Dibikin full <b style="color:var(--t1)">Rust</b>, render pakai <b style="color:var(--t1)">Skia (D3D12)</b>, dan langsung ke <b style="color:var(--t1)">Win32 native</b>, tanpa winit atau webview.
-      Bentuknya modern (morph pakai spring, crisp), tapi teksturnya lofi (grain, dither, VU meter, angka dot-matrix).</p>
+      Bentuknya modern (morph pakai spring, crisp), tapi teksturnya lofi (grain, dither, status playback, angka dot-matrix).</p>
 
     <div class="stage grain" id="stage">
       <canvas class="wall" id="wall"></canvas>
@@ -248,9 +248,9 @@
   <div class="label">01 · arah</div>
   <h2>Prinsip</h2>
   <div class="grid g4">
-    <div class="card grain"><h3>Native beneran</h3><p>Window Win32 mentah dan DirectComposition. Idle ≈ 0% CPU karena nunggu di <code>GetMessage</code>. UI tanpa runtime web. Satu-satunya pengecualian: WebView2 tersembunyi khusus buat mesin YouTube Music.</p></div>
+    <div class="card grain"><h3>Native beneran</h3><p>Window Win32 mentah dan DirectComposition. Idle ≈ 0% CPU karena nunggu di <code>GetMessage</code>. UI tanpa runtime web. Music juga native: Windows GSMTC, tanpa embedded browser.</p></div>
     <div class="card grain"><h3>Modern = motion</h3><p>Lebar, tinggi, dan radius morph pakai spring yang bisa di-interrupt. Konten crossfade dengan blur dan scale 0.94 → 1.</p></div>
-    <div class="card grain"><h3>Lofi = tekstur</h3><p>Lofi-nya dari tekstur, bukan dari layout yang rame: grain 4–6% (re-seed 18 fps), dither Bayer di gradient, label mono kapital, VU bersegmen.</p></div>
+    <div class="card grain"><h3>Lofi = tekstur</h3><p>Lofi-nya dari tekstur, bukan dari layout yang rame: grain 4–6% (re-seed 18 fps), dither Bayer di gradient, label mono kapital, indikator playback statis.</p></div>
     <div class="card grain"><h3>Fungsional</h3><p>Bukan pajangan. Setiap state harus ngejawab sesuatu: lagi muter apa, volume berapa, PC sehat gak, disk bisa dikosongin berapa.</p></div>
   </div>
 </div></section>
@@ -262,11 +262,11 @@
   <div class="grid g3">
     <div class="card">
       <span class="tag a">dari WinIsland</span>
-      <h3 style="margin-top:10px">Music (YouTube Music) dan live activity</h3>
+      <h3 style="margin-top:10px">Music (Windows media sessions) dan live activity</h3>
       <ul>
-        <li><b>Music = YouTube Music</b>: klik Music → "Sign in to YouTube Music" (login Google sekali) → YT Music jalan <b>headless</b> di WebView2, island jadi player-nya: cover, judul, kontrol, seek</li>
-        <li>Visualizer dari audio YT Music itu sendiri (Web Audio analyser di dalam page), digambar sebagai VU bersegmen</li>
-        <li>Lirik sinkron (LRCLIB aja, yang resmi)</li>
+        <li><b>Music = native Windows GSMTC</b>: deteksi sesi Spotify, YouTube Music atau browser saat startup dan lewat event Windows. Ikuti sesi current Windows; source browser tetap nama browser jika layanan tidak diketahui.</li>
+        <li>Cover, title/artist/album/source, progress dan kontrol hanya jika didukung. Target kontrol = identitas sesi COM + generation, bukan AUMID browser. Tidak ada global media keys, autoplay atau VU palsu.</li>
+        <li>Lirik sinkron LRCLIB opsional, default off. Toggle menjelaskan artist/title/duration dikirim; disabled = nol network request. Timeout/body/cache/queue dibatasi; hasil stale ditolak.</li>
         <li>OSD volume (key di-hook, flyout bawaan ilang) dan brightness (WMI, khusus laptop)</li>
         <li>Notifikasi Windows (butuh sparse MSIX)</li>
         <li>Timer/pomodoro, indikator kamera/mic, prompt "buka link?" waktu copy URL</li>
@@ -302,8 +302,8 @@
   <div class="tbl" style="margin-top:18px">
   <table>
     <tr><th>Fitur</th><th>Windows API</th><th>Susah</th><th>Butuh package?</th><th>Fase</th></tr>
-    <tr><td>Music (YouTube Music)</td><td class="m">WebView2 (crate webview2-com) tersembunyi · profil ~/.daijobu/ytmusic · inject script → postMessage (metadata, posisi, band) · ExecuteScript buat kontrol</td><td>sedang/susah</td><td>tidak</td><td>2</td></tr>
-    <tr><td>Visualizer</td><td class="m">AnalyserNode di page YT Music → band → postMessage (tanpa WASAPI)</td><td>sedang</td><td>tidak</td><td>2</td></tr>
+    <tr><td>Music (native sessions)</td><td class="m">Windows.Media.Control GSMTC · bounded event-driven MTA worker · exact-session controls · async artwork · optional LRCLIB worker</td><td>sedang/susah</td><td>tidak untuk discovery; sparse package declares uap7:globalMediaControl</td><td>9f</td></tr>
+    <tr><td>Playback status</td><td class="m">Static play/pause glyph from GSMTC. No audio bands are provided; the old WebAudio VU is removed.</td><td>mudah</td><td>tidak</td><td>9f</td></tr>
     <tr><td>Volume</td><td class="m">WH_KEYBOARD_LL + IAudioEndpointVolume (+ RegisterControlChangeNotify)</td><td>sedang</td><td>tidak</td><td>1</td></tr>
     <tr><td>Brightness</td><td class="m">WMI WmiMonitorBrightness(+Event) · DDC/CI nanti</td><td>sedang/susah</td><td>tidak</td><td>2</td></tr>
     <tr><td>Fullscreen auto-hide</td><td class="m">SHQueryUserNotificationState + rect vs monitor</td><td>mudah</td><td>tidak</td><td>1</td></tr>
@@ -482,7 +482,7 @@
   <div class="tbl" style="margin-top:16px"><table>
     <tr><th>State</th><th>Ukuran @100% DPI</th><th>Radius</th><th>Isi</th></tr>
     <tr><td>Idle</td><td class="m">128 × 32</td><td class="m">16</td><td>jam mono dan lamp status</td></tr>
-    <tr><td>Music compact</td><td class="m">224 × 36</td><td class="m">18</td><td>art 24 (r6) di kiri, VU 5 kolom di kanan</td></tr>
+    <tr><td>Music compact</td><td class="m">224 × 36</td><td class="m">18</td><td>art 24 (r6) di kiri, static play/pause status di kanan</td></tr>
     <tr><td>Music expanded</td><td class="m">400 × 184</td><td class="m">32</td><td>art 88, judul 15 / artis 12, scrubber 4, tombol 34</td></tr>
     <tr><td>OSD volume</td><td class="m">220 × 40</td><td class="m">20</td><td>ikon, track 4 px, angka mono. Hilang 1.5 s setelah perubahan terakhir</td></tr>
     <tr><td>Notifikasi</td><td class="m">360 × 72</td><td class="m">28</td><td>ikon 40, judul 13, body 12 (maks 2 baris), 4 s</td></tr>
@@ -592,7 +592,7 @@ style = "segment"   <span class="c"># segment | bar | dot | block | reel</span><
 │  ├─ <span class="k">dj-core</span>     <span class="c">state machine, spring, config, i18n · no unsafe</span>
 │  ├─ <span class="k">dj-render</span>   <span class="c">Skia Ganesh D3D12 + DComp, painter, *.sksl</span>
 │  ├─ <span class="k">dj-win</span>      <span class="c">window, msg loop, hooks, tray, hotkey, DPI</span>
-│  ├─ <span class="k">dj-music</span>    <span class="c">YouTube Music engine (WebView2 tersembunyi), bridge script</span>
+│  ├─ <span class="k">dj-media</span>    <span class="c">Native Windows GSMTC, session-bound controls, optional lyrics</span>
 │  ├─ <span class="k">dj-audio</span>    <span class="c">loopback, FFT→bands, endpoint volume</span>
 │  ├─ <span class="k">dj-vitals</span>   <span class="c">cpu/mem/disk/net/battery/proc, health score</span>
 │  ├─ <span class="k">dj-sweep</span>    <span class="c">clean, purge, bigfiles, guard, recycle, oplog</span>
@@ -621,7 +621,7 @@ style = "segment"   <span class="c"># segment | bar | dot | block | reel</span><
     </ul></div>
     <div class="card"><h3>Thread dan pacing</h3><ul>
       <li>UI thread: message loop dan render. Kalau gak ada animasi, nunggu di <code>GetMessage</code> (0% CPU)</li>
-      <li>Music: WebView2 di UI thread (event WebMessageReceived), worker: audio (event), vitals (1 Hz, hanya kalau kelihatan), sweep (on demand)</li>
+      <li>Music: bounded event-driven native MTA worker, separate bounded optional LRCLIB worker. No session polling; UI timer 250 ms hanya saat visible + playing. Art max 4 MiB, decode dimension max 4096; hasil metadata/art/lyrics stale ditolak.</li>
       <li>Worker kirim hasil lewat channel + <code>PostMessage(WM_APP)</code> buat bangunin UI</li>
       <li>Selama animasi di-pace sama <code>Present(1)</code>. Begitu spring diam, render stop</li>
     </ul></div>
@@ -688,7 +688,7 @@ band: 85+ <span class="k">daijobu</span> · 65+ ok · 45+ hmm · &lt;45 <span st
     <li><b>Theme engine</b>: schema TOML, registry, inherit, transisi token, hot reload, dan 4 theme bawaan</li></ul>
     <div class="done">✓ selesai kalau: pill nongol di atas taskbar, klik expand dengan halus di 144 Hz, idle CPU ≈ 0%, gak muncul di Alt-Tab</div></div>
   <div class="phase"><h3><span>F1</span>MVP harian</h3><ul>
-    <li><b>Music = YouTube Music headless</b> (sign in sekali, island jadi player, VU dari page)</li>
+    <li><b>Music = native Windows media sessions</b> (Stage 9f replaces old engine; no sign-in, WebView or spectrum)</li>
     <li>OSD volume (flyout bawaan diganti)</li>
     <li>Vitals ringkas (CPU/RAM/net/battery), fullscreen auto-hide, activity scheduler</li></ul>
     <div class="done">✓ selesai kalau: dipakai seharian buat YouTube Music tanpa crash, aman pas main game fullscreen</div></div>
@@ -728,7 +728,7 @@ band: 85+ <span class="k">daijobu</span> · 65+ ok · 45+ hmm · &lt;45 <span st
       <li><span class="tag w">admin</span> UIPI: island gak bisa ngatur window admin, jadi butuh helper elevated lewat Task Scheduler. Path exe harus aman biar gak jadi celah privilege escalation</li>
       <li><span class="tag w">PrtSc</span> Ngambil alih tombol PrtSc dari Snipping Tool butuh izin user (registry), jangan diam-diam</li>
       <li><span class="tag w">tile</span> Border tak terlihat, app UWP, app dengan ukuran minimum, dan app yang restore posisinya sendiri (perlu retry)</li>
-      <li><span class="tag w">yt music</span> Google bisa ngeblok login dari embedded browser (gak boleh diakalin pakai palsu user-agent, fallback: buka di browser). Iklan tetap muncul tanpa Premium. WebView2 makan ±150–300 MB RAM, jadi engine cuma jalan kalau user udah sign in. Selektor DOM YT Music bisa berubah</li>
+      <li><span class="tag w">media</span> Hanya aplikasi yang expose Windows SMTC terlihat. Browser bisa melaporkan nama browser saja; artwork/control/duration bisa tidak tersedia. Tidak memaksa login atau playback. Profil lama tidak dihapus.</li>
       <li><span class="tag w">brightness</span> Tombol brightness laptop sering gak lewat hook, jadi flyout bawaan bisa tetap muncul</li>
     </ul></div>
     <div class="card"><h3>Lisensi</h3><ul>
@@ -860,19 +860,18 @@ const icons={
   pause:'<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>',
   vol:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/><path d="M16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11"/></svg>',
 };
-function vu(cols,segs){let s='<div class="vu">';for(let c=0;c<cols;c++){s+='<div class="col" data-c="'+c+'">';for(let i=0;i<segs;i++)s+='<div class="seg"></div>';s+='</div>'}return s+'</div>'}
 function ring(p,size,stroke,col){const r=(size-stroke)/2,C=2*Math.PI*r;
   return `<svg class="ring" width="${size}" height="${size}"><circle cx="${size/2}" cy="${size/2}" r="${r}" stroke="var(--s2)" stroke-width="${stroke}" fill="none"/><circle cx="${size/2}" cy="${size/2}" r="${r}" stroke="${col||'var(--acc)'}" stroke-width="${stroke}" fill="none" stroke-linecap="round" stroke-dasharray="${C*p} ${C}"/></svg>`}
 const now=()=>{const d=new Date();return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')};
 const V={
   idle:()=>`<div class="row" style="height:100%;justify-content:center;gap:9px"><div class="lamp"></div><span style="font:500 13px var(--mono);letter-spacing:.06em">${now()}</span></div>`,
-  media:()=>`<div class="row" style="height:100%;padding:0 10px 0 6px;justify-content:space-between"><div class="art" style="width:24px;height:24px;background-image:url(${artURL})"></div><span class="tiny" style="flex:1;padding:0 10px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">tape no.7 · nujabes-ish</span>${vu(5,8)}</div>`,
+  media:()=>`<div class="row" style="height:100%;padding:0 10px 0 6px;justify-content:space-between"><div class="art" style="width:24px;height:24px;background-image:url(${artURL})"></div><span class="tiny" style="flex:1;padding:0 10px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">tape no.7 · nujabes-ish</span>${icons.pause}</div>`,
   mediaX:()=>`<div style="padding:18px 20px">
      <div class="row" style="gap:16px"><div class="art" style="width:88px;height:88px;border-radius:14px;background-image:url(${artURL})"></div>
-       <div style="flex:1;min-width:0"><div class="row" style="gap:8px;margin-bottom:8px"><div class="lamp"></div><span class="tiny">now playing · youtube music</span><span style="flex:1"></span><div class="reel"></div><div class="reel" style="animation-duration:3.1s"></div></div>
+       <div style="flex:1;min-width:0"><div class="row" style="gap:8px;margin-bottom:8px"><div class="lamp"></div><span class="tiny">now playing · windows session</span><span style="flex:1"></span><div class="reel"></div><div class="reel" style="animation-duration:3.1s"></div></div>
          <div style="font:600 15px var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Rainy Platform at 2AM</div>
          <div style="font:400 12px var(--sans);color:var(--t2);margin-top:2px">tape no.7 — side B</div>
-         <div style="margin-top:10px">${vu(22,6)}</div></div></div>
+         <div style="margin-top:10px"><span class="tiny">Synced lyrics off · optional LRCLIB</span></div></div></div>
      <div class="row" style="gap:10px;margin-top:14px"><span class="tiny" id="tpos">1:12</span><div class="bar" style="flex:1"><b id="tbar" style="width:38%"></b></div><span class="tiny">3:08</span></div>
      <div class="row" style="justify-content:center;gap:18px;margin-top:6px"><div class="btn">${icons.prev}</div><div class="btn main">${icons.pause}</div><div class="btn">${icons.next}</div></div></div>`,
   volume:()=>`<div class="row" style="height:100%;padding:0 14px;gap:12px">${icons.vol}<div class="bar" style="flex:1"><b style="width:64%"></b></div><span style="font:500 11px var(--mono);width:22px;text-align:right">64</span></div>`,
@@ -888,7 +887,7 @@ const V={
   sweep:()=>`<div style="padding:16px 20px"><div class="row" style="justify-content:space-between"><span class="tiny">sweep · preview</span><span style="font:600 13px var(--mono);color:var(--acc)">6.8 GB bisa dibersihin</span></div>
      ${[['temp & error reports','412 MB',1],['browser cache (edge, chrome)','1.3 GB',1],['dev cache (npm, cargo, pip)','2.9 GB',1],['purge: 4× node_modules, 2× target','2.2 GB',0]].map(([a,b,on])=>`<div class="row" style="gap:10px;margin-top:10px;font-size:12.5px"><span class="check ${on?'on':''}"></span><span style="flex:1">${a}</span><span style="font-family:var(--mono);color:var(--t2)">${b}</span></div>`).join('')}
      <div class="row" style="gap:8px;margin-top:14px"><span class="tiny" style="flex:1">→ recycle bin · dicatat di oplog</span><span style="font:600 12px var(--sans);background:var(--t1);color:var(--pill);padding:6px 12px;border-radius:999px">Bersihin 4.6 GB</span></div></div>`,
-  split:()=>`<div class="row" style="height:100%;padding:0 10px 0 6px;gap:8px"><div class="art" style="width:24px;height:24px;background-image:url(${artURL})"></div>${vu(4,8)}<span style="flex:1"></span><span class="tiny">focus</span><span class="dotnum" style="font-size:16px;color:var(--acc)" id="tclock">15:32</span></div>`,
+  split:()=>`<div class="row" style="height:100%;padding:0 10px 0 6px;gap:8px"><div class="art" style="width:24px;height:24px;background-image:url(${artURL})"></div>${icons.pause}<span style="flex:1"></span><span class="tiny">focus</span><span class="dotnum" style="font-size:16px;color:var(--acc)" id="tclock">15:32</span></div>`,
   snap:()=>`<div class="row" style="height:100%;padding:0 12px 0 10px;gap:12px"><div class="art" style="width:76px;height:48px;border-radius:8px;background-image:url(${wallURL});border:1px solid var(--s2)"></div>
      <div style="flex:1;min-width:0"><div class="row" style="gap:6px"><span class="tiny">snap · 612×388</span><span style="flex:1"></span><span class="tiny" style="color:var(--acc)">✓ di clipboard</span></div>
      <div class="row" style="gap:5px;margin-top:8px">${['copy','save','pin to screen'].map((a,i)=>`<span style="font:500 10px var(--mono);letter-spacing:.06em;padding:4px 7px;border-radius:7px;${i==2?'background:var(--acc);color:var(--pill)':'background:var(--s2)'}">${a}</span>`).join('')}</div></div></div>`,
@@ -1029,10 +1028,6 @@ let last=performance.now(),tick=0;
 function frame(t){const dt=Math.min(.05,(t-last)/1000);last=t;tick+=dt;
   spring.step(dt);updateShots(dt);
   island.style.width=spring.x.w+'px';island.style.height=spring.x.h+'px';island.style.borderRadius=Math.max(0,spring.x.r*TH.round)+'px';
-  // VU
-  document.querySelectorAll('.vu .col').forEach(col=>{const c=+col.dataset.c,segs=col.children,n=segs.length;
-    const lvl=(.35+.65*Math.abs(Math.sin(tick*(2.1+c*.37)+c*1.7)*Math.sin(tick*.9+c)))*n;
-    for(let i=0;i<n;i++){segs[i].classList.toggle('on',i<lvl);segs[i].classList.toggle('pk',i===Math.floor(lvl))}});
   const sp=document.getElementById('spark');if(sp){let p='';for(let i=0;i<40;i++)p+=`${i*3},${34-26*Math.abs(Math.sin(i*.35+tick*1.5)*Math.cos(i*.13+tick*.6))} `;sp.setAttribute('points',p)}
   const tc=document.getElementById('tclock');if(tc){const s=Math.max(0,932-Math.floor(tick));tc.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
   const db=document.getElementById('devbar');if(db){const p=Math.min(100,Math.floor(40+((tick*18)%60)));db.style.width=p+'%';devp.textContent=p+'%'}

@@ -1,5 +1,5 @@
 //! The Music views: the compact pill (224 x 36, plus the timer overlay while a timer
-//! runs), the expanded player (400 x 184) and its sign-in view. Same layout rules as
+//! runs), the expanded player (400 x 184) and its native session status. Same layout rules as
 //! the Home grid: content is anchored to the pill's top-centre, so it holds still while
 //! the pill springs around it.
 
@@ -9,7 +9,7 @@ use crate::paint::{col, draw_text, fill_paint, fit, stroke_paint, text_width, Fr
 use dj_core::color::Rgb;
 use dj_core::features::Icon;
 use dj_core::layout::{self as lay, Rect as LRect};
-use dj_core::music::{fmt_time, vu_groups};
+use dj_core::music::{artwork_allowed, fmt_time};
 use skia_safe::canvas::SrcRectConstraint;
 use skia_safe::image::CachingHint;
 use skia_safe::{
@@ -34,7 +34,7 @@ impl Painter {
         let src = Image::from_encoded(Data::new_copy(encoded))?;
         let (w, h) = (src.width(), src.height());
         let side = w.min(h);
-        if side <= 0 {
+        if !artwork_allowed(encoded.len(), w, h) {
             return None;
         }
         let n = side.min(ART_PX);
@@ -78,7 +78,7 @@ impl Painter {
         self.art = None;
     }
 
-    /// The compact pill: art, title and a 5-column VU.
+    /// The compact pill: art, title and a static playback indicator.
     pub(crate) fn music_compact(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
         let (s, t, m) = (f.scale, f.tokens, &f.music);
         let ox = rect.center_x() - lay::MUSIC_COMPACT_W * s / 2.0;
@@ -116,16 +116,24 @@ impl Painter {
                 &fill_paint(col(t.text, 1.0)),
             );
         }
-        if let Some(bands) = m.bands {
-            let groups = vu_groups(bands, 5);
-            draw_vu(canvas, at(lay::MC_VU), &groups, &t.visualizer, accent, s);
+        if let Some(now) = m.now {
+            draw_glyph(
+                canvas,
+                at(lay::MC_PLAYBACK),
+                if now.playing {
+                    Glyph::Play
+                } else {
+                    Glyph::Pause
+                },
+                fill_paint(accent),
+            );
         }
         if timer_on {
             self.music_timer_overlay(canvas, f, rect);
         }
     }
 
-    /// The expanded player, or the sign-in view when signed out.
+    /// The native expanded player and no-session/error states.
     pub(crate) fn music_expanded(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
         let (s, t, m) = (f.scale, f.tokens, &f.music);
         let ox = rect.center_x() - lay::MUSIC_EXP_W * s / 2.0;
@@ -144,13 +152,18 @@ impl Painter {
         draw_text(
             canvas,
             &label,
-            "YOUTUBE MUSIC",
+            &fit(
+                &label,
+                m.now.map_or("SYSTEM MEDIA", |n| n.source.as_str()),
+                tracking,
+                h.width() - 80.0 * s,
+            ),
             h.left + 12.0 * s,
             hy + 0.35 * 8.5 * s,
             tracking,
             &fill_paint(dim),
         );
-        if let Some(now) = m.now.filter(|_| m.ui.signed_in) {
+        if let Some(now) = m.now {
             let state = if now.playing { "PLAYING" } else { "PAUSED" };
             let tw = text_width(&label, state, tracking);
             draw_text(
@@ -162,11 +175,6 @@ impl Painter {
                 tracking,
                 &fill_paint(dim),
             );
-        }
-
-        if !m.ui.signed_in {
-            self.sign_in_view(canvas, f, &at);
-            return;
         }
 
         let font_title = self.fonts.font(&t.font_title, Weight::Medium, 15.0 * s);
@@ -211,12 +219,27 @@ impl Painter {
                     &fill_paint(dim),
                 );
 
-                draw_glyph(canvas, at(lay::ME_PREV), Glyph::Prev, fill_paint(text));
+                draw_glyph(
+                    canvas,
+                    at(lay::ME_PREV),
+                    Glyph::Prev,
+                    fill_paint(if now.controls.previous { text } else { dim }),
+                );
                 let play = at(lay::ME_PLAY);
                 canvas.draw_circle(
                     (play.center_x(), play.center_y()),
                     play.width() / 2.0,
-                    &fill_paint(accent),
+                    &fill_paint(
+                        if if now.playing {
+                            now.controls.pause
+                        } else {
+                            now.controls.play
+                        } {
+                            accent
+                        } else {
+                            col(t.surface2, 1.0)
+                        },
+                    ),
                 );
                 let glyph = if now.playing {
                     Glyph::Pause
@@ -224,7 +247,12 @@ impl Painter {
                     Glyph::Play
                 };
                 draw_glyph(canvas, play, glyph, fill_paint(col(t.pill, 1.0)));
-                draw_glyph(canvas, at(lay::ME_NEXT), Glyph::Next, fill_paint(text));
+                draw_glyph(
+                    canvas,
+                    at(lay::ME_NEXT),
+                    Glyph::Next,
+                    fill_paint(if now.controls.next { text } else { dim }),
+                );
 
                 // Scrubber: track, progress, and the times under it.
                 let sc = at(lay::ME_SCRUB);
@@ -250,7 +278,11 @@ impl Painter {
                     0.0,
                     &fill_paint(dim),
                 );
-                let total = fmt_time(now.dur);
+                let total = if now.dur > 0.0 {
+                    fmt_time(now.dur)
+                } else {
+                    "--:--".into()
+                };
                 let tw = text_width(&font_time, &total, 0.0);
                 draw_text(
                     canvas,
@@ -261,102 +293,103 @@ impl Painter {
                     0.0,
                     &fill_paint(dim),
                 );
-
-                if let Some(bands) = m.bands {
-                    draw_vu(canvas, at(lay::ME_VU), bands, &t.visualizer, accent, s);
-                }
             }
             None => {
                 let tr = at(lay::ME_TITLE);
                 draw_text(
                     canvas,
                     &font_title,
-                    "NOTHING PLAYING",
+                    if m.ui.available {
+                        "NO MEDIA SESSION"
+                    } else {
+                        "MEDIA UNAVAILABLE"
+                    },
                     tr.left,
                     tr.center_y() + 0.35 * 15.0 * s,
                     0.0,
                     &fill_paint(dim),
                 );
+                if m.ui.integration_required {
+                    let ar = at(lay::ME_ARTIST);
+                    draw_text(
+                        canvas,
+                        &font_artist,
+                        "Windows media access denied",
+                        ar.left,
+                        ar.center_y() + 0.35 * 12.0 * s,
+                        0.0,
+                        &fill_paint(dim),
+                    );
+                }
             }
         }
 
         let btn = self.fonts.font(&t.font_label, Weight::Medium, 9.0 * s);
+        let status = if m.now.is_none() && m.ui.available {
+            "Start playback in an external player"
+        } else {
+            m.status
+        };
+        let status = fit(&font_time, status, 0.0, 368.0 * s);
+        draw_text(
+            canvas,
+            &font_time,
+            &status,
+            ox + 16.0 * s,
+            oy + 149.0 * s,
+            0.0,
+            &fill_paint(dim),
+        );
+        if !m.ui.available || !m.ui.has_track {
+            button(
+                canvas,
+                &btn,
+                at(lay::ME_RETRY),
+                "RETRY",
+                text,
+                col(t.surface1, 1.0),
+                col(t.surface2, 1.0),
+                0.0,
+                s,
+            );
+        }
+        if let Some(label) = m.setup_label {
+            button(
+                canvas,
+                &btn,
+                at(lay::ME_SETUP),
+                label,
+                text,
+                col(t.surface1, 1.0),
+                col(t.surface2, 1.0),
+                0.0,
+                s,
+            );
+        }
         button(
             canvas,
             &btn,
             at(lay::ME_BTN_OPEN),
-            "OPEN YOUTUBE MUSIC",
+            "YOUTUBE MUSIC",
             text,
             col(t.surface1, 1.0),
             col(t.surface2, 1.0),
-            1.2 * s,
+            0.0,
+            s,
+        );
+        button(
+            canvas,
+            &btn,
+            at(lay::ME_BTN_SPOTIFY),
+            "SPOTIFY",
+            text,
+            col(t.surface1, 1.0),
+            col(t.surface2, 1.0),
+            0.0,
             s,
         );
         self.home_button(canvas, f, &at);
     }
-
-    fn sign_in_view(&mut self, canvas: &Canvas, f: &Frame, at: &dyn Fn(LRect) -> Rect) {
-        let (s, t, m) = (f.scale, f.tokens, &f.music);
-        let accent = col(m.accent, 1.0);
-        let btn = self.fonts.font(&t.font_label, Weight::Medium, 10.0 * s);
-        let small = self.fonts.font(&t.font_label, Weight::Regular, 9.0 * s);
-        let tracking = 1.2 * s;
-
-        let sign_in = at(lay::ME_SIGN_IN);
-        button(
-            canvas,
-            &btn,
-            sign_in,
-            "SIGN IN TO YOUTUBE MUSIC",
-            accent,
-            col(t.surface1, 1.0),
-            accent,
-            tracking,
-            s,
-        );
-
-        let status_r = at(LRect::new(
-            lay::ME_SIGN_IN.x,
-            110.0,
-            lay::ME_SIGN_IN.w,
-            14.0,
-        ));
-        let (line, ink) = if m.ui.blocked {
-            ("GOOGLE BLOCKED THE EMBEDDED SIGN-IN", col(t.warn, 1.0))
-        } else {
-            (
-                "ONE-TIME SIGN-IN - PROFILE STAYS ON THIS PC",
-                col(t.text_dim, 1.0),
-            )
-        };
-        let line = fit(&small, line, tracking, status_r.width());
-        let lw = text_width(&small, &line, tracking);
-        draw_text(
-            canvas,
-            &small,
-            &line,
-            status_r.center_x() - lw / 2.0,
-            status_r.center_y() + 0.35 * 9.0 * s,
-            tracking,
-            &fill_paint(ink),
-        );
-
-        if m.ui.blocked {
-            button(
-                canvas,
-                &btn,
-                at(lay::ME_BTN_OPEN),
-                "OPEN IN BROWSER",
-                accent,
-                col(t.surface1, 1.0),
-                col(t.surface2, 1.0),
-                tracking,
-                s,
-            );
-        }
-        self.home_button(canvas, f, at);
-    }
-
     /// Shared bottom-right "HOME" button of the expanded view.
     fn home_button(&mut self, canvas: &Canvas, f: &Frame, at: &dyn Fn(LRect) -> Rect) {
         let (s, t) = (f.scale, f.tokens);
@@ -498,42 +531,6 @@ fn draw_glyph(canvas: &Canvas, r: Rect, glyph: Glyph, paint: Paint) {
                 Rect::from_xywh(cx + 4.0 * s, cy - 6.0 * s, 2.0 * s, 12.0 * s),
                 &paint,
             );
-        }
-    }
-}
-
-/// The VU in one of the three theme styles. `levels` are 0..1, one per column.
-fn draw_vu(canvas: &Canvas, area: Rect, levels: &[f32], style: &str, color: Color, s: f32) {
-    let n = levels.len();
-    if n == 0 {
-        return;
-    }
-    let gap = 3.0 * s;
-    let cw = ((area.width() - gap * (n as f32 - 1.0)) / n as f32).max(1.0);
-    let paint = fill_paint(color);
-    for (i, &level) in levels.iter().enumerate() {
-        let x = area.left + i as f32 * (cw + gap);
-        let level = level.clamp(0.0, 1.0);
-        match style {
-            "block" => {
-                let h = (level * area.height()).max(2.0 * s);
-                canvas.draw_rect(Rect::from_xywh(x, area.bottom - h, cw, h), &paint);
-            }
-            "segment" => {
-                let (seg, seg_gap) = (2.0 * s, 1.5 * s);
-                let total = ((area.height() + seg_gap) / (seg + seg_gap)).floor() as usize;
-                let lit = (level * total as f32).round() as usize;
-                for k in 0..lit.min(total) {
-                    let top = area.bottom - (k as f32 + 1.0) * seg - k as f32 * seg_gap;
-                    canvas.draw_rect(Rect::from_xywh(x, top, cw, seg), &paint);
-                }
-            }
-            _ => {
-                let h = (level * area.height()).max(2.0 * s);
-                let r = (cw / 2.0).min(h / 2.0);
-                let bar = Rect::from_xywh(x, area.bottom - h, cw, h);
-                canvas.draw_rrect(RRect::new_rect_xy(bar, r, r), &paint);
-            }
         }
     }
 }

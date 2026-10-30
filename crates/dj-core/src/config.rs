@@ -220,11 +220,11 @@ impl SpotlightConfig {
     }
 }
 
-/// `[music]` section. The YouTube Music profile itself lives in `~/.daijobu/ytmusic/`.
+/// Optional lyrics. Legacy signed_in is ignored; old profile files are preserved.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MusicConfig {
-    pub signed_in: bool,
+    pub lyrics_enabled: bool,
 }
 
 /// `[osd]` section.
@@ -871,7 +871,7 @@ mod tests {
     fn legacy_config_does_not_enable_clipboard_history() {
         let c = Config::parse("theme = 'paper-zine'\n[music]\nsigned_in = true\n");
         assert_eq!(c.theme, "paper-zine");
-        assert!(c.music.signed_in);
+        assert!(!c.music.lyrics_enabled);
         assert_eq!(c.clipboard, ClipboardConfig::default());
         assert!(!c.clipboard.enabled && !c.clipboard.paused);
         assert!(c.clipboard.excluded_sources.is_empty());
@@ -907,7 +907,9 @@ mod tests {
                 notch_width: 160,
                 notch_height: 36,
             },
-            music: MusicConfig { signed_in: true },
+            music: MusicConfig {
+                lyrics_enabled: true,
+            },
             osd: OsdConfig {
                 replace_volume_flyout: false,
             },
@@ -967,9 +969,9 @@ mod tests {
         assert_eq!(Config::parse(&c.to_toml()), c);
         assert_eq!(Config::parse("not [ toml"), Config::default());
         assert!(!Config::parse("theme = \"x\"").start_with_windows);
-        assert!(!Config::parse("theme = \"x\"").music.signed_in);
+        assert!(!Config::parse("theme = \"x\"").music.lyrics_enabled);
         let c = Config::parse("[music]\nsigned_in = true\n");
-        assert!(c.music.signed_in);
+        assert!(!c.music.lyrics_enabled);
         assert_eq!(Config::parse(&c.to_toml()), c);
     }
 

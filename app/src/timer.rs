@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn timer_ids_are_free() {
-        // app.rs uses 1 (clock), 2 (VU) and 4 (Sweep done); vitals.rs uses 3.
+        // app.rs uses 1 (clock), 2 (media progress) and 4 (Sweep done); vitals.rs uses 3.
         let taken = [1, 2, 4, crate::vitals::TIMER];
         for id in [TIMER_DEADLINE, TIMER_DIGITS] {
             assert!(!taken.contains(&id), "{id}");

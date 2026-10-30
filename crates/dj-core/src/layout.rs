@@ -56,11 +56,11 @@ pub const SW_PREV: Rect = Rect::new(12.0, 166.0, 80.0, 24.0);
 pub const SW_NEXT: Rect = Rect::new(308.0, 166.0, 80.0, 24.0);
 pub const SW_CLEAN: Rect = Rect::new(236.0, 198.0, 148.0, 28.0);
 
-/// Music compact: art, title and a 5-column VU.
+/// Music compact: art, title and playback status.
 pub const MUSIC_COMPACT_W: f32 = 224.0;
 pub const MUSIC_COMPACT_H: f32 = 36.0;
 pub const MUSIC_COMPACT_R: f32 = 18.0;
-/// Music expanded (also the sign-in view).
+/// Native Music expanded.
 pub const MUSIC_EXP_W: f32 = 400.0;
 pub const MUSIC_EXP_H: f32 = 184.0;
 pub const MUSIC_EXP_R: f32 = 32.0;
@@ -68,7 +68,7 @@ pub const MUSIC_EXP_R: f32 = 32.0;
 /// Compact elements, relative to the pill's top-left.
 pub const MC_ART: Rect = Rect::new(6.0, 6.0, 24.0, 24.0);
 pub const MC_TITLE: Rect = Rect::new(38.0, 0.0, 118.0, 36.0);
-pub const MC_VU: Rect = Rect::new(166.0, 9.0, 46.0, 18.0);
+pub const MC_PLAYBACK: Rect = Rect::new(166.0, 9.0, 46.0, 18.0);
 
 /// Expanded elements, relative to the pill's top-left.
 pub const ME_ART: Rect = Rect::new(16.0, 14.0, 88.0, 88.0);
@@ -80,11 +80,12 @@ pub const ME_PLAY: Rect = Rect::new(162.0, 72.0, 34.0, 34.0);
 pub const ME_NEXT: Rect = Rect::new(204.0, 72.0, 34.0, 34.0);
 /// Scrubber hit area; the bar itself is drawn 4 px tall in its middle.
 pub const ME_SCRUB: Rect = Rect::new(16.0, 108.0, 368.0, 14.0);
-pub const ME_VU: Rect = Rect::new(16.0, 138.0, 368.0, 16.0);
-pub const ME_BTN_OPEN: Rect = Rect::new(16.0, 158.0, 234.0, 20.0);
+pub const ME_STATUS: Rect = Rect::new(16.0, 138.0, 368.0, 16.0);
+pub const ME_BTN_OPEN: Rect = Rect::new(16.0, 158.0, 112.0, 20.0);
+pub const ME_BTN_SPOTIFY: Rect = Rect::new(136.0, 158.0, 112.0, 20.0);
+pub const ME_RETRY: Rect = Rect::new(246.0, 76.0, 60.0, 26.0);
+pub const ME_SETUP: Rect = Rect::new(308.0, 76.0, 76.0, 26.0);
 pub const ME_BTN_HOME: Rect = Rect::new(258.0, 158.0, 126.0, 20.0);
-/// Sign-in view only.
-pub const ME_SIGN_IN: Rect = Rect::new(80.0, 66.0, 240.0, 36.0);
 
 /// Timer panel (opened from the Home tile or Timer compact).
 pub const TIMER_W: f32 = 400.0;
@@ -197,7 +198,7 @@ pub const SN_COPY: Rect = Rect::new(98.0, 38.0, 56.0, 22.0);
 pub const SN_SAVE: Rect = Rect::new(160.0, 38.0, 56.0, 22.0);
 pub const SN_PIN: Rect = Rect::new(222.0, 38.0, 94.0, 22.0);
 
-/// The small timer on Music compact while a timer runs: mono mm:ss before the VU. The
+/// The small timer on Music compact while a timer runs: mono mm:ss before the playback indicator. The
 /// title gives up this much room.
 pub const MC_TIMER: Rect = Rect::new(118.0, 0.0, 42.0, 36.0);
 
@@ -708,9 +709,9 @@ mod tests {
                 assert!(apart(a, b), "{a:?} overlaps {b:?}");
             }
         }
-        // The mini timer on Music compact sits between the art and the VU.
+        // The mini timer on Music compact sits between the art and the playback indicator.
         assert!(inside(&MC_TIMER, MUSIC_COMPACT_W, MUSIC_COMPACT_H));
-        assert!(apart(&MC_TIMER, &MC_ART) && apart(&MC_TIMER, &MC_VU));
+        assert!(apart(&MC_TIMER, &MC_ART) && apart(&MC_TIMER, &MC_PLAYBACK));
     }
 
     #[test]

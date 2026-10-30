@@ -19,7 +19,7 @@ dj-render = { path = "../crates/dj-render" }
 dj-sweep = { path = "../crates/dj-sweep" }
 dj-vitals = { path = "../crates/dj-vitals" }
 dj-win = { path = "../crates/dj-win" }
-dj-music = { path = "../crates/dj-music" }
+dj-media = { path = "../crates/dj-media" }
 dj-capture = { path = "../crates/dj-capture" }
 dj-term = { path = "../crates/dj-term" }
 dj-clip = { path = "../crates/dj-clip" }

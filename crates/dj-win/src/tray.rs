@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 const TRAY_ID: u32 = 1;
 
-pub use dj_core::tray_menu::{MenuCommand, MenuSpec, MusicMenu};
+pub use dj_core::tray_menu::{MenuCommand, MenuSpec};
 
 pub fn make_icon() -> Result<HICON> {
     const N: i32 = 32;
