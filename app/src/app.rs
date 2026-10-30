@@ -73,6 +73,7 @@ const HOTKEY_THEME: i32 = 2;
 const HOTKEY_SPOTLIGHT: i32 = 20;
 const HOTKEY_CLIPBOARD: i32 = 21;
 const TIMER_CLIPBOARD: usize = 13;
+const TIMER_EDGE_REVEAL: usize = 14;
 const VK_SPACE: u32 = 0x20;
 const TIMER_CLOCK: usize = 1;
 const TIMER_VU: usize = 2;
@@ -244,6 +245,11 @@ pub struct App {
     /// Where the island sits in the z-order (`[island] stay_behind` keeps it on the
     /// desktop layer while it rests).
     layer: Layer,
+    edge_reveal: dj_core::edge_reveal::Reveal,
+    edge_sensor: Option<dj_win::edge_reveal::Sensor>,
+    edge_sensor_failed: bool,
+    edge_blocked: bool,
+    edge_deadline: Option<Instant>,
     /// The Settings window and its model, while open.
     settings_win: Option<(PopupWin, SettingsDoc)>,
     /// The Settings window's left button is down (motion drags a slider).
@@ -467,6 +473,11 @@ impl App {
             clip_drag: None,
             clip_watching: None,
             layer: Layer::Top,
+            edge_reveal: dj_core::edge_reveal::Reveal::default(),
+            edge_sensor: None,
+            edge_sensor_failed: false,
+            edge_blocked: false,
+            edge_deadline: None,
             settings_win: None,
             settings_pressed: false,
             diagnostics: crate::dev_memory::Diagnostics::default(),
@@ -981,17 +992,71 @@ impl App {
     /// its way), and on the desktop layer while it rests with `[island] stay_behind`.
     /// `force` applies it even if it seems unchanged (startup, a new setting).
     fn sync_layer(&mut self, force: bool) {
-        let want = if self.config.island.stay_behind && !self.island.wants_front() {
+        let now = Instant::now();
+        let allowed = self.config.island.stay_behind
+            && self.visible
+            && self.overlay.is_none()
+            && !self.snap_pending;
+        if force {
+            self.edge_blocked = dj_win::edge_reveal::blocked();
+        }
+        let needs_front = self.island.wants_front();
+        let revealed = self
+            .edge_reveal
+            .sync(allowed && !self.edge_blocked, needs_front, now);
+        let want = if self.config.island.stay_behind && !needs_front && !revealed {
             Layer::Desktop
         } else {
             Layer::Top
         };
-        if want == self.layer && !force {
-            return;
+        dj_win::edge_reveal::set_passive_front(allowed && revealed && !needs_front);
+        let deadline = self.edge_reveal.deadline();
+        if deadline != self.edge_deadline {
+            self.edge_deadline = deadline;
+            match deadline {
+                Some(at) => window::set_timer(
+                    self.hwnd,
+                    TIMER_EDGE_REVEAL,
+                    at.saturating_duration_since(now)
+                        .as_millis()
+                        .clamp(1, u32::MAX as u128) as u32,
+                ),
+                None => window::kill_timer(self.hwnd, TIMER_EDGE_REVEAL),
+            }
         }
-        self.layer = want;
-        system::set_island_on_top(want == Layer::Top);
-        window::set_layer(self.hwnd, want);
+        if want != self.layer || force {
+            self.layer = want;
+            system::set_island_on_top(want == Layer::Top);
+            window::set_layer(self.hwnd, want);
+        }
+        if allowed && self.edge_sensor.is_none() && !self.edge_sensor_failed {
+            match dj_win::edge_reveal::Sensor::create(self.hwnd) {
+                Ok(sensor) => {
+                    self.edge_sensor = Some(sensor);
+                    self.edge_blocked = dj_win::edge_reveal::blocked();
+                }
+                Err(e) => {
+                    storage::log(&format!("edge reveal unavailable: {e}"));
+                    self.edge_sensor_failed = true;
+                }
+            }
+        }
+        let mut rect = self.device_rect();
+        if self.config.island.style() == IslandStyle::Notch {
+            rect = notch::shoulder_strip(rect, self.scale);
+        }
+        let bounds = dj_win::edge_reveal::edge_bounds(
+            self.win_pos.0 + rect.0,
+            self.win_pos.1,
+            self.win_pos.0 + rect.2,
+        );
+        if let (Some(sensor), Some(bounds)) = (&mut self.edge_sensor, bounds) {
+            sensor.configure(
+                bounds,
+                allowed,
+                !self.edge_blocked && want == Layer::Desktop,
+            );
+        }
     }
 
     // ---- Spotlight ----
@@ -1590,6 +1655,15 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        // Disable edge input before any synchronous capture preparation can pump
+        // messages; never let it raise an island over the frozen editor.
+        if let Some(sensor) = &mut self.edge_sensor {
+            sensor.suspend();
+        }
+        self.edge_reveal.sync(false, false, Instant::now());
+        window::kill_timer(self.hwnd, TIMER_EDGE_REVEAL);
+        self.edge_deadline = None;
+        dj_win::edge_reveal::set_passive_front(false);
         let previous_foreground = window::foreground();
         // Hiding a pin that holds the keyboard hands the foreground to another window.
         let focused_pin = self.pins.keyboard_owner();
@@ -2204,6 +2278,27 @@ impl App {
 
     /// Recomputes DPI scale, window size and position; rebuilds the renderer if the size changed.
     fn relayout(&mut self) {
+        // Old pointer/leave state belongs to the previous physical region. Drop
+        // that lease before moving the window; panels retain their own front policy.
+        self.edge_reveal.sync(false, false, Instant::now());
+        self.edge_deadline = None;
+        window::kill_timer(self.hwnd, TIMER_EDGE_REVEAL);
+        self.edge_blocked = dj_win::edge_reveal::blocked();
+        dj_win::edge_reveal::set_passive_front(false);
+        if let Some(sensor) = &mut self.edge_sensor {
+            sensor.suspend();
+        }
+        // `place` preserves the current native layer. A cleared passive reveal
+        // must sink before placement, particularly during fullscreen display
+        // switches; never reassert TOPMOST just to reposition a resting island.
+        if self.config.island.stay_behind
+            && !self.island.wants_front()
+            && self.layer != Layer::Desktop
+        {
+            self.layer = Layer::Desktop;
+            system::set_island_on_top(false);
+            window::set_layer(self.hwnd, Layer::Desktop);
+        }
         let mon = window::primary_monitor();
         let scale = mon.dpi as f32 / 96.0;
         let (lw, lh) = layout::window_size();
@@ -3277,6 +3372,7 @@ impl App {
             self.close_terminal(true);
         }
         self.visible = visible;
+        self.sync_layer(false);
         self.pins.set_allowed(visible);
         // The island stays hidden while the Snap overlay is up; it comes back after.
         window::set_visible(self.hwnd, visible && self.overlay.is_none());
@@ -3844,6 +3940,9 @@ impl App {
         self.notifications.configure(&Default::default());
         window::unregister_hotkey(self.hwnd, HOTKEY_CLIPBOARD);
         window::quit();
+        self.edge_sensor = None;
+        window::kill_timer(self.hwnd, TIMER_EDGE_REVEAL);
+        dj_win::edge_reveal::set_passive_front(false);
         self.pins.set_allowed(false);
         // Give the strip back first, or the work area stays short after we're gone.
         appbar::release(self.hwnd);
@@ -3955,6 +4054,28 @@ impl Handler for App {
             return;
         }
         match ev {
+            Event::EdgeReveal { reached } => {
+                dj_win::edge_reveal::ack_context();
+                self.edge_blocked = dj_win::edge_reveal::blocked();
+                if reached
+                    && !self.edge_blocked
+                    && self.visible
+                    && self.config.island.stay_behind
+                    && self.overlay.is_none()
+                    && !self.snap_pending
+                {
+                    self.edge_reveal.reached(Instant::now());
+                }
+            }
+            Event::Timer(TIMER_EDGE_REVEAL) => {
+                // Win32 timers repeat unless killed. Only an unexpired deadline
+                // may rearm this timer; stale queued expiries cannot extend it.
+                window::kill_timer(self.hwnd, TIMER_EDGE_REVEAL);
+                self.edge_deadline = None;
+                self.edge_blocked = dj_win::edge_reveal::blocked();
+                self.edge_reveal
+                    .pointer(dj_win::edge_reveal::pointer_over(self.hwnd), Instant::now());
+            }
             Event::Close => self.quit(),
             Event::DragEscape(request) => {
                 if request & (1u64 << 63) != 0 {
@@ -4062,6 +4183,7 @@ impl Handler for App {
                 }
             }
             Event::Move { x, y } => {
+                self.edge_reveal.pointer(true, Instant::now());
                 let (lx, ly) = self.island_point(x, y);
                 if self.clipboard_open() {
                     let hover = Some(Self::clipboard_local(lx, ly));
@@ -4132,6 +4254,7 @@ impl Handler for App {
                 self.show_volume();
             }
             Event::Leave => {
+                self.edge_reveal.pointer(false, Instant::now());
                 if self.clip_hover.take().is_some() {
                     self.dirty = true;
                 }

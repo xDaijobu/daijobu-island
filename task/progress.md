@@ -24,12 +24,16 @@ and the exclusive shared-Cargo validation rule are in
   Exclusive fmt/clippy, 1,673 tests and optimized build passed; sparse package
   construction passed. Registered identity, consent and live delivery remain
   manual acceptance checks ([report](stage-9a-report.md)).
+  [PR #37](https://github.com/xDaijobu/daijobu-island/pull/37) merged at `4d2c3de`;
+  worker released and worktree removed.
 - [ ] 9b Claude/Codex: documented completion/approval events, opt-in hooks,
   exact live session/generation activation; provider input-event limits explicit.
 - [ ] 9c Explorer: prefill new-session chooser and list open filesystem folders;
   explicit Spotlight paths win and existing sessions keep their cwd.
-- [ ] 9d Edge reveal: existing stay-behind mode reveals at the monitor top edge,
+- [x] 9d Edge reveal: existing stay-behind mode reveals at the monitor top edge,
   returns behind after leave, and respects fullscreen/capture/explicit hide.
+  Exclusive fmt/clippy, all 1,682 tests and optimized build passed on the merged
+  9a base; interactive desktop cases remain listed in [report](stage-9d-report.md).
 - [ ] Each integrated track passes fmt, clippy, full tests and optimized build;
   native interactive gaps remain documented rather than claimed as passing.
 
