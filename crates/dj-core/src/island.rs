@@ -290,6 +290,8 @@ pub struct Island {
     osd: Osd,
     /// True while the user drags the OSD bar.
     dragging: bool,
+    music_volume_available: bool,
+    music_volume_dragging: bool,
     /// True when the pill is growing (picks the expand or collapse spring).
     expanding: bool,
     /// The resting (Idle) size `(w, h)` in logical px; radius is `h / 2`.
@@ -324,6 +326,8 @@ impl Island {
             gear_hover: false,
             osd: Osd::new(),
             dragging: false,
+            music_volume_available: false,
+            music_volume_dragging: false,
             expanding: true,
             idle: (layout::IDLE_W, layout::IDLE_H),
             terminal_shortcuts: Vec::new(),
@@ -615,6 +619,7 @@ impl Island {
     }
 
     fn set_state(&mut self, state: IslandState, tokens: &ResolvedTokens) {
+        self.music_volume_dragging = false;
         if !self.state.is_rest() {
             self.front = true;
         }
@@ -643,6 +648,7 @@ impl Island {
 
     /// Ends a bar drag. Call on mouse-up.
     pub fn release(&mut self) {
+        self.music_volume_dragging = false;
         if self.dragging {
             self.dragging = false;
             self.osd.pin(false);
@@ -652,6 +658,10 @@ impl Island {
     /// Level for a drag at window-logical `x` while the bar is held. None if not dragging.
     /// Unlike the click, the drag doesn't need to stay over the bar.
     pub fn drag(&mut self, x: f32) -> Option<f32> {
+        if self.music_volume_dragging && self.state == IslandState::MusicExpanded {
+            let bar = self.pill_rect().x + layout::ME_VOLUME.x;
+            return Some(((x - bar) / layout::ME_VOLUME.w).clamp(0.0, 1.0));
+        }
         if !self.dragging {
             return None;
         }
@@ -675,6 +685,28 @@ impl Island {
         if self.state != IslandState::MusicExpanded {
             self.set_state(IslandState::MusicExpanded, tokens);
         }
+    }
+
+    pub fn set_music_volume_available(&mut self, available: bool) {
+        self.music_volume_available = available;
+        if !available {
+            self.music_volume_dragging = false;
+        }
+    }
+
+    /// One wheel notch adjusts Windows volume by two percentage points.
+    pub fn music_volume_wheel(&self, x: f32, y: f32, delta: i32, level: f32) -> Option<f32> {
+        if self.state != IslandState::MusicExpanded
+            || !self.music_volume_available
+            || self.osd.is_visible()
+            || !level.is_finite()
+        {
+            return None;
+        }
+        let p = self.pill_rect();
+        let row = Rect::new(16.0, layout::ME_VOLUME.y, 368.0, layout::ME_VOLUME.h);
+        row.contains(x - p.x, y - p.y)
+            .then(|| (level + delta as f32 / 120.0 * 0.02).clamp(0.0, 1.0))
     }
 
     /// Opens the Vitals panel (from the Home tile). The app samples at 1 Hz while
@@ -948,6 +980,16 @@ impl Island {
         let (lx, ly) = (x - p.x, y - p.y);
         let hit = |r: Rect| r.contains(lx, ly);
         let ui = self.music;
+        if hit(layout::ME_VOLUME) {
+            return if self.music_volume_available {
+                self.music_volume_dragging = true;
+                ClickOutcome::SetVolume(
+                    ((lx - layout::ME_VOLUME.x) / layout::ME_VOLUME.w).clamp(0.0, 1.0),
+                )
+            } else {
+                ClickOutcome::Ignored
+            };
+        }
         if hit(layout::ME_BTN_HOME) {
             self.set_state(IslandState::Home, tokens);
             return ClickOutcome::Home;
@@ -1966,6 +2008,56 @@ mod tests {
         // A click outside the bar, while the OSD is up, does nothing.
         assert_eq!(i.click(r.x + 2.0, r.y + 2.0, &t), ClickOutcome::Ignored);
         assert_eq!(i.state(), IslandState::Idle);
+    }
+
+    #[test]
+    fn music_volume_drag_clamps_and_ends_on_release_device_loss_or_panel_change() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        let (x, y) = at(&i, layout::ME_VOLUME);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Ignored);
+        assert_eq!(i.state(), IslandState::MusicExpanded);
+        i.set_music_volume_available(true);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::SetVolume(0.5));
+        assert_eq!(i.drag(x + 1000.0), Some(1.0));
+        assert_eq!(i.drag(x - 1000.0), Some(0.0));
+        assert!(!i.osd.is_visible());
+        i.release();
+        assert_eq!(i.drag(x), None);
+        i.click(x, y, &t);
+        i.set_music_volume_available(false);
+        assert_eq!(i.drag(x), None);
+        i.set_music_volume_available(true);
+        i.click(x, y, &t);
+        i.collapse(&t);
+        assert_eq!(i.drag(x), None);
+    }
+
+    #[test]
+    fn music_volume_row_does_not_intercept_track_seek_or_footer() {
+        let t = tokens();
+        let mut i = Island::new(&t);
+        i.set_music(with_track(), &t);
+        i.set_music_volume_available(true);
+        i.open_music(&t);
+        settle(&mut i, &t);
+        let (vx, vy) = at(&i, layout::ME_VOLUME);
+        assert_eq!(i.music_volume_wheel(vx, vy, 120, 0.5), Some(0.52));
+        assert_eq!(i.music_volume_wheel(vx, vy, -120, 0.5), Some(0.48));
+        assert_eq!(i.music_volume_wheel(vx, vy, 120, 0.99), Some(1.0));
+        assert_eq!(i.music_volume_wheel(vx, vy, -120, 0.01), Some(0.0));
+        let (x, y) = at(&i, layout::ME_SCRUB);
+        assert_eq!(i.music_volume_wheel(x, y, 120, 0.5), None);
+        assert_eq!(
+            i.click(x, y, &t),
+            ClickOutcome::Music(MusicAction::Seek(0.5))
+        );
+        assert_eq!(i.drag(x), None);
+        let (x, y) = at(&i, layout::ME_BTN_HOME);
+        assert_eq!(i.click(x, y, &t), ClickOutcome::Home);
     }
 
     #[test]

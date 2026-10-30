@@ -75,6 +75,8 @@ pub struct MusicFrame<'a> {
     pub accent: Rgb,
     /// Playback position in seconds, interpolated between state messages.
     pub pos: f32,
+    /// Master volume of the default Windows output; absent when unavailable.
+    pub volume: Option<dj_core::osd::Volume>,
 }
 
 /// Title, left and right x, rows (None before the first sample), and CPU vs RAM.

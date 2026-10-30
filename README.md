@@ -311,7 +311,7 @@ can prevent delivery. Oversized events and unavailable IPC are dropped safely.
 - **Rendering:** Skia's GPU backend on Direct3D 12, presenting through a premultiplied-alpha composition swap chain. Grain and dither are SkSL shaders.
 - **Motion:** damped springs (stiffness and damping derived from response and damping ratio) that can be interrupted mid-flight.
 - **Idle cost:** none. When nothing moves, the message loop blocks and nothing is drawn.
-- **Music:** one event-driven Windows GSMTC worker follows the current session, reads metadata and artwork, and sends only supported controls to the exact displayed session. No embedded browser, sign-in, autonomous playback or global media-key fallback.
+- **Music:** one event-driven Windows GSMTC worker follows the current session, reads metadata and artwork, and sends only supported controls to the exact displayed session. No embedded browser, sign-in, autonomous playback or global media-key fallback. The expanded panel's **Windows volume** slider controls the default output's master volume (all applications), supports click/drag, and follows keyboard/external volume changes without replacing Music with the OSD.
 
 ```
 app/              the daijobu binary
