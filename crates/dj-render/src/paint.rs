@@ -69,8 +69,8 @@ pub struct Frame<'a> {
 pub struct MusicFrame<'a> {
     pub ui: MusicUi,
     pub now: Option<&'a NowPlaying>,
-    /// VU levels 0..1, or `None` to hide the VU.
-    pub bands: Option<&'a [f32]>,
+    pub status: &'a str,
+    pub setup_label: Option<&'a str>,
     /// Accent for the Music views: the theme accent, mixed with the cover colour.
     pub accent: Rgb,
     /// Playback position in seconds, interpolated between state messages.

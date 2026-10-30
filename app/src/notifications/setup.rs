@@ -65,7 +65,7 @@ fn prepare_with(
         .fold(0xcbf29ce484222325u64, |h, b| {
             (h ^ *b as u64).wrapping_mul(0x100000001b3)
         });
-    let payload = root.join(format!("notification-identity/0.3.1/{hash:016x}"));
+    let payload = root.join(format!("notification-identity/0.3.1.1/{hash:016x}"));
     std::fs::create_dir_all(&payload)
         .map_err(|e| fail(format!("Cannot create setup payload folder: {e}")))?;
     for dir in [payload.join("Assets"), external.join("Assets")] {

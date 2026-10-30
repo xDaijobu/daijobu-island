@@ -333,7 +333,7 @@ impl Painter {
     }
 
     /// On Music compact while a timer runs: a thin progress line along the pill's edge
-    /// (clockwise from the top centre) and a small mono mm:ss before the VU.
+    /// (clockwise from the top centre) and a small mono mm:ss before the playback indicator.
     pub(crate) fn music_timer_overlay(&mut self, canvas: &Canvas, f: &Frame, rect: &Rect) {
         let (s, t, v) = (f.scale, f.tokens, f.timer);
         let ink = phase_ink(t, v);

@@ -2,11 +2,12 @@
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
          xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
          xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+         xmlns:uap7="http://schemas.microsoft.com/appx/manifest/uap/windows10/7"
          xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
          xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-         IgnorableNamespaces="uap uap3 uap10 rescap">
+         IgnorableNamespaces="uap uap3 uap7 uap10 rescap">
   <Identity Name="DaijobuIsland.Notifications" Publisher="CN=Daijobu Island"
-            Version="0.3.1.0" ProcessorArchitecture="neutral"/>
+            Version="0.3.1.1" ProcessorArchitecture="neutral"/>
   <Properties>
     <DisplayName>Daijobu Island</DisplayName>
     <PublisherDisplayName>Daijobu Island</PublisherDisplayName>
@@ -29,6 +30,7 @@
   </Applications>
   <Capabilities>
     <uap3:Capability Name="userNotificationListener"/>
+    <uap7:Capability Name="globalMediaControl"/>
     <rescap:Capability Name="runFullTrust"/>
     <rescap:Capability Name="unvirtualizedResources"/>
   </Capabilities>

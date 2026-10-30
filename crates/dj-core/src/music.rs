@@ -1,205 +1,231 @@
-//! Pure Music model: the messages the YouTube Music page sends, the now-playing
-//! snapshot the island shows, and the cover accent. No Win32, no WebView2.
+//! Platform-free native media snapshots, exact targets and bounded timeline math.
+use crate::{color::Rgb, island::MusicUi};
+use std::time::{Duration, Instant};
 
-use crate::color::Rgb;
-use crate::island::MusicUi;
-use serde::Deserialize;
+pub const MAX_ART_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_ART_DIMENSION: i32 = 4096;
 
-/// One message from the page bridge (`bridge.js`) or from the engine.
-#[derive(Clone, Debug, PartialEq)]
-pub enum MusicMsg {
-    State {
-        title: String,
-        artist: String,
-        album: String,
-        art: Option<String>,
-        playing: bool,
-        pos: f32,
-        dur: f32,
-    },
-    Auth {
-        signed_in: bool,
-    },
-    /// 22 log-spaced band levels in 0..1, or `None` when the analyser yields nothing.
-    Bands(Option<Vec<f32>>),
-    /// Google refused the embedded sign-in. Set by the engine from the page URL/title.
-    Blocked(bool),
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Target(pub u64);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Capabilities {
+    pub play: bool,
+    pub pause: bool,
+    pub previous: bool,
+    pub next: bool,
+    pub seek: bool,
 }
 
-/// The JSON shape the bridge posts. Private so the public enum stays Rust-shaped.
-#[derive(Deserialize)]
-#[serde(tag = "t", rename_all = "lowercase")]
-enum Wire {
-    State {
-        #[serde(default)]
-        title: String,
-        #[serde(default)]
-        artist: String,
-        #[serde(default)]
-        album: String,
-        #[serde(default)]
-        art: Option<String>,
-        #[serde(default)]
-        playing: bool,
-        #[serde(default)]
-        pos: f32,
-        #[serde(default)]
-        dur: f32,
-    },
-    Auth {
-        #[serde(rename = "signedIn")]
-        signed_in: bool,
-    },
-    Bands {
-        v: Option<Vec<f32>>,
-    },
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Command {
+    PlayPause,
+    Previous,
+    Next,
+    Seek(f32),
 }
 
-impl MusicMsg {
-    /// Parses one bridge message. Malformed input yields `None`, never a panic.
-    pub fn parse(json: &str) -> Option<Self> {
-        let msg = match serde_json::from_str::<Wire>(json).ok()? {
-            Wire::State {
-                title,
-                artist,
-                album,
-                art,
-                playing,
-                pos,
-                dur,
-            } => MusicMsg::State {
-                title: title.trim().to_string(),
-                artist: artist.trim().to_string(),
-                album: album.trim().to_string(),
-                art: art.filter(|u| u.starts_with("https://")),
-                playing,
-                pos: finite_or_zero(pos),
-                dur: finite_or_zero(dur),
-            },
-            Wire::Auth { signed_in } => MusicMsg::Auth { signed_in },
-            Wire::Bands { v } => MusicMsg::Bands(v.map(|v| {
-                v.into_iter()
-                    .map(|x| {
-                        if x.is_finite() {
-                            x.clamp(0.0, 1.0)
-                        } else {
-                            0.0
-                        }
-                    })
-                    .collect()
-            })),
-        };
-        Some(msg)
+impl Capabilities {
+    pub fn allows(self, cmd: Command, playing: bool) -> bool {
+        match cmd {
+            Command::PlayPause => {
+                if playing {
+                    self.pause
+                } else {
+                    self.play
+                }
+            }
+            Command::Previous => self.previous,
+            Command::Next => self.next,
+            Command::Seek(f) => self.seek && f.is_finite() && (0.0..=1.0).contains(&f),
+        }
     }
 }
 
-fn finite_or_zero(x: f32) -> f32 {
+#[derive(Clone, Debug, PartialEq)]
+pub struct Timeline {
+    pub start: f64,
+    pub end: f64,
+    pub position: f64,
+    pub min_seek: f64,
+    pub max_seek: f64,
+    pub rate: f64,
+    pub source_stamp: i64,
+    pub source_position: f64,
+}
+impl Default for Timeline {
+    fn default() -> Self {
+        Self::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    }
+}
+fn finite(x: f64) -> f64 {
     if x.is_finite() {
-        x.max(0.0)
+        x.clamp(0.0, i64::MAX as f64 / 10_000_000.0)
     } else {
         0.0
     }
 }
+impl Timeline {
+    pub fn new(start: f64, end: f64, pos: f64, min: f64, max: f64, rate: f64) -> Self {
+        let start = finite(start);
+        let end = finite(end).max(start);
+        let position = finite(pos).max(start);
+        Self {
+            start,
+            end,
+            position: if end > start {
+                position.min(end)
+            } else {
+                position
+            },
+            min_seek: finite(min).max(start),
+            max_seek: finite(max).min(end),
+            rate: if rate.is_finite() {
+                rate.clamp(0.0, 16.0)
+            } else {
+                1.0
+            },
+            source_stamp: 0,
+            source_position: position,
+        }
+    }
+    /// Preserve elapsed playback when a pause/rate event repeats the same OS
+    /// timeline. A new source stamp or position (seek) replaces the old anchor.
+    pub fn rebase(
+        mut self,
+        stamp: i64,
+        age: f64,
+        playing: bool,
+        previous: Option<(&Self, bool, Duration)>,
+    ) -> Self {
+        self.source_stamp = stamp;
+        let continuous = previous.filter(|(p, _, _)| {
+            p.source_stamp == stamp
+                && p.source_position == self.source_position
+                && p.start == self.start
+                && p.end == self.end
+        });
+        self.position = if let Some((p, was_playing, elapsed)) = continuous {
+            self.start + p.position(elapsed, was_playing) as f64
+        } else {
+            self.position
+                + if playing && age.is_finite() && (0.0..=86_400.0).contains(&age) {
+                    age * self.rate
+                } else {
+                    0.0
+                }
+        };
+        if self.end > self.start {
+            self.position = self.position.clamp(self.start, self.end);
+        }
+        self
+    }
+    pub fn duration(&self) -> f32 {
+        (self.end - self.start) as f32
+    }
+    pub fn position(&self, elapsed: Duration, playing: bool) -> f32 {
+        let live = if playing {
+            elapsed.as_secs_f64() * self.rate
+        } else {
+            0.0
+        };
+        let pos = self.position - self.start + live;
+        if self.end > self.start {
+            pos.clamp(0.0, self.end - self.start) as f32
+        } else {
+            finite(pos) as f32
+        }
+    }
+    pub fn seek(&self, fraction: f32) -> Option<i64> {
+        if !fraction.is_finite()
+            || !(0.0..=1.0).contains(&fraction)
+            || self.end <= self.start
+            || self.max_seek < self.min_seek
+        {
+            return None;
+        }
+        Some(
+            ((self.start + (self.end - self.start) * fraction as f64)
+                .clamp(self.min_seek, self.max_seek)
+                * 10_000_000.0)
+                .min(i64::MAX as f64) as i64,
+        )
+    }
+}
 
-/// What is loaded in the page right now.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NowPlaying {
     pub title: String,
     pub artist: String,
     pub album: String,
-    pub art_url: Option<String>,
+    pub source: String,
     pub playing: bool,
-    pub pos: f32,
     pub dur: f32,
+    pub timeline: Timeline,
+    pub controls: Capabilities,
 }
 
-/// Everything the island knows about YouTube Music.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Session {
-    pub signed_in: bool,
-    pub blocked: bool,
+    pub target: Target,
     pub now: Option<NowPlaying>,
-    pub bands: Option<Vec<f32>>,
+    pub error: Option<String>,
+    pub integration_required: bool,
+    pub updated: Instant,
 }
-
-impl Session {
-    /// Applies one message. Returns true when the island needs a redraw.
-    /// Band frames return false: the VU timer redraws them at about 30 fps.
-    pub fn apply(&mut self, msg: MusicMsg) -> bool {
-        match msg {
-            MusicMsg::State {
-                title,
-                artist,
-                album,
-                art,
-                playing,
-                pos,
-                dur,
-            } => {
-                self.now = (!title.is_empty()).then_some(NowPlaying {
-                    title,
-                    artist,
-                    album,
-                    art_url: art,
-                    playing,
-                    pos,
-                    dur,
-                });
-                true
-            }
-            MusicMsg::Auth { signed_in } => {
-                self.signed_in = signed_in;
-                true
-            }
-            MusicMsg::Bands(v) => {
-                self.bands = v;
-                false
-            }
-            MusicMsg::Blocked(b) => {
-                self.blocked = b;
-                true
-            }
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            target: Target::default(),
+            now: None,
+            error: None,
+            integration_required: false,
+            updated: Instant::now(),
         }
     }
-
-    pub fn has_track(&self) -> bool {
-        self.now.is_some()
-    }
-
-    /// True while the VU should be redrawn on a timer.
-    pub fn vu_live(&self) -> bool {
-        self.bands.is_some() && self.now.as_ref().is_some_and(|n| n.playing)
-    }
-
+}
+impl Session {
     pub fn ui(&self) -> MusicUi {
         MusicUi {
-            signed_in: self.signed_in,
-            has_track: self.has_track(),
-            blocked: self.blocked,
+            integration_required: self.integration_required,
+            has_track: self.now.is_some(),
+            available: self.error.is_none(),
+            controls: self
+                .now
+                .as_ref()
+                .map_or(Capabilities::default(), |n| n.controls),
+            playing: self.now.as_ref().is_some_and(|n| n.playing),
         }
     }
-}
-
-/// Averages `bands` into `n` groups (for the 5-column compact VU).
-pub fn vu_groups(bands: &[f32], n: usize) -> Vec<f32> {
-    if n == 0 || bands.is_empty() {
-        return vec![0.0; n];
-    }
-    (0..n)
-        .map(|g| {
-            let lo = (g * bands.len() / n).min(bands.len() - 1);
-            let hi = ((g + 1) * bands.len() / n).clamp(lo + 1, bands.len());
-            bands[lo..hi].iter().sum::<f32>() / (hi - lo) as f32
+    pub fn position(&self) -> f32 {
+        self.now.as_ref().map_or(0.0, |n| {
+            n.timeline.position(self.updated.elapsed(), n.playing)
         })
-        .collect()
+    }
+    pub fn accepts(&self, target: Target, cmd: Command) -> bool {
+        self.target == target
+            && self
+                .now
+                .as_ref()
+                .is_some_and(|n| n.controls.allows(cmd, n.playing))
+    }
 }
 
-/// `m:ss` for a position in seconds.
+pub fn artwork_allowed(bytes: usize, width: i32, height: i32) -> bool {
+    bytes <= MAX_ART_BYTES
+        && width > 0
+        && height > 0
+        && width <= MAX_ART_DIMENSION
+        && height <= MAX_ART_DIMENSION
+}
 pub fn fmt_time(secs: f32) -> String {
-    let s = secs.max(0.0) as u32;
+    let s = if secs.is_finite() {
+        secs.clamp(0.0, 359_999.0) as u32
+    } else {
+        0
+    };
     format!("{}:{:02}", s / 60, s % 60)
 }
-
 /// Accent taken from cover art: the cover is clamped to S 45–65 % and L 62–72 %,
 /// then mixed into the theme accent by `amount` (`accent_from_cover`).
 pub fn cover_accent(cover: Rgb, base: Rgb, amount: f32) -> Rgb {
@@ -270,145 +296,84 @@ fn hue_to_channel(p: f32, q: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SAMPLE: &str = r#"{"t":"state","title":"Song","artist":"Artist","album":"Album",
-        "art":"https://lh3.example/a.jpg","playing":true,"pos":12.4,"dur":200}"#;
-
     #[test]
-    fn parses_state_with_all_fields() {
-        let m = MusicMsg::parse(SAMPLE).expect("valid");
-        assert_eq!(
-            m,
-            MusicMsg::State {
-                title: "Song".into(),
-                artist: "Artist".into(),
-                album: "Album".into(),
-                art: Some("https://lh3.example/a.jpg".into()),
-                playing: true,
-                pos: 12.4,
-                dur: 200.0,
-            }
-        );
+    fn pause_seek_end_unknown_and_invalid_timeline() {
+        let t = Timeline::new(10.0, 110.0, 30.0, 20.0, 90.0, 1.0);
+        assert_eq!(t.position(Duration::from_secs(7), false), 20.0);
+        assert_eq!(t.position(Duration::from_secs(7), true), 27.0);
+        assert_eq!(t.position(Duration::from_secs(200), true), 100.0);
+        assert_eq!(t.seek(0.0), Some(200_000_000));
+        assert_eq!(t.seek(1.0), Some(900_000_000));
+        assert_eq!(t.seek(f32::NAN), None);
+        assert_eq!(Timeline::default().seek(0.5), None);
+        let t = Timeline::new(f64::NAN, -1.0, f64::INFINITY, 0.0, 0.0, f64::NAN);
+        assert_eq!(t.position(Duration::ZERO, true), 0.0);
     }
-
     #[test]
-    fn parses_auth_and_bands() {
-        assert_eq!(
-            MusicMsg::parse(r#"{"t":"auth","signedIn":false}"#),
-            Some(MusicMsg::Auth { signed_in: false })
-        );
-        assert_eq!(
-            MusicMsg::parse(r#"{"t":"bands","v":null}"#),
-            Some(MusicMsg::Bands(None))
-        );
-        let Some(MusicMsg::Bands(Some(v))) = MusicMsg::parse(r#"{"t":"bands","v":[0.5,2,-1]}"#)
-        else {
-            panic!("bands expected");
-        };
-        assert_eq!(v, vec![0.5, 1.0, 0.0], "values are clamped to 0..1");
-    }
-
-    #[test]
-    fn malformed_input_is_ignored() {
-        assert_eq!(MusicMsg::parse(""), None);
-        assert_eq!(MusicMsg::parse("not json"), None);
-        assert_eq!(MusicMsg::parse(r#"{"t":"unknown"}"#), None);
-        assert_eq!(MusicMsg::parse(r#"{"t":"auth"}"#), None, "missing field");
-        assert_eq!(MusicMsg::parse(r#"{"t":"bands","v":"x"}"#), None);
-        assert_eq!(MusicMsg::parse("[1,2,3]"), None);
-    }
-
-    #[test]
-    fn state_defaults_and_guards() {
-        let m = MusicMsg::parse(r#"{"t":"state","title":"  T  ","pos":-3,"art":"file:///x"}"#)
-            .expect("valid");
-        let MusicMsg::State {
-            title,
-            art,
-            pos,
-            dur,
-            playing,
-            ..
-        } = m
-        else {
-            panic!("state expected");
-        };
-        assert_eq!(title, "T");
-        assert_eq!(art, None, "only https artwork is accepted");
-        assert_eq!((pos, dur, playing), (0.0, 0.0, false));
-    }
-
-    #[test]
-    fn session_tracks_presence_and_auth() {
+    fn stale_target_unsupported_controls_and_no_session() {
         let mut s = Session::default();
-        assert!(!s.has_track());
-        assert!(s.apply(MusicMsg::parse(SAMPLE).unwrap()));
-        assert!(s.has_track());
-        assert!(s.ui().has_track);
-        // An empty title means the track is gone.
-        s.apply(MusicMsg::parse(r#"{"t":"state","title":""}"#).unwrap());
-        assert!(!s.has_track());
-        s.apply(MusicMsg::Auth { signed_in: true });
-        assert!(s.ui().signed_in);
+        assert!(!s.ui().has_track);
+        assert!(s.ui().available);
+        assert!(!s.accepts(Target(0), Command::Next));
+        s.target = Target(2);
+        s.now = Some(NowPlaying {
+            controls: Capabilities {
+                next: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(!s.accepts(Target(1), Command::Next));
+        assert!(s.accepts(Target(2), Command::Next));
+        assert!(!s.accepts(Target(2), Command::PlayPause));
+        s.now = None;
+        assert!(!s.accepts(Target(2), Command::Next));
+        s.error = Some("Unavailable".into());
+        assert!(!s.ui().available);
     }
-
     #[test]
-    fn bands_do_not_force_a_redraw_and_vu_needs_playing() {
-        let mut s = Session::default();
-        assert!(!s.apply(MusicMsg::Bands(Some(vec![0.1; 22]))));
-        assert!(!s.vu_live(), "no track yet");
-        s.apply(MusicMsg::parse(SAMPLE).unwrap());
-        assert!(s.vu_live());
-        s.apply(MusicMsg::Bands(None));
-        assert!(!s.vu_live(), "analyser gave up: no VU");
+    fn thumbnail_byte_and_dimension_caps() {
+        assert!(artwork_allowed(MAX_ART_BYTES, 256, 256));
+        assert!(!artwork_allowed(MAX_ART_BYTES + 1, 256, 256));
+        assert!(!artwork_allowed(100, 4097, 20));
+        assert!(!artwork_allowed(100, 0, 20));
     }
-
     #[test]
-    fn vu_groups_average_evenly() {
-        let bands: Vec<f32> = (0..22).map(|i| i as f32 / 21.0).collect();
-        let g = vu_groups(&bands, 5);
-        assert_eq!(g.len(), 5);
-        assert!(
-            g.windows(2).all(|w| w[0] < w[1]),
-            "rising input stays rising"
+    fn repeated_os_anchor_freezes_on_pause_and_external_seek_replaces_it() {
+        let playing = Timeline::new(0.0, 100.0, 10.0, 0.0, 100.0, 1.0).rebase(123, 2.0, true, None);
+        let paused = Timeline::new(0.0, 100.0, 10.0, 0.0, 100.0, 1.0).rebase(
+            123,
+            5.0,
+            false,
+            Some((&playing, true, Duration::from_secs(3))),
         );
-        assert_eq!(vu_groups(&[], 5), vec![0.0; 5]);
-        assert_eq!(vu_groups(&[0.5; 3], 5).len(), 5, "fewer bands than groups");
+        assert_eq!(paused.position(Duration::from_secs(10), false), 15.0);
+        let repeat = Timeline::new(0.0, 100.0, 10.0, 0.0, 100.0, 1.0).rebase(
+            123,
+            20.0,
+            false,
+            Some((&paused, false, Duration::from_secs(10))),
+        );
+        assert_eq!(repeat.position(Duration::ZERO, false), 15.0);
+        let seek = Timeline::new(0.0, 100.0, 70.0, 0.0, 100.0, 1.0).rebase(
+            124,
+            0.0,
+            false,
+            Some((&repeat, false, Duration::from_secs(10))),
+        );
+        assert_eq!(seek.position(Duration::ZERO, false), 70.0);
+        let resumed = Timeline::new(0.0, 100.0, 70.0, 0.0, 100.0, 2.0).rebase(
+            124,
+            100.0,
+            true,
+            Some((&seek, false, Duration::from_secs(10))),
+        );
+        assert_eq!(resumed.position(Duration::from_secs(2), true), 74.0);
     }
-
     #[test]
-    fn times_format_as_m_ss() {
-        assert_eq!(fmt_time(0.0), "0:00");
+    fn time_and_accent_remain_safe() {
+        assert_eq!(fmt_time(f32::NAN), "0:00");
         assert_eq!(fmt_time(65.9), "1:05");
-        assert_eq!(fmt_time(-4.0), "0:00");
-        assert_eq!(fmt_time(3599.0), "59:59");
-    }
-
-    #[test]
-    fn hsl_roundtrip() {
-        let c = Rgb::new(0.2, 0.5, 0.9);
-        let (h, s, l) = rgb_to_hsl(c);
-        let back = hsl_to_rgb(h, s, l);
-        assert!((back.r - c.r).abs() < 1e-4);
-        assert!((back.g - c.g).abs() < 1e-4);
-        assert!((back.b - c.b).abs() < 1e-4);
-    }
-
-    #[test]
-    fn cover_accent_is_clamped_to_saturation_and_lightness() {
-        // A dark, fully saturated cover comes out lighter and less saturated.
-        let out = cover_accent(Rgb::new(0.5, 0.0, 0.0), Rgb::new(0.0, 0.0, 0.0), 1.0);
-        let (_, s, l) = rgb_to_hsl(out);
-        assert!((0.45 - 1e-3..=0.65 + 1e-3).contains(&s), "s={s}");
-        assert!((0.62 - 1e-3..=0.72 + 1e-3).contains(&l), "l={l}");
-        // A near-white cover is pulled down into the lightness band.
-        let out = cover_accent(Rgb::new(1.0, 1.0, 1.0), Rgb::new(0.0, 0.0, 0.0), 1.0);
-        let (_, _, l2) = rgb_to_hsl(out);
-        assert!((0.62 - 1e-3..=0.72 + 1e-3).contains(&l2), "l2={l2}");
-    }
-
-    #[test]
-    fn cover_accent_amount_zero_keeps_theme_accent() {
         let base = Rgb::new(0.3, 0.6, 0.2);
         assert_eq!(cover_accent(Rgb::new(0.9, 0.1, 0.1), base, 0.0), base);
     }

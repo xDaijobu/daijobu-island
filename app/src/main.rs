@@ -48,6 +48,8 @@ fn main() {
     let mut app = app::App::new(hwnd, config, exe);
     if args.as_slice() == [dj_win::notification_setup::OPEN_SWITCH] {
         app.reopen_notifications_after_restart();
+    } else if args.as_slice() == [dj_win::notification_setup::OPEN_MEDIA_SWITCH] {
+        app.reopen_music_after_restart();
     }
     window::run(app);
 }

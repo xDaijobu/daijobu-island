@@ -1040,3 +1040,10 @@ Splits; clickable links; images (sixel/kitty); mouse reporting to programs (vim,
 - [x] Preserve explicit Windows consent, avoid silent certificate trust, and provide a delivery build with the payload.
 - [x] fmt, clippy, 1,734 workspace tests, optimized build, and on-device identity/consent verified; real panel Listening with Windows history. See stage-9e-report.md for remaining checks.
 Scope and acceptance: [stage-9e-brief.md](stage-9e-brief.md).
+
+## Stage 9f - Native Windows music (complete)
+- [x] Replace WebView engine/sign-in with event-driven GSMTC auto-detection and supported controls/art/progress.
+- [x] Optional synced lyrics, default off, with metadata disclosure and bounded async lookup.
+- [x] Remove old engine/dependencies and migrate UI/config/docs; preserve user files and notification setup.
+- [x] fmt/clippy, 1,736 workspace tests, optimized build, packaged/unpackaged native discovery, live Music panel and pause/resume verified. See stage-9f-report.md for remaining checks.
+Scope and acceptance: [stage-9f-brief.md](stage-9f-brief.md).

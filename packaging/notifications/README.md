@@ -1,4 +1,4 @@
-﻿# Windows notification setup
+# Windows notification setup
 
 Notifications default off. Open **Home > Notifications**, enable Windows notifications,
 then select **Set up notifications** if identity is missing. Setup extracts an embedded
@@ -42,7 +42,7 @@ must deploy these exact assets there in advance.
   Settings change is required and offers retry. The app never enables Developer Mode.
 
 Extracted payloads live permanently under
-`~/.daijobu/notification-identity/0.3.1/<external-folder-hash>/`, because development
+`~/.daijobu/notification-identity/0.3.1.1/<external-folder-hash>/`, because development
 registration continues referring to its loose manifest. Keep that folder and the app
 installation stable until explicitly unregistering. Setup may leave these small files
 after failure. Moving the app requires setup against its new external location;
@@ -136,3 +136,19 @@ Official references reviewed 2026-10-30:
 - [Native RegisterPackageByUriAsync](https://learn.microsoft.com/en-us/uwp/api/windows.management.deployment.packagemanager.registerpackagebyuriasync)
 - [Unsigned MSIX restrictions](https://learn.microsoft.com/en-us/windows/msix/package/unsigned-package)
 - [Listener and explicit consent](https://learn.microsoft.com/en-us/windows/apps/develop/notifications/app-notifications/notification-listener)
+
+Stage 9f adds `uap7:Capability Name="globalMediaControl"` using namespace
+`http://schemas.microsoft.com/appx/manifest/uap/windows10/7`. The identity family,
+publisher, application ID and notification capabilities are unchanged; only the
+package payload version advances from `0.3.1.0` to `0.3.1.1`, with matching stable
+extraction version `0.3.1.1`. Never edit or overwrite an already registered loose
+manifest in place. Keep old extraction directories and user music profiles.
+
+GSMTC discovery runs independently of notification opt-in and consent. Read-only
+host probes succeeded both unpackaged and under the existing full-trust Stage 9e
+`0.3.1.0` identity, which lacks this declaration. No automatic migration occurs.
+If a real media access error requires recovery, Music offers explicit Update,
+then Restart using the existing registration/graceful shutdown transport without
+enabling notifications or requesting notification-listener access. The restart
+closes shell sessions through the normal saved-settings/pinned-tabs path. Signed
+distributions must supply a newly signed `0.3.1.1` payload with this capability.

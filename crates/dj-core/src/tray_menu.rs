@@ -4,8 +4,6 @@ pub enum MenuCommand {
     Theme(usize),
     ToggleAutostart,
     MusicShow,
-    MusicSignOut,
-    MusicStop,
     SnapPreviews,
     SnapPins,
     Settings,
@@ -17,15 +15,8 @@ pub enum MenuCommand {
 pub struct MenuSpec<'a> {
     pub themes: &'a [(String, bool)],
     pub autostart: bool,
-    pub music: MusicMenu,
     pub previews: bool,
     pub pins: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MusicMenu {
-    pub running: bool,
-    pub signed_in: bool,
 }
 
 pub const WIDTH: f32 = 300.0;
@@ -88,19 +79,7 @@ impl Menu {
                         .map(|(i, (name, checked))| Row::action(name, Theme(i), true, *checked))
                         .collect(),
                 ),
-                Row::group(
-                    "YouTube Music",
-                    vec![
-                        Row::action("Show window", MusicShow, true, false),
-                        Row::action(
-                            "Sign out",
-                            MusicSignOut,
-                            spec.music.signed_in || spec.music.running,
-                            false,
-                        ),
-                        Row::action("Stop engine", MusicStop, spec.music.running, false),
-                    ],
-                ),
+                Row::action("Music", MusicShow, true, false),
                 Row::action("Focus Snap previews", SnapPreviews, spec.previews, false),
                 Row::action("Show pinned screenshots", SnapPins, spec.pins, false),
                 Row::action("Start with Windows", ToggleAutostart, true, spec.autostart),
@@ -219,14 +198,13 @@ impl Menu {
 mod tests {
     use super::*;
 
-    fn menu(running: bool, signed_in: bool) -> Menu {
+    fn menu() -> Menu {
         let themes = (0..30)
             .map(|i| (format!("Theme {i}"), i == 4))
             .collect::<Vec<_>>();
         Menu::new(&MenuSpec {
             themes: &themes,
             autostart: true,
-            music: MusicMenu { running, signed_in },
             previews: false,
             pins: false,
         })
@@ -234,7 +212,7 @@ mod tests {
 
     #[test]
     fn navigation_skips_disabled_wraps_and_preserves_actions() {
-        let mut m = menu(false, false);
+        let mut m = menu();
         m.select(5);
         m.step(true);
         assert_eq!(m.selected, Some(8));
@@ -251,7 +229,7 @@ mod tests {
 
     #[test]
     fn submenus_scroll_and_back_retains_parent() {
-        let mut m = menu(false, false);
+        let mut m = menu();
         m.select(4);
         assert_eq!(m.activate(), None);
         assert_eq!(m.title(), "Theme");
@@ -267,31 +245,10 @@ mod tests {
     }
 
     #[test]
-    fn music_state_and_all_commands_preserved() {
-        for (running, signed_in) in [(false, false), (false, true), (true, false), (true, true)] {
-            let mut m = menu(running, signed_in);
-            let commands: Vec<_> = m.rows().iter().filter_map(|r| r.command).collect();
-            assert_eq!(
-                commands,
-                vec![
-                    MenuCommand::ToggleVisible,
-                    MenuCommand::Settings,
-                    MenuCommand::DeveloperMemory,
-                    MenuCommand::Clipboard,
-                    MenuCommand::SnapPreviews,
-                    MenuCommand::SnapPins,
-                    MenuCommand::ToggleAutostart,
-                    MenuCommand::Quit
-                ]
-            );
-            m.select(5);
-            m.activate();
-            assert!(m.rows()[0].enabled);
-            assert_eq!(m.rows()[1].enabled, running || signed_in);
-            assert_eq!(m.rows()[2].enabled, running);
-            assert_eq!(m.rows()[0].command, Some(MenuCommand::MusicShow));
-            assert_eq!(m.rows()[1].command, Some(MenuCommand::MusicSignOut));
-            assert_eq!(m.rows()[2].command, Some(MenuCommand::MusicStop));
-        }
+    fn native_music_opens_panel_without_engine_actions() {
+        let mut m = menu();
+        m.select(5);
+        assert_eq!(m.activate(), Some(MenuCommand::MusicShow));
+        assert!(m.rows()[5].children.is_empty());
     }
 }

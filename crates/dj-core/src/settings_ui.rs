@@ -69,6 +69,7 @@ pub enum RowKey {
     Autostart,
     DeveloperMode,
     NotificationsEnabled,
+    MusicLyrics,
     InternalNotificationsEnabled,
     Theme,
     // Notch
@@ -307,7 +308,13 @@ const fn def(key: RowKey, page: Page, label: &'static str, hint: &'static str) -
 }
 
 /// Every row, in page order.
-const ROWS: [RowDef; 23] = [
+const ROWS: [RowDef; 24] = [
+    def(
+        RowKey::MusicLyrics,
+        Page::General,
+        "Synced lyrics (LRCLIB)",
+        "Off by default; enabling sends artist, title and duration to LRCLIB",
+    ),
     def(
         RowKey::InternalNotificationsEnabled,
         Page::General,
@@ -518,6 +525,7 @@ fn field_eq(a: &Config, b: &Config, key: RowKey) -> bool {
             a.notifications.internal_enabled == b.notifications.internal_enabled
         }
         RowKey::NotificationsEnabled => a.notifications.enabled == b.notifications.enabled,
+        RowKey::MusicLyrics => a.music.lyrics_enabled == b.music.lyrics_enabled,
         RowKey::DeveloperMode => a.developer_mode == b.developer_mode,
         RowKey::Autostart => a.start_with_windows == b.start_with_windows,
         RowKey::Theme => a.theme == b.theme,
@@ -547,6 +555,7 @@ fn copy_field(dst: &mut Config, src: &Config, key: RowKey) {
             dst.notifications.internal_enabled = src.notifications.internal_enabled
         }
         RowKey::NotificationsEnabled => dst.notifications.enabled = src.notifications.enabled,
+        RowKey::MusicLyrics => dst.music.lyrics_enabled = src.music.lyrics_enabled,
         RowKey::DeveloperMode => dst.developer_mode = src.developer_mode,
         RowKey::Autostart => dst.start_with_windows = src.start_with_windows,
         RowKey::Theme => dst.theme = src.theme.clone(),
@@ -903,6 +912,9 @@ impl SettingsDoc {
             RowKey::InternalNotificationsEnabled => Control::Toggle {
                 on: c.notifications.internal_enabled,
             },
+            RowKey::MusicLyrics => Control::Toggle {
+                on: c.music.lyrics_enabled,
+            },
             RowKey::NotificationsEnabled => Control::Toggle {
                 on: c.notifications.enabled,
             },
@@ -1144,6 +1156,7 @@ impl SettingsDoc {
                 c.notifications.internal_enabled = !c.notifications.internal_enabled
             }
             RowKey::NotificationsEnabled => c.notifications.enabled = !c.notifications.enabled,
+            RowKey::MusicLyrics => c.music.lyrics_enabled = !c.music.lyrics_enabled,
             RowKey::DeveloperMode => c.developer_mode = !c.developer_mode,
             RowKey::Autostart => c.start_with_windows = !c.start_with_windows,
             RowKey::Theme => {

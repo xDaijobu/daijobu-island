@@ -23,6 +23,8 @@ use windows_future::AsyncStatus;
 
 pub const RESTART_SWITCH: &str = "--notification-restart-helper";
 pub const OPEN_SWITCH: &str = "--notifications";
+const MEDIA_RESTART_SWITCH: &str = "--media-restart-helper";
+pub const OPEN_MEDIA_SWITCH: &str = "--music";
 const TIMEOUT: Duration = Duration::from_secs(120);
 
 pub enum Completion {
@@ -273,10 +275,18 @@ impl RestartTicket {
 }
 
 pub fn prepare_restart(hwnd: isize) -> Result<Job, Failure> {
-    launch(hwnd, true, move |_| Completion::Restart(restart_ticket()))
+    launch(hwnd, true, move |_| {
+        Completion::Restart(restart_ticket(false))
+    })
 }
 
-fn restart_ticket() -> Result<RestartTicket, Failure> {
+pub fn prepare_media_restart(hwnd: isize) -> Result<Job, Failure> {
+    launch(hwnd, true, move |_| {
+        Completion::Restart(restart_ticket(true))
+    })
+}
+
+fn restart_ticket(media: bool) -> Result<RestartTicket, Failure> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().map_err(|e| failure(e.to_string(), true))?;
@@ -303,7 +313,11 @@ fn restart_ticket() -> Result<RestartTicket, Failure> {
             .0 as isize,
     );
     let helper = Command::new(exe)
-        .arg(RESTART_SWITCH)
+        .arg(if media {
+            MEDIA_RESTART_SWITCH
+        } else {
+            RESTART_SWITCH
+        })
         .arg(std::process::id().to_string())
         .arg(&base)
         .stdin(Stdio::null())
@@ -327,7 +341,8 @@ fn restart_ticket() -> Result<RestartTicket, Failure> {
 /// Early headless route. It never loads config, acquires the app mutex or sets up
 /// packages. The ready handshake proves we hold the old process before it exits.
 pub fn handle_restart_cli(args: &[OsString]) -> bool {
-    if args.first().is_none_or(|arg| arg != RESTART_SWITCH) {
+    let media = args.first().is_some_and(|arg| arg == MEDIA_RESTART_SWITCH);
+    if !media && args.first().is_none_or(|arg| arg != RESTART_SWITCH) {
         return false;
     }
     if args.len() == 3 {
@@ -337,14 +352,14 @@ pub fn handle_restart_cli(args: &[OsString]) -> bool {
         ) {
             if base.starts_with(&format!("Local\\DaijobuIsland.Restart.{pid}.")) && base.len() < 160
             {
-                let _ = restart_helper(pid, base);
+                let _ = restart_helper(pid, base, media);
             }
         }
     }
     true
 }
 
-fn restart_helper(pid: u32, base: &str) -> Result<(), Failure> {
+fn restart_helper(pid: u32, base: &str, media: bool) -> Result<(), Failure> {
     let ready_name = HSTRING::from(format!("{base}.ready"));
     let go_name = HSTRING::from(format!("{base}.go"));
     // SAFETY: only synchronization access; never kills or manipulates the parent.
@@ -382,7 +397,11 @@ fn restart_helper(pid: u32, base: &str) -> Result<(), Failure> {
             use std::os::windows::process::CommandExt;
             let exe = std::env::current_exe().map_err(|e| failure(e.to_string(), true))?;
             std::process::Command::new(exe)
-                .arg(OPEN_SWITCH)
+                .arg(if media {
+                    OPEN_MEDIA_SWITCH
+                } else {
+                    OPEN_SWITCH
+                })
                 .creation_flags(0x08000000)
                 .spawn()
                 .map_err(|e| failure(e.to_string(), true))?;
@@ -513,10 +532,12 @@ mod tests {
             vec![],
             vec![OsString::from("--agent-notification-hook")],
             vec![OsString::from(OPEN_SWITCH)],
+            vec![OsString::from(OPEN_MEDIA_SWITCH)],
         ] {
             assert!(!handle_restart_cli(&args));
         }
         assert!(handle_restart_cli(&[OsString::from(RESTART_SWITCH)]));
+        assert!(handle_restart_cli(&[OsString::from(MEDIA_RESTART_SWITCH)]));
         assert!(handle_restart_cli(&[
             OsString::from(RESTART_SWITCH),
             "not-a-pid".into(),
