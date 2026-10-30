@@ -25,7 +25,16 @@ pub struct Config {
     #[serde(deserialize_with = "lenient_terminal")]
     pub terminal: TerminalConfig,
     pub clipboard: ClipboardConfig,
+    pub notifications: NotificationsConfig,
     pub spotlight: SpotlightConfig,
+}
+
+/// `[notifications]`: Windows toast ingestion is explicit opt-in; content is RAM only.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    pub enabled: bool,
+    pub internal_enabled: bool,
 }
 
 /// `[clipboard]` section. History begins only after explicit opt-in.
@@ -817,6 +826,7 @@ impl Default for Config {
             tile: TileConfig::default(),
             terminal: TerminalConfig::default(),
             clipboard: ClipboardConfig::default(),
+            notifications: NotificationsConfig::default(),
             spotlight: SpotlightConfig::default(),
         }
     }
@@ -936,6 +946,10 @@ mod tests {
                 enabled: false,
                 hotkey: "ctrl_alt_space".into(),
                 files: false,
+            },
+            notifications: NotificationsConfig {
+                enabled: true,
+                internal_enabled: true,
             },
             clipboard: ClipboardConfig {
                 enabled: true,

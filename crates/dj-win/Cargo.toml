@@ -8,7 +8,14 @@ license.workspace = true
 dj-core = { path = "../dj-core" }
 # Needed by the `#[implement]` macro, which emits `::windows_core` paths.
 windows-core = "0.62"
+windows-future = "0.3"
 windows = { workspace = true, features = [
+  "Foundation",
+  "ApplicationModel",
+  "UI_Notifications",
+  "UI_Notifications_Management",
+  "Win32_System_WinRT",
+  "Win32_Storage_Packaging_Appx",
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",

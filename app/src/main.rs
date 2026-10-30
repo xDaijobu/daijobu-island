@@ -7,6 +7,7 @@ mod clipboard;
 mod clipboard_transfer;
 mod dev_memory;
 mod notch;
+mod notifications;
 mod popups;
 mod preview_store;
 mod previews;

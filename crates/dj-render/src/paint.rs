@@ -59,6 +59,7 @@ pub struct Frame<'a> {
     /// Clipboard content retained while its layer fades out.
     pub clipboard: Option<crate::clipboard::ClipboardPanel<'a>>,
     /// Running tabs beside the idle clock, without keeping the terminal panel open.
+    pub notifications: Option<crate::notifications::NotificationPanel<'a>>,
     pub terminal_shortcuts: &'a [Shortcut],
     /// Pill or notch (config `[island] style`): the shape of the island's body.
     pub island_style: IslandStyle,
@@ -310,6 +311,14 @@ impl Painter {
             );
             crate::clipboard::paint_clipboard(canvas, &mut self.fonts, t, at, s, *panel);
             canvas.restore();
+        }
+        for (alpha, toast) in [(lay.notifications, false), (lay.notification_toast, true)] {
+            let opacity = smoothstep(0.35, 1.0, alpha) * not_osd;
+            if opacity > 0.01 && f.notifications.is_some() {
+                begin_layer(canvas, &rect, opacity, center, s);
+                self.notifications(canvas, f, &rect, toast);
+                canvas.restore();
+            }
         }
         if osd_a > 0.01 {
             begin_layer(canvas, &rect, osd_a, center, s);

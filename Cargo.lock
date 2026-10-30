@@ -300,6 +300,7 @@ dependencies = [
  "dj-core",
  "windows",
  "windows-core",
+ "windows-future",
 ]
 
 [[package]]

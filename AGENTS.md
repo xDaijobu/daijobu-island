@@ -37,6 +37,13 @@ ownership and interfaces. This conversation remains the coordinator.
 
 When a stage unlocks a feature, flip its entry in `dj-core`'s feature registry from `Locked` to `Available` and handle `ClickOutcome::Open`.
 
+For the user-requested Stage 9 integration, feature tracks use separate Orca
+worktrees under one coordinator; see `task/stage-9-integration-plan.md` for
+dependencies and the frozen notification interface. Integrate shared wiring
+sequentially. When worktrees share a Cargo target directory, grant exclusive
+ownership for the entire check/test/build sequence, including test execution:
+Cargo's compilation lock alone does not prevent cross-worktree test-binary replacement.
+
 ## Layout
 
 ```

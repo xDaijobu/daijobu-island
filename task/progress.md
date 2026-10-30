@@ -8,7 +8,32 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 
 ---
 
-## Stage Terminal Folders (review resolved; native manual acceptance pending)
+## Stage 9 integration (2026-10-30, in progress)
+
+User selected Windows notifications, Claude/Codex completion and needs-response
+notifications, Explorer folders for new terminals, and Vale-style top-edge reveal.
+Separate supervised Orca worktrees use Codex `gpt-6.1-sol` at high effort;
+the coordinator owns shared integration and Git. Scope, ownership, acceptance
+and the exclusive shared-Cargo validation rule are in
+[stage-9-integration-plan.md](stage-9-integration-plan.md).
+
+- [x] Prerequisite Terminal Folders reviewed, 1,661 tests and optimized build passed;
+  [PR #36](https://github.com/xDaijobu/daijobu-island/pull/36) merged at `a1992e5`.
+- [x] 9a Windows notifications: opt-in native listener, bounded memory-only queue,
+  permission/identity status, native toast/history, safe source-app activation.
+  Exclusive fmt/clippy, 1,673 tests and optimized build passed; sparse package
+  construction passed. Registered identity, consent and live delivery remain
+  manual acceptance checks ([report](stage-9a-report.md)).
+- [ ] 9b Claude/Codex: documented completion/approval events, opt-in hooks,
+  exact live session/generation activation; provider input-event limits explicit.
+- [ ] 9c Explorer: prefill new-session chooser and list open filesystem folders;
+  explicit Spotlight paths win and existing sessions keep their cwd.
+- [ ] 9d Edge reveal: existing stay-behind mode reveals at the monitor top edge,
+  returns behind after leave, and respects fullscreen/capture/explicit hide.
+- [ ] Each integrated track passes fmt, clippy, full tests and optimized build;
+  native interactive gaps remain documented rather than claimed as passing.
+
+## Stage Terminal Folders (merged PR #36; native manual acceptance pending)
 
 Worktree: `stage-terminal-folders`, base `9335f13`. Brief: [stage-terminal-folders-brief.md](stage-terminal-folders-brief.md).
 

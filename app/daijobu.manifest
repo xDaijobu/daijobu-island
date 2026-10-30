@@ -2,6 +2,12 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity type="win32" name="DaijobuIsland.Daijobu" version="0.3.1.0"/>
   <description>Daijobu Island</description>
+  <!-- Optional sparse identity: effective only after explicit package registration.
+       Keep these values matched with packaging/notifications/AppxManifest.xml. -->
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
+        packageName="DaijobuIsland.Notifications"
+        publisher="CN=Daijobu Island"
+        applicationId="Daijobu"/>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
