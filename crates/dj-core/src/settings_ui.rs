@@ -364,7 +364,7 @@ const ROWS: [RowDef; 21] = [
         RowKey::StayBehind,
         Page::Notch,
         "Stay behind windows",
-        "Keep the notch below app windows; it comes forward for panels",
+        "Reveal notch at top edge, except fullscreen; panels come forward",
     ),
     def(
         RowKey::SnapHotkey,

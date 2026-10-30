@@ -100,3 +100,8 @@ Clippy, 1,673 serial workspace tests and optimized build passed. Coordinator
 review covered toast activation/fallback, bounded typed targets, consent status,
 source-app activation and deployment limitations. Registered-identity consent
 and live notification delivery remain manual acceptance, not passing evidence.
+
+9a merged as PR #37 (`4d2c3de`); its worker was released and worktree removed.
+9d and 9b were updated to that base with all local changes preserved. 9d owns
+the next exclusive validation slot; 9b resumes complete feature integration
+without Cargo while 9c waits for the integrated 9d base.

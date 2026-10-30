@@ -43,7 +43,8 @@ Early development. Version **0.3.1** includes Music (YouTube Music), the volume 
 | N–N2 | Notch style and reserved top space | ✅ done |
 | V | Spotlight, standalone Settings, notch size and stay behind windows | ✅ merged, live testing pending |
 | 8 | Clipboard history: search, pin, persistent history and paste | complete; native target-app/hardware gaps documented |
-| 9–10 | Notifications, lyrics | locked |
+| 9 | Notifications | implemented on current master; [package/consent checks pending](task/stage-9a-report.md) |
+| 10 | Lyrics | locked |
 | 12a | Window tiling: zones, a layout picker in the island, a window picker | ✅ done |
 | 12b–12d | Scenes, restore-after-reboot, admin apps | locked |
 | 13 | File shelf, ambient sounds | locked |
@@ -62,6 +63,8 @@ paste/privacy/restart evidence and remaining target-app/hardware checks. Later-s
 Get the Windows x64 build from the [latest GitHub release](https://github.com/xDaijobu/daijobu-island/releases/latest). Extract the portable ZIP and run `daijobu.exe`; there is no installer. Quit the previous instance from the tray before replacing it with a newer build. Settings and user themes stay in `~/.daijobu/`.
 
 **New in v0.3.1:** themed tray with queued-click wake fix, opt-in developer memory diagnostics with adaptive KB/MB/GB, process-family metrics and resource-purpose descriptions, plus one shared UI-thread graphics context for island and popups. Open diagnostics through Settings > General > Developer mode or Tray > Developer memory. Sampling runs only while open; internal counts and GPU estimates overlap and are not total process RAM. No measured RAM savings or under-100MB claim.
+
+**Current master (unreleased):** opt-in Windows notifications are implemented. Native ingestion requires registered package identity and explicit consent; live consent, event delivery and source-app activation checks remain pending in the [Stage 9a report](task/stage-9a-report.md).
 
 Native drag/drop, some paste targets, multi-monitor/DPI and other desktop cases remain unverified; see the stage reports above. User confirmed responsive physical tray clicks after the queue-wake fix; general Explorer context-menu latency is not measured. Diagnostics appearance, shared-context native device-loss recovery and animation smoothness remain unverified. The executable is not code-signed.
 
@@ -147,7 +150,7 @@ By default the island is a notch attached to the top edge of the screen. Choose 
 
 The notch also reserves a strip as tall as itself along the top of the screen, so maximized windows (and browser tabs) start below it instead of under it. Turn it off with *Reserve top space* in Settings, or `[island] reserve_top = false`.
 
-*Stay behind windows* keeps the resting island over the wallpaper and under application windows. Opening a panel or showing the volume OSD brings it forward temporarily. Reserved top space is inactive while this setting is on.
+*Stay behind windows* (**Settings > Notch > Stay behind windows**) keeps the resting island visible over the wallpaper and under application windows. Reach the physical top edge within its width to reveal it; leaving returns it behind windows after a short grace once panels and OSD finish. Edge reveal is suppressed for fullscreen apps and presentations. Reserved top space is inactive while this setting is on.
 
 ### Clipboard
 

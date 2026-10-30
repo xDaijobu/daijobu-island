@@ -190,6 +190,9 @@ unsafe extern "system" fn foreground_changed(
         if raw == 0 {
             continue;
         }
+        if i == 0 && crate::edge_reveal::suppress_passive_raise() {
+            continue;
+        }
         let ours = HWND(raw as *mut _);
         // The island (index 0) stays behind when the app says so; the companion never does.
         if i == 0 && !ISLAND_ON_TOP.load(Ordering::Relaxed) {

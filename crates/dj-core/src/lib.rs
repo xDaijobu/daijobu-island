@@ -13,6 +13,7 @@ pub mod clipboard_ui;
 pub mod color;
 pub mod config;
 pub mod dev_memory;
+pub mod edge_reveal;
 pub mod features;
 pub mod health;
 pub mod island;

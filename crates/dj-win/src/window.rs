@@ -48,6 +48,10 @@ const CLASS_NAME: PCWSTR = w!("DaijobuIslandWindow");
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
+    /// Physical top-edge sensor entry, or a foreground/fullscreen invalidation.
+    EdgeReveal {
+        reached: bool,
+    },
     /// Left button pressed, client coordinates in device pixels.
     Click {
         x: i32,
@@ -972,6 +976,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         WM_HOTKEY => {
             push(Event::Hotkey(wp.0 as i32));
+            return LRESULT(0);
+        }
+        crate::edge_reveal::WM_EDGE => {
+            push(Event::EdgeReveal { reached: wp.0 == 1 });
             return LRESULT(0);
         }
         WM_TRAY => {

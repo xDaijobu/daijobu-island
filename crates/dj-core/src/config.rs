@@ -95,7 +95,9 @@ pub struct IslandConfig {
     /// maximized windows start below the notch instead of under it.
     pub reserve_top: bool,
     /// Keep the island on the desktop layer, below every app window. It comes to the
-    /// front while it shows a panel (or the OSD) and sinks back when it rests.
+    /// front at the physical top edge or while it shows a panel (or the OSD).
+    /// Edge reveal is suppressed over fullscreen apps/presentations; after leaving
+    /// the island it sinks back after a short grace when no panel/OSD needs it.
     pub stay_behind: bool,
     /// The resting notch/pill size in logical px; read them through `notch_size()`.
     pub notch_width: u32,
