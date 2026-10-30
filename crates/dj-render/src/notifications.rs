@@ -23,6 +23,8 @@ pub struct NotificationPanel<'a> {
     pub access: Access,
     pub enabled: bool,
     pub notice: Option<&'a str>,
+    pub setup: &'a dj_core::notification_setup::Setup,
+    pub setup_notice: Option<&'a str>,
 }
 
 struct Typography {
@@ -99,15 +101,9 @@ fn paint_panel(
         RRect::new_rect_xy(Rect::from_xywh(16.0, 50.0, 408.0, 30.0), 8.0, 8.0),
         &fill_paint(col(readable_surface(t, t.surface2), 1.0)),
     );
-    let button = if !panel.enabled {
-        "Enable Windows notifications"
-    } else if panel.access == Access::NeedsConsent {
-        "Allow access"
-    } else {
-        "Disable Windows notifications"
-    };
-    text(canvas, typography, button, (27.0, 70.0), 365.0, 11.0);
-    if panel.enabled && panel.access == Access::NeedsConsent {
+    let button = panel.setup.button(panel.enabled, panel.access);
+    text(canvas, typography, button, (27.0, 70.0), 330.0, 11.0);
+    if panel.enabled {
         text(canvas, typography, "Off", (380.0, 70.0), 40.0, 11.0);
     }
     for (i, item) in panel
@@ -117,6 +113,7 @@ fn paint_panel(
         .skip(panel.center.page * n::PAGE_SIZE)
         .take(n::PAGE_SIZE)
         .enumerate()
+        .filter(|_| !(panel.enabled && panel.access == Access::MissingIdentity))
     {
         let r = n::row(i);
         canvas.draw_rrect(
@@ -166,7 +163,34 @@ fn paint_panel(
             12.0,
         );
     }
-    if panel.center.history().is_empty() {
+    if panel.enabled && panel.access == Access::MissingIdentity {
+        // Setup state and actionable errors remain visible even when internal
+        // history exists. Use a bounded native paragraph rather than truncating
+        // the useful Windows error to a single line.
+        canvas.draw_rrect(
+            RRect::new_rect_xy(Rect::from_xywh(16.0, 91.0, 408.0, 202.0), 8.0, 8.0),
+            &fill_paint(col(readable_surface(t, t.surface1), 1.0)),
+        );
+        let mut style = TextStyle::new();
+        style
+            .set_font_families(&["notification-text"])
+            .set_font_size(12.0)
+            .set_color(typography.ink);
+        let mut paragraph_style = ParagraphStyle::new();
+        paragraph_style
+            .set_text_style(&style)
+            .set_max_lines(10)
+            .set_ellipsis("\u{2026}");
+        let mut builder = ParagraphBuilder::new(&paragraph_style, typography.collection.clone());
+        builder.add_text(
+            panel
+                .setup_notice
+                .unwrap_or_else(|| panel.setup.explanation()),
+        );
+        let mut paragraph = builder.build();
+        paragraph.layout(384.0);
+        paragraph.paint(canvas, (28.0, 106.0));
+    } else if panel.center.history().is_empty() {
         text(
             canvas,
             typography,
@@ -270,6 +294,8 @@ mod tests {
                 access: Access::MissingIdentity,
                 enabled: true,
                 notice: None,
+                setup: &dj_core::notification_setup::Setup::default(),
+                setup_notice: None,
             },
         );
         let bytes = surface

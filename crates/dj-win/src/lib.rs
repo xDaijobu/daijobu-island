@@ -38,4 +38,5 @@ pub use window::{Event, Handler};
 pub use windows::Win32::Foundation::{HWND, RECT};
 pub use windows::Win32::UI::WindowsAndMessaging::HICON;
 
+pub mod notification_setup;
 pub mod notifications;

@@ -64,7 +64,7 @@ Get the Windows x64 build from the [latest GitHub release](https://github.com/xD
 
 **New in v0.3.1:** themed tray with queued-click wake fix, opt-in developer memory diagnostics with adaptive KB/MB/GB, process-family metrics and resource-purpose descriptions, plus one shared UI-thread graphics context for island and popups. Open diagnostics through Settings > General > Developer mode or Tray > Developer memory. Sampling runs only while open; internal counts and GPU estimates overlap and are not total process RAM. No measured RAM savings or under-100MB claim.
 
-**Current master (unreleased):** opt-in Windows notifications are implemented. Native ingestion requires registered package identity and explicit consent; live consent, event delivery and source-app activation checks remain pending in the [Stage 9a report](task/stage-9a-report.md).
+**Current master (unreleased):** opt-in Windows notifications are implemented. Open Home > Notifications to set up Windows identity inside the app, restart gracefully, then explicitly allow Windows access. Distribution builds embed a signed payload; local builds use existing Developer Mode or explain that a signed build is required. See [notification setup](packaging/notifications/README.md); live consent, event delivery and source-app activation checks remain pending.
 
 Native drag/drop, some paste targets, multi-monitor/DPI and other desktop cases remain unverified; see the stage reports above. User confirmed responsive physical tray clicks after the queue-wake fix; general Explorer context-menu latency is not measured. Diagnostics appearance, shared-context native device-loss recovery and animation smoothness remain unverified. The executable is not code-signed.
 

@@ -70,7 +70,7 @@ impl Access {
     pub fn label(self) -> &'static str {
         match self {
             Self::Disabled => "Windows notifications are off",
-            Self::MissingIdentity => "Package identity required; see packaging guide",
+            Self::MissingIdentity => "Windows notification setup required",
             Self::NeedsConsent => "Select Allow access to request Windows permission",
             Self::Requesting => "Waiting for Windows permission",
             Self::Connecting => "Connecting to Windows notification events",
@@ -86,6 +86,8 @@ pub enum Action {
     Close,
     Toggle,
     RequestAccess,
+    Setup,
+    Restart,
     Dismiss(NotificationKey),
     Activate(NotificationKey),
     Previous,
@@ -260,19 +262,24 @@ impl NotificationCenter {
         self.page = self.page.min(self.pages() - 1);
     }
 
-    pub fn hit(&self, x: f32, y: f32, access: Access) -> Option<Action> {
+    pub fn hit(
+        &self,
+        x: f32,
+        y: f32,
+        access: Access,
+        setup: &crate::notification_setup::Setup,
+    ) -> Option<Action> {
         if CLOSE.contains(x, y) {
             return Some(Action::Close);
         }
-        if access == Access::NeedsConsent && Rect::new(366.0, 48.0, 58.0, 32.0).contains(x, y) {
+        if self.windows_enabled && Rect::new(366.0, 48.0, 58.0, 32.0).contains(x, y) {
             return Some(Action::Toggle);
         }
         if ENABLE.contains(x, y) {
-            return Some(if access == Access::NeedsConsent {
-                Action::RequestAccess
-            } else {
-                Action::Toggle
-            });
+            return setup.primary(self.windows_enabled, access);
+        }
+        if self.windows_enabled && access == Access::MissingIdentity {
+            return None; // The setup explanation covers history while identity is missing.
         }
         if PREV.contains(x, y) {
             return Some(Action::Previous);
@@ -310,6 +317,50 @@ pub fn bounded_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_view_blocks_covered_internal_history_and_preserves_visible_controls() {
+        use crate::notification_setup::Setup;
+        let mut center = NotificationCenter::default();
+        center.configure_windows(true);
+        center.configure_internal(true);
+        let key = NotificationKey::Internal(123);
+        center.admit(input(key), Instant::now());
+        let mut setup = Setup::default();
+        assert_eq!(
+            center.hit(40.0, 65.0, Access::MissingIdentity, &setup),
+            Some(Action::Setup)
+        );
+        assert_eq!(
+            center.hit(380.0, 65.0, Access::MissingIdentity, &setup),
+            Some(Action::Toggle)
+        );
+        for x in [30.0, 415.0] {
+            assert_eq!(center.hit(x, 115.0, Access::MissingIdentity, &setup), None);
+        }
+        assert_eq!(
+            center.hit(405.0, 25.0, Access::MissingIdentity, &setup),
+            Some(Action::Close)
+        );
+        setup.begin(true, Access::MissingIdentity);
+        assert_eq!(
+            center.hit(40.0, 65.0, Access::MissingIdentity, &setup),
+            None
+        );
+        setup.complete(Ok(()));
+        assert_eq!(
+            center.hit(40.0, 65.0, Access::MissingIdentity, &setup),
+            Some(Action::Restart)
+        );
+        assert_eq!(
+            center.hit(30.0, 115.0, Access::NeedsConsent, &setup),
+            Some(Action::Activate(key))
+        );
+        assert_eq!(
+            center.hit(40.0, 65.0, Access::NeedsConsent, &setup),
+            Some(Action::RequestAccess)
+        );
+    }
 
     #[test]
     fn independent_origins_and_initial_history_never_replay() {

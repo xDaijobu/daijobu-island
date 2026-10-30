@@ -25,7 +25,10 @@ mod vitals;
 use dj_win::{system, window};
 
 fn main() {
-    if agent_notifications::handle_cli(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if dj_win::notification_setup::handle_restart_cli(&args)
+        || agent_notifications::handle_cli(&args)
+    {
         return;
     }
     if !system::acquire_single_instance() {
@@ -42,6 +45,9 @@ fn main() {
             return;
         }
     };
-    let app = app::App::new(hwnd, config, exe);
+    let mut app = app::App::new(hwnd, config, exe);
+    if args.as_slice() == [dj_win::notification_setup::OPEN_SWITCH] {
+        app.reopen_notifications_after_restart();
+    }
     window::run(app);
 }

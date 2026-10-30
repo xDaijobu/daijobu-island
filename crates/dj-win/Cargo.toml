@@ -12,6 +12,7 @@ windows-future = "0.3"
 windows = { workspace = true, features = [
   "Foundation",
   "ApplicationModel",
+  "Management_Deployment",
   "UI_Notifications",
   "UI_Notifications_Management",
   "Win32_System_WinRT",

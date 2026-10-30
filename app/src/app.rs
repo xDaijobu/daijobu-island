@@ -2502,6 +2502,18 @@ impl App {
         self.dirty = true;
     }
 
+    pub fn reopen_notifications_after_restart(&mut self) {
+        self.open_notifications();
+        if self.config.notifications.enabled
+            && self.notifications.access() == dj_core::notifications::Access::MissingIdentity
+        {
+            self.notifications.setup = dj_core::notification_setup::Setup::Failed(dj_core::notification_setup::Failure {
+                message: "This process still has no Windows package identity. Keep daijobu.exe in its registered folder, resolve deployment errors, then retry setup. Windows permission has not been requested.".into(),
+                retryable: true,
+            });
+        }
+    }
+
     fn notification_action(&mut self, action: NotificationAction) {
         // Consume queued exit/progress events before resolving any visible action.
         self.terminal.drain();
@@ -2515,6 +2527,8 @@ impl App {
                 self.apply_config(config, true);
             }
             NotificationAction::RequestAccess => self.notifications.request_access(),
+            NotificationAction::Setup => self.notifications.start_setup(),
+            NotificationAction::Restart => self.notifications.restart(),
             NotificationAction::Dismiss(key) => self.notifications.dismiss(key),
             NotificationAction::Activate(key) => {
                 match self.notifications.activate(key) {
@@ -4001,6 +4015,7 @@ impl App {
         window::kill_timer(self.hwnd, TIMER_CLIPBOARD);
         window::kill_timer(self.hwnd, TIMER_TOAST);
         self.notifications.configure(&Default::default());
+        self.notifications.shutdown_setup();
         window::unregister_hotkey(self.hwnd, HOTKEY_CLIPBOARD);
         window::quit();
         self.edge_sensor = None;
@@ -4198,11 +4213,12 @@ impl Handler for App {
                             if let Some(action) = self.notifications.center.toast_hit(x, y) {
                                 self.notification_action(action);
                             }
-                        } else if let Some(action) =
-                            self.notifications
-                                .center
-                                .hit(x, y, self.notifications.access())
-                        {
+                        } else if let Some(action) = self.notifications.center.hit(
+                            x,
+                            y,
+                            self.notifications.access(),
+                            &self.notifications.setup,
+                        ) {
                             self.notification_action(action);
                         }
                     }
@@ -4478,6 +4494,10 @@ impl Handler for App {
             Event::Wake => {
                 if self.notifications.drain(Instant::now()) {
                     self.dirty = true;
+                }
+                if self.notifications.take_restart() {
+                    self.quit();
+                    return;
                 }
                 self.drain_clipboard();
                 let picker_was_open = self.terminal.folder_picker_open();
@@ -4835,6 +4855,8 @@ impl Handler for App {
                 access: self.notifications.access(),
                 enabled: self.config.notifications.enabled,
                 notice: self.notifications.notice,
+                setup: &self.notifications.setup,
+                setup_notice: self.notifications.setup_notice.as_deref(),
             }),
             terminal_shortcuts: &self.term_shortcuts,
             island_style: self.config.island.style(),

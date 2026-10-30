@@ -26,9 +26,9 @@ use windows::UI::Notifications::Management::{
 use windows::UI::Notifications::{NotificationKinds, UserNotification};
 use windows_future::{AsyncOperationCompletedHandler, IAsyncOperation};
 
-struct Apartment;
+pub(super) struct Apartment;
 impl Apartment {
-    fn init(ui: bool) -> windows::core::Result<Self> {
+    pub(super) fn init(ui: bool) -> windows::core::Result<Self> {
         // SAFETY: called on the owning thread, balanced by Drop on that thread.
         unsafe {
             RoInitialize(if ui {
