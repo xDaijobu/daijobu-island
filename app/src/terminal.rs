@@ -5,6 +5,9 @@
 
 mod folders;
 
+use crate::agent_notifications::Runtime as AgentRuntime;
+use dj_core::agent_notifications::{AgentNotice, Target as AgentTarget, Ticket};
+
 use dj_core::config::TerminalConfig;
 use dj_core::layout::{TERM_CLOSE, TERM_HEADER_H, TERM_TEXT};
 use dj_core::line_edit::LineEdit;
@@ -172,6 +175,9 @@ struct Tab {
     failed: Option<String>,
     /// The folder the shell last reported (PowerShell tabs, through the prompt hook).
     cwd: Option<String>,
+    agent_generation: Option<u64>,
+    agent_notice: Option<String>,
+    awaiting_agent: bool,
 }
 
 impl Tab {
@@ -208,7 +214,7 @@ impl Tab {
                 "process exited with code {code} · Enter to restart"
             )),
             Some(None) => Some("process exited · Enter to restart".to_string()),
-            None => None,
+            None => self.agent_notice.clone(),
         }
     }
 }
@@ -253,6 +259,9 @@ pub struct Terminal {
     wheel: WheelAccum,
     rename: Option<Rename>,
     folders: folders::Folders,
+    agent_runtime: Option<AgentRuntime>,
+    agents_enabled: bool,
+    agents_pending: bool,
 }
 
 impl Terminal {
@@ -297,11 +306,79 @@ impl Terminal {
             wheel: WheelAccum::default(),
             rename: None,
             folders: folders::Folders::default(),
+            agent_runtime: None,
+            agents_enabled: false,
+            agents_pending: false,
         }
     }
 
     pub fn config(&self) -> &TerminalConfig {
         &self.config
+    }
+
+    pub fn configure_agents(&mut self, enabled: bool, runtime: Option<AgentRuntime>) {
+        self.agent_runtime = runtime;
+        self.agents_enabled = enabled;
+        self.agents_pending = false;
+        for tab in self.sessions.values_mut() {
+            tab.agent_generation = None;
+        }
+        let pending: Vec<_> = self
+            .tabs
+            .ids()
+            .into_iter()
+            .filter(|id| self.sessions.get(id).is_some_and(|tab| tab.awaiting_agent))
+            .collect();
+        for id in pending {
+            if let Some(mut tab) = self.sessions.remove(&id) {
+                self.start(id, &mut tab);
+                self.tabs.set_title(id, tab.name());
+                self.tabs.set_exited(id, tab.exited.is_some());
+                self.sessions.insert(id, tab);
+            }
+        }
+    }
+
+    pub fn begin_agent_setup(&mut self, enabled: bool) {
+        if !enabled {
+            self.configure_agents(false, None);
+            return;
+        }
+        self.agent_runtime = None;
+        self.agents_enabled = true;
+        self.agents_pending = true;
+        for tab in self.sessions.values_mut() {
+            tab.agent_generation = None;
+        }
+    }
+
+    pub fn agent_target(&self, ticket: Ticket) -> Option<AgentTarget> {
+        let target = self.agent_runtime.as_ref()?.controller.resolve(ticket)?;
+        let tab = self.sessions.get(&target.tab)?;
+        (tab.session.is_some()
+            && tab.exited.is_none()
+            && tab.agent_generation == Some(target.generation))
+        .then_some(target)
+    }
+
+    pub fn drain_agents(&mut self) -> Vec<AgentNotice> {
+        let Some(runtime) = self.agent_runtime.as_mut() else {
+            return Vec::new();
+        };
+        let notices = runtime.controller.drain();
+        notices
+            .into_iter()
+            .filter(|notice| self.agent_target(notice.ticket).is_some())
+            .collect()
+    }
+
+    fn revoke_agent(&mut self, id: TabId) {
+        if let Some(runtime) = &mut self.agent_runtime {
+            runtime.controller.revoke(id);
+        }
+        if let Some(tab) = self.sessions.get_mut(&id) {
+            tab.agent_generation = None;
+        }
     }
 
     /// Live terminal tabs in display order. The shell stays live after an agent returns
@@ -526,8 +603,11 @@ impl Terminal {
             exited: None,
             failed: None,
             cwd: None,
+            agent_generation: None,
+            agent_notice: None,
+            awaiting_agent: false,
         };
-        self.start(&mut tab);
+        self.start(id, &mut tab);
         self.tabs.set_title(id, tab.name());
         self.tabs.set_exited(id, tab.exited.is_some());
         self.sessions.insert(id, tab);
@@ -535,7 +615,18 @@ impl Terminal {
     }
 
     /// Starts (or restarts) `tab`'s shell.
-    fn start(&self, tab: &mut Tab) {
+    fn start(&mut self, id: TabId, tab: &mut Tab) {
+        self.revoke_agent(id);
+        tab.agent_generation = None;
+        tab.agent_notice = None;
+        tab.awaiting_agent = false;
+        tab.exited = None;
+        tab.failed = None;
+        if tab.spec.agent.is_some() && self.agents_pending {
+            tab.awaiting_agent = true;
+            tab.agent_notice = Some("Setting up agent notifications...".into());
+            return;
+        }
         let cwd = if tab.spec.cwd.trim().is_empty() {
             std::env::var_os("USERPROFILE").map(PathBuf::from)
         } else {
@@ -544,10 +635,29 @@ impl Terminal {
         let (program, mut args) = dj_term::resolve_shell(&tab.spec.shell, &tab.spec.args);
         // PowerShell reports its folder at every prompt, and runs the tab's agent if it has one.
         if dj_term::is_powershell(&program) {
-            args.extend(agents::powershell_extra_args(
-                &tab.spec.args,
-                tab.spec.agent,
-            ));
+            let mut extra = agents::powershell_extra_args(&tab.spec.args, tab.spec.agent);
+            if let Some(agent) = tab.spec.agent.filter(|_| self.agents_enabled) {
+                let prepared = self
+                    .agent_runtime
+                    .as_mut()
+                    .ok_or_else(|| {
+                        "Agent notifications unavailable; see Settings > Terminal".to_string()
+                    })
+                    .and_then(|runtime| runtime.launch(id, agent));
+                match prepared {
+                    Ok((generation, script)) => {
+                        let command = agents::command_line(agent);
+                        if let Some(last) = extra.last_mut() {
+                            if let Some(prefix) = last.strip_suffix(&command) {
+                                *last = format!("{prefix}{script}");
+                                tab.agent_generation = Some(generation);
+                            }
+                        }
+                    }
+                    Err(error) => tab.agent_notice = Some(error),
+                }
+            }
+            args.extend(extra);
         }
         let opts = SpawnOptions {
             program: program.clone(),
@@ -565,6 +675,8 @@ impl Terminal {
         match self.spawner.spawn(&opts) {
             Ok(s) => tab.session = Some(s),
             Err(e) => {
+                self.revoke_agent(id);
+                tab.agent_generation = None;
                 tab.session = None;
                 tab.exited = Some(None);
                 tab.failed = Some(e);
@@ -592,6 +704,7 @@ impl Terminal {
     /// Closes tabs (their shells end). `Close` when none is left.
     fn close_tabs(&mut self, ids: &[TabId]) -> Outcome {
         for id in ids {
+            self.revoke_agent(*id);
             if let Some(t) = self.sessions.remove(id) {
                 if self.tabs.is_pinned(*id) {
                     self.save = true;
@@ -613,6 +726,7 @@ impl Terminal {
             return Outcome::None;
         }
         self.save |= was_pinned;
+        self.revoke_agent(id);
         self.sessions.remove(&id);
         self.selecting = false;
         if self.tabs.is_empty() {
@@ -712,7 +826,7 @@ impl Terminal {
                     if let Some(mut tab) = self.sessions.remove(&id) {
                         tab.session = None;
                         tab.title = None;
-                        self.start(&mut tab);
+                        self.start(id, &mut tab);
                         self.tabs.set_title(id, tab.name());
                         self.tabs.set_exited(id, tab.exited.is_some());
                         self.sessions.insert(id, tab);
@@ -1094,6 +1208,7 @@ impl Terminal {
         let active = self.active_id();
         let mut changed =
             self.drain_picker() | self.drain_folder_validation() | self.drain_explorer();
+        let mut ended = Vec::new();
         for (id, tab) in self.sessions.iter_mut() {
             let saved_name = self.tabs.is_pinned(*id).then(|| tab.name());
             let Some(s) = tab.session.as_mut() else {
@@ -1115,7 +1230,10 @@ impl Terminal {
                             tab.cwd = Some(dir);
                         }
                     }
-                    TermEvent::Exited(code) => tab.exited = Some(code),
+                    TermEvent::Exited(code) => {
+                        tab.exited = Some(code);
+                        ended.push(*id);
+                    }
                 }
             }
             if saved_name.is_some_and(|name| name != tab.name()) {
@@ -1127,6 +1245,9 @@ impl Terminal {
                 self.tabs.set_activity(*id);
             }
             changed |= news;
+        }
+        for id in ended {
+            self.revoke_agent(id);
         }
         changed
     }
@@ -1161,6 +1282,7 @@ impl Terminal {
 
     /// Ends every shell (the island is quitting).
     pub fn shutdown(&mut self) {
+        self.agent_runtime = None;
         self.sessions.clear();
     }
 }
@@ -1605,6 +1727,121 @@ mod tests {
         assert_eq!(r.term.active_tab_id(), None);
         assert!(r.term.paste_to_tab(failed, "do not retry").is_err());
         assert_eq!(r.spawns.borrow().opts.len(), 1);
+    }
+
+    #[test]
+    fn agent_ticket_revalidates_generation_and_close_without_spawning() {
+        use crate::agent_notifications::{AgentNotifications, VerifiedProvider};
+        use crate::notifications::{ActivationResult, InternalTarget, Notifications};
+        use dj_core::agent_notifications::{BridgeEvent, EventKind, Provider, WIRE_VERSION};
+        use dj_core::config::NotificationsConfig;
+        use dj_core::notifications::NotificationKey;
+        let mut r = Rig::new();
+        r.open();
+        let id = r.term.active_id().unwrap();
+        let runtime = AgentRuntime {
+            controller: AgentNotifications::start(|| {}).unwrap(),
+            providers: vec![VerifiedProvider::from_version_output(
+                Provider::Claude,
+                Provider::Claude.verified_version(),
+            )
+            .unwrap()],
+            executable: PathBuf::from(r"C:\fixture\daijobu.exe"),
+        };
+        r.term.configure_agents(true, Some(runtime));
+        r.term.sessions.get_mut(&id).unwrap().spec.agent = Some(Agent::Claude);
+        let env = r
+            .term
+            .agent_runtime
+            .as_mut()
+            .unwrap()
+            .controller
+            .prepare(
+                id,
+                VerifiedProvider::from_version_output(
+                    Provider::Claude,
+                    Provider::Claude.verified_version(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        r.term.sessions.get_mut(&id).unwrap().agent_generation = Some(env.grant.generation);
+        let send = |kind| {
+            dj_win::agent_notifications::send(
+                &env.endpoint,
+                &BridgeEvent {
+                    version: WIRE_VERSION,
+                    provider: Provider::Claude,
+                    generation: env.grant.generation,
+                    credential: env.grant.credential.clone(),
+                    session: "fake-session".into(),
+                    kind,
+                    event_id: None,
+                },
+            )
+            .unwrap()
+        };
+        send(EventKind::Started);
+        send(EventKind::NeedsInput);
+        let notice = r.term.drain_agents().pop().unwrap();
+        let mut center = Notifications::new(
+            0,
+            &NotificationsConfig {
+                enabled: false,
+                internal_enabled: true,
+            },
+        );
+        center.admit_agent(&notice, std::time::Instant::now());
+        let key = NotificationKey::Internal(notice.ticket.0);
+        assert_eq!(
+            center.activate(key),
+            ActivationResult::Internal(InternalTarget::AgentSession(notice.ticket))
+        );
+        assert_eq!(r.term.agent_target(notice.ticket), Some(notice.target));
+        r.shell()
+            .borrow_mut()
+            .events
+            .push(TermEvent::Exited(Some(1)));
+        r.term.drain();
+        assert!(r.term.agent_target(notice.ticket).is_none());
+        r.term.key(VK_RETURN, NONE);
+        assert_ne!(
+            r.term.sessions[&id].agent_generation,
+            Some(env.grant.generation)
+        );
+        let count = r.spawns.borrow().opts.len();
+        send(EventKind::Completed);
+        assert!(r.term.drain_agents().is_empty());
+        assert!(center.expire_agent_actions(|ticket| r.term.agent_target(ticket).is_some()));
+        assert_eq!(center.activate(key), ActivationResult::Unavailable);
+        r.term.close_tab(id);
+        assert!(r.term.agent_target(notice.ticket).is_none());
+        assert_eq!(r.spawns.borrow().opts.len(), count);
+    }
+
+    #[test]
+    fn opted_in_agent_waits_for_setup_and_disable_releases_the_pending_launch() {
+        let mut r = Rig::new();
+        r.open();
+        let before = r.spawns.borrow().opts.len();
+        r.term.begin_agent_setup(true);
+        r.term.new_agent_tab(Agent::Claude);
+        let id = r.term.active_id().unwrap();
+        assert_eq!(r.spawns.borrow().opts.len(), before);
+        assert!(r.term.sessions[&id].awaiting_agent);
+        assert!(r
+            .term
+            .view(&palette())
+            .notice
+            .unwrap()
+            .contains("Setting up"));
+        r.term.configure_agents(false, None);
+        assert_eq!(r.spawns.borrow().opts.len(), before + 1);
+        let spawns = r.spawns.borrow();
+        let command = spawns.opts.last().unwrap().args.last().unwrap();
+        assert!(command.contains("claude --dangerously-skip-permissions"));
+        assert!(!command.contains("DJ_AGENT_NOTIFY"));
+        assert!(!r.term.sessions[&id].awaiting_agent);
     }
 
     #[test]

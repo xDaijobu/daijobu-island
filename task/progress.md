@@ -8,7 +8,7 @@ Legend: ⬜ todo · 🟡 in progress · 🔵 PR open · ✅ done · 🔒 locked 
 
 ---
 
-## Stage 9 integration (2026-10-30, in progress)
+## Stage 9 integration (2026-10-30, implemented; manual acceptance gaps documented)
 
 User selected Windows notifications, Claude/Codex completion and needs-response
 notifications, Explorer folders for new terminals, and Vale-style top-edge reveal.
@@ -26,19 +26,25 @@ and the exclusive shared-Cargo validation rule are in
   manual acceptance checks ([report](stage-9a-report.md)).
   [PR #37](https://github.com/xDaijobu/daijobu-island/pull/37) merged at `4d2c3de`;
   worker released and worktree removed.
-- [ ] 9b Claude/Codex: documented completion/approval events, opt-in hooks,
+- [x] 9b Claude/Codex: documented completion/approval events, opt-in hooks,
   exact live session/generation activation; provider input-event limits explicit.
+  Final combined fmt/clippy, all 1,719 serial tests and optimized build passed;
+  release-mode headless hooks and embedded DPI/MSIX manifest verified.
+  Claude Code 2.1.295 and Codex CLI 0.163.0 supported; generic Codex questions
+  remain unsupported. Live provider trust/config/UI checks remain in [report](stage-9b-report.md).
 - [x] 9c Explorer: prefill new-session chooser and list open filesystem folders;
   explicit Spotlight paths win and existing sessions keep their cwd.
   Exclusive fmt/clippy, all 1,689 tests, optimized build and read-only enumeration
   of two real folders passed ([report](stage-9c-report.md)); interactive checks remain.
+  [PR #39](https://github.com/xDaijobu/daijobu-island/pull/39) merged at `ab4b700`;
+  worker released and worktree removed.
 - [x] 9d Edge reveal: existing stay-behind mode reveals at the monitor top edge,
   returns behind after leave, and respects fullscreen/capture/explicit hide.
   Exclusive fmt/clippy, all 1,682 tests and optimized build passed on the merged
   9a base; interactive desktop cases remain listed in [report](stage-9d-report.md).
   [PR #38](https://github.com/xDaijobu/daijobu-island/pull/38) merged at `5b5d07f`;
   worker released and worktree removed.
-- [ ] Each integrated track passes fmt, clippy, full tests and optimized build;
+- [x] Each integrated track passes fmt, clippy, full tests and optimized build;
   native interactive gaps remain documented rather than claimed as passing.
 
 ## Stage Terminal Folders (merged PR #36; native manual acceptance pending)
@@ -114,7 +120,7 @@ Acceptance: developer can inspect process attribution and internal retained-data
 | V | **Spotlight, Settings window, stay behind and notch size** | ✅ code complete, live acceptance pending | `xDaijobu/stage-v-notch` | 1196 tests · user requested PR + merge before remaining live checks · [`stage-v-plan.md`](stage-v-plan.md) · [`stage-v-report.md`](stage-v-report.md) |
 | T4 | **Terminal shortcuts by the idle clock and agent logos** | ✅ code complete, live checks pending | `xDaijobu/stage-t4-terminal-shortcuts` | user-requested · 1207 tests · [`stage-t4-brief.md`](stage-t4-brief.md) · [`stage-t4-report.md`](stage-t4-report.md) |
 | 8 | Clipboard history: search, pin, persistence and paste | Complete; native gaps documented | `master` (`82bb4be`) | PR #31 merged; independent review, 1,633 tests, clippy/fmt/release and native smoke passed; [report](stage-8-report.md) |
-| 9 | Notifications | Windows merged; agent integration in progress | `master` + Stage 9b | Windows ingestion needs registered sparse MSIX and consent; [report](stage-9a-report.md) |
+| 9 | Notifications | implemented; native/provider manual gaps documented | Stage 9 integration | Windows needs registered sparse MSIX and consent; [Windows report](stage-9a-report.md), [agent report](stage-9b-report.md) |
 | 10 | Lyrics | 🔒 | — | |
 | 11 | dj CLI | dropped | — | built 2026-10-27 and dropped by the user (PR #19 closed): their "CLI" meant a terminal in the island. Its Home tile is now Terminal (Stage T) |
 | 12a | **Tile**: drag a window to the island → layout picker, Shift+drag zones, Ctrl+Alt+1‥9 / arrows, presets + custom layouts | ✅ | `xDaijobu/stage-12a-tile` | coordinator (Opus 5.5) + parallel Sonnet 5.5 workers · 747 tests · live test with the user · [`stage-12a-report.md`](stage-12a-report.md) |

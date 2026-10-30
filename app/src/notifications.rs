@@ -1,6 +1,7 @@
 //! App-owned notification controller. The native adapter owns Windows identity;
 //! internal producers register typed targets and opaque tokens with this controller.
 
+use dj_core::agent_notifications::{AgentNotice, Ticket};
 use dj_core::config::NotificationsConfig;
 use dj_core::notifications::{
     Access, Activation, ActivationToken, Admission, NotificationCenter, NotificationInput,
@@ -17,6 +18,7 @@ pub const TIMER_TOAST: usize = 17;
 #[allow(dead_code)] // typed integration target; next track owns internal producers
 pub enum InternalTarget {
     TerminalTab(TabId),
+    AgentSession(Ticket),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +94,45 @@ impl Notifications {
 
     pub fn access(&self) -> Access {
         self.native.access()
+    }
+
+    pub fn admit_agent(&mut self, notice: &AgentNotice, now: Instant) -> Admission {
+        let key = NotificationKey::Internal(notice.ticket.0);
+        let token = ActivationToken(notice.ticket.0);
+        self.register_activation(key, token, InternalTarget::AgentSession(notice.ticket));
+        self.admit(
+            NotificationInput {
+                key,
+                source: notice.provider.name().into(),
+                title: notice.title().into(),
+                body: notice.body().into(),
+                activation: Activation::Internal(token),
+            },
+            now,
+        )
+    }
+
+    /// Keep the history entry, but remove an action as soon as its exact session is stale.
+    pub fn expire_agent_actions(&mut self, live: impl Fn(Ticket) -> bool) -> bool {
+        let stale: Vec<_> = self
+            .activations
+            .0
+            .iter()
+            .filter_map(|(key, _, target)| match target {
+                InternalTarget::AgentSession(ticket) if !live(*ticket) => Some(*key),
+                _ => None,
+            })
+            .collect();
+        for key in &stale {
+            if let Some(mut input) = self.center.get(*key).cloned() {
+                input.activation = Activation::None;
+                self.center.admit(input, Instant::now());
+            }
+        }
+        self.activations
+            .0
+            .retain(|(key, _, _)| !stale.contains(key));
+        !stale.is_empty()
     }
 
     pub fn refresh_access(&mut self) {

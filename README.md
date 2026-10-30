@@ -278,6 +278,29 @@ builds. Home, This PC, searches, Recycle Bin and other non-filesystem namespaces
 rejected, and inaccessible/deleted folders use the existing fallback. Foreground
 history starts when Daijobu Island starts; refresh does not activate or navigate Explorer.
 
+### Agent notifications
+
+Enable **Settings > General > Agent notifications** to install Daijobu Island's
+notification hooks for new Claude and Codex tabs. They use the shared notification
+popup and history independently of Windows notification permission. **Settings >
+Terminal** shows setup and provider status. Existing agent tabs keep their launch
+settings; pinned agent tabs wait briefly for setup on startup.
+
+This version supports Claude Code **2.1.295** and Codex CLI **0.163.0**. Claude alerts
+on response completion, approval requests and explicit question/plan tools. Codex
+alerts on completion and approval requests; **generic Codex question alerts are
+unavailable**. Review Codex's new hooks through `/hooks`, then open a new agent tab.
+Other provider versions show an unavailable status. A session changed by clear/fork
+requires a new agent tab. Agent permission flags and hook trust are preserved;
+opted-in supported Codex launches add `--no-daemon` for per-tab session isolation.
+
+Alerts use fixed text and never read transcripts or execute notification content.
+Clicking opens only the original live session; close, restart, provider exit or a new
+prompt disables its stale action. Turning the setting off clears agent alerts and
+removes only the exact hooks recorded as Daijobu Island's, preserving third-party
+settings. Provider policy, disabled hooks or Claude's subprocess environment scrub
+can prevent delivery. Oversized events and unavailable IPC are dropped safely.
+
 ## How it's built
 
 - **Windows:** native Win32 windows with DirectComposition visuals. The island stays topmost by default, with an optional desktop layer while resting. Terminal input mode, Settings and Spotlight take keyboard focus when opened. Clicks outside the island's shape fall through to whatever is underneath.
